@@ -200,8 +200,7 @@ void AClearanceAirspaceManager::RecalculateActiveRunway()
 	{
 		// only switch if the new runway is meaningfully better, not marginally
 		const float CurrentCrosswind = Crosswind(SectorEnvironment.ActiveRunwayHeading);
-		const float DeadbandKnots = 2.f;
-		if (CurrentCrosswind - BestCrosswind < DeadbandKnots)
+		if (CurrentCrosswind - BestCrosswind < ClearanceConstants::RunwaySwitchDeadbandKts)
 		{
 			return;
 		}

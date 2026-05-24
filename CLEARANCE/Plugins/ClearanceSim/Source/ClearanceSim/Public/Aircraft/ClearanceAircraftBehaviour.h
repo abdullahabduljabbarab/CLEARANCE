@@ -36,9 +36,6 @@ public:
 	void ExecuteGoAround();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behaviour|Tuning")
-	float AccelerationKnotsPerSec = 5.f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behaviour|Tuning")
 	float HeadingToleranceDeg = 1.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behaviour|Tuning")
@@ -70,5 +67,4 @@ private:
 	float DensityAdjustedClimbRate(const FAircraftState& State) const;
 
 	static float ISADensityRatio(float AltitudeFt);
-	static void GetCategoryLimits(EWakeCategory Category, float& OutCeiling, float& OutMinSpeed, float& OutMaxSpeed, float& OutClimbRate, float& OutBankLimitDeg);
 };

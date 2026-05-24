@@ -18,20 +18,19 @@ void UClearanceAircraftBehaviour::Initialise(AClearanceAirspaceManager* InManage
 		return;
 	}
 
-	// Stamp the performance envelope onto the state from its category, so the
-	// rest of the sim (and the Validator) can read limits straight off the state.
+	// Stamp the performance envelope onto the state from its category, so anything
+	// reading the state sees the right limits without a second lookup.
 	FAircraftState State = Manager->GetAircraftState(Callsign);
 	if (!State.bIsValid)
 	{
 		return;
 	}
 
-	float Ceiling, MinSpeed, MaxSpeed, ClimbRate, BankLimit;
-	GetCategoryLimits(State.WakeCategory, Ceiling, MinSpeed, MaxSpeed, ClimbRate, BankLimit);
-	State.ServiceCeiling = Ceiling;
-	State.MinOperatingSpeed = MinSpeed;
-	State.MaxOperatingSpeed = MaxSpeed;
-	State.MaxClimbRate = ClimbRate;
+	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetCategoryPerformance(State.WakeCategory);
+	State.ServiceCeiling = Perf.ServiceCeilingFt;
+	State.MinOperatingSpeed = Perf.MinOperatingSpeedKts;
+	State.MaxOperatingSpeed = Perf.MaxOperatingSpeedKts;
+	State.MaxClimbRate = Perf.MaxClimbRateFtMin;
 
 	// targets default to current so a freshly-spawned aircraft just holds - TripleA
 	State.TargetHeading = State.Heading;
@@ -168,8 +167,7 @@ void UClearanceAircraftBehaviour::StepHeading(FAircraftState& State, float Delta
 	if (State.Heading < 0.f) State.Heading += 360.f;
 
 	// sign of the bank just reflects which way we're turning, for display
-	float Ceiling, MinSpeed, MaxSpeed, ClimbRate, BankLimit;
-	GetCategoryLimits(State.WakeCategory, Ceiling, MinSpeed, MaxSpeed, ClimbRate, BankLimit);
+	const float BankLimit = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).BankLimitDeg;
 	State.BankAngle = FMath::Sign(Delta) * BankLimit;
 }
 
@@ -183,7 +181,18 @@ void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float Delt
 		return;
 	}
 
-	const float RateFtPerMin = DensityAdjustedClimbRate(State); // descents use the same cap here
+	// Climbs are thrust-limited (and fall off with altitude); descents are
+	// airframe/comfort limited, so they use a separate flat rate. - TripleA
+	float RateFtPerMin;
+	if (Delta > 0.f)
+	{
+		RateFtPerMin = DensityAdjustedClimbRate(State);
+	}
+	else
+	{
+		RateFtPerMin = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).MaxDescentRateFtMin;
+	}
+
 	const float MaxStep = (RateFtPerMin / 60.f) * DeltaTime;
 	const float Step = FMath::Clamp(Delta, -MaxStep, MaxStep);
 
@@ -200,7 +209,11 @@ void UClearanceAircraftBehaviour::StepSpeed(FAircraftState& State, float DeltaTi
 		return;
 	}
 
-	const float MaxStep = AccelerationKnotsPerSec * DeltaTime;
+	// Aircraft slow down more reluctantly than they speed up (less drag than thrust).
+	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetCategoryPerformance(State.WakeCategory);
+	const float RateKtsPerSec = (Delta > 0.f) ? Perf.AccelKtsPerSec : Perf.DecelKtsPerSec;
+
+	const float MaxStep = RateKtsPerSec * DeltaTime;
 	const float Step = FMath::Clamp(Delta, -MaxStep, MaxStep);
 	State.Speed = FMath::Clamp(State.Speed + Step, State.MinOperatingSpeed, State.MaxOperatingSpeed);
 }
@@ -233,45 +246,24 @@ float UClearanceAircraftBehaviour::TurnRateDegPerSec(const FAircraftState& State
 		return 0.f; // basically stationary, no meaningful turn
 	}
 
-	float Ceiling, MinSpeed, MaxSpeed, ClimbRate, BankLimit;
-	GetCategoryLimits(State.WakeCategory, Ceiling, MinSpeed, MaxSpeed, ClimbRate, BankLimit);
-
+	const float BankLimit = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).BankLimitDeg;
 	const float Omega = (9.81f * FMath::Tan(FMath::DegreesToRadians(BankLimit))) / SpeedMps;
 	return FMath::RadiansToDegrees(Omega);
 }
 
 float UClearanceAircraftBehaviour::DensityAdjustedClimbRate(const FAircraftState& State) const
 {
-	const float Base = (State.MaxClimbRate > 0.f) ? State.MaxClimbRate : ClearanceConstants::MaxClimbRateMedium;
+	const float Base = (State.MaxClimbRate > 0.f)
+		? State.MaxClimbRate
+		: ClearanceConstants::GetCategoryPerformance(State.WakeCategory).MaxClimbRateFtMin;
 	return Base * ISADensityRatio(State.Altitude);
 }
 
 float UClearanceAircraftBehaviour::ISADensityRatio(float AltitudeFt)
 {
-	// Simplified ISA troposphere density ratio; good enough to make climb fall
-	// off with altitude without modelling full atmospherics (post-MVP).
+	// Simplified ISA troposphere density ratio; enough to make climb fall off with
+	// altitude without modelling full atmospherics (post-MVP).
 	const float Alt = FMath::Max(0.f, AltitudeFt);
 	const float Ratio = FMath::Pow(1.f - 6.875e-6f * Alt, 4.2561f);
 	return FMath::Clamp(Ratio, 0.1f, 1.f);
-}
-
-void UClearanceAircraftBehaviour::GetCategoryLimits(EWakeCategory Category, float& OutCeiling, float& OutMinSpeed, float& OutMaxSpeed, float& OutClimbRate, float& OutBankLimitDeg)
-{
-	using namespace ClearanceConstants;
-	switch (Category)
-	{
-	case EWakeCategory::Light:
-		OutCeiling = ServiceCeilingLight; OutMinSpeed = MinSpeedLight; OutMaxSpeed = MaxSpeedLight;
-		OutClimbRate = MaxClimbRateLight; OutBankLimitDeg = BankLimitLight; break;
-	case EWakeCategory::Heavy:
-		OutCeiling = ServiceCeilingHeavy; OutMinSpeed = MinSpeedHeavy; OutMaxSpeed = MaxSpeedHeavy;
-		OutClimbRate = MaxClimbRateHeavy; OutBankLimitDeg = BankLimitHeavy; break;
-	case EWakeCategory::Super:
-		OutCeiling = ServiceCeilingSuper; OutMinSpeed = MinSpeedSuper; OutMaxSpeed = MaxSpeedSuper;
-		OutClimbRate = MaxClimbRateSuper; OutBankLimitDeg = BankLimitSuper; break;
-	case EWakeCategory::Medium:
-	default:
-		OutCeiling = ServiceCeilingMedium; OutMinSpeed = MinSpeedMedium; OutMaxSpeed = MaxSpeedMedium;
-		OutClimbRate = MaxClimbRateMedium; OutBankLimitDeg = BankLimitMedium; break;
-	}
 }

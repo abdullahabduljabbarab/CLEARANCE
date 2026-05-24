@@ -275,3 +275,27 @@ struct CLEARANCESIM_API FSectorEnvironment
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
 	TArray<float> AvailableRunways;		// all selectable runway headings (deg)
 };
+
+// ============================================================================
+// DELEGATES - event-driven communication between systems (BlueprintAssignable)
+// ============================================================================
+
+// Airspace Manager
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAircraftRegistered, FName, Callsign);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAircraftDeregistered, FName, Callsign);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAircraftStateUpdated, FName, Callsign);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRunwayChanged, float, NewRunwayHeading);
+
+// Conflict Detector
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnConflictDetected, FConflictEvent, Conflict);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnConflictResolved, FConflictEvent, Conflict);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnGoAroundRequired, FName, Callsign);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnWakeTurbulenceAdvisory, FName, FollowingCallsign, FName, LeadingCallsign, float, RequiredSeparationNm);
+
+// Comms Router
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInstructionResult, FName, Callsign, EInstructionResult, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAdvisoryWarning, FString, Message, EAlertLevel, Level);
+
+// Scoring
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnScoreUpdated, int32, NewScore);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDifficultyAdjusted, float, NewSpawnRate);

@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "ClearanceSim",
+	"Description": "CLEARANCE - Air Traffic Control simulation core systems (C++). Self-contained, portable simulation module.",
+	"Category": "Simulation",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "ClearanceSim",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

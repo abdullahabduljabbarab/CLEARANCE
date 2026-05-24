@@ -1,0 +1,94 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/Object.h"
+#include "Core/CLEARANCETypes.h"
+#include "ClearanceScoring.generated.h"
+
+// Keeps the session's tally: logs every outcome, keeps a running score and
+// efficiency, and ramps difficulty (spawn interval) as the player handles more
+// traffic. Owns session data only - it never touches aircraft state.
+UCLASS(BlueprintType)
+class CLEARANCESIM_API UClearanceScoring : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	UClearanceScoring();
+
+	UPROPERTY(BlueprintAssignable, Category = "Scoring|Events")
+	FOnScoreUpdated OnScoreUpdated;
+
+	UPROPERTY(BlueprintAssignable, Category = "Scoring|Events")
+	FOnDifficultyAdjusted OnDifficultyAdjusted;
+
+	// The one logger the rest of the sim calls; reward or penalty is decided by
+	// the incident type, then score + difficulty update off the back of it. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Scoring")
+	void LogIncident(EIncidentType Type, FName AircraftA, FName AircraftB, const FString& Details);
+
+	UFUNCTION(BlueprintCallable, Category = "Scoring")
+	void RecordInstruction();
+
+	UFUNCTION(BlueprintCallable, Category = "Scoring")
+	int32 GetCurrentScore() const { return CurrentScore; }
+
+	UFUNCTION(BlueprintCallable, Category = "Scoring")
+	float GetEfficiency() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Scoring")
+	float GetCurrentSpawnInterval() const { return CurrentSpawnIntervalSeconds; }
+
+	UFUNCTION(BlueprintCallable, Category = "Scoring")
+	TArray<FIncidentRecord> GetSessionLog() const { return IncidentLog; }
+
+	UFUNCTION(BlueprintCallable, Category = "Scoring")
+	void ResetSession();
+
+	// Rewards / penalties (positive = reward).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PointsLanding = 100;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PointsDeparture = 80;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PointsResolution = 50;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltySeparationLoss = 200;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyGoAround = 50;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyUnresolvedExit = 100;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyMissedHandoff = 75;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyLateInstruction = 25;
+
+	// Difficulty: spawn interval (seconds) shrinks toward the minimum as more
+	// aircraft are handled successfully.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Difficulty")
+	float BaseSpawnIntervalSeconds = 30.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Difficulty")
+	float MinSpawnIntervalSeconds = 10.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Difficulty")
+	float MaxSpawnIntervalSeconds = 45.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Difficulty")
+	float DifficultySecondsPerHandled = 1.f;
+
+private:
+	UPROPERTY()
+	TArray<FIncidentRecord> IncidentLog;
+
+	int32 CurrentScore = 0;
+	int32 TotalLandings = 0;
+	int32 TotalDepartures = 0;
+	int32 TotalGoArounds = 0;
+	int32 TotalSeparationLosses = 0;
+	int32 TotalInstructions = 0;
+	int32 TotalHandled = 0; // landings + departures
+	int32 TotalFailures = 0; // separation losses + unresolved exits + missed handoffs
+
+	float CurrentSpawnIntervalSeconds = 30.f;
+
+	int32 PointsForIncident(EIncidentType Type) const;
+	void AdjustDifficulty();
+};

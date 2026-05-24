@@ -60,7 +60,7 @@ bool AClearanceAirspaceManager::RequestStateUpdate(const FAircraftState& Updated
 	FAircraftState* Existing = AircraftStates.Find(UpdatedState.Callsign);
 	if (!Existing)
 	{
-		return false; // nothing to update - reject rather than silently create
+		return false; // nothing to update - reject rather than silently create one - TripleA
 	}
 
 	if (!ValidateState(UpdatedState))

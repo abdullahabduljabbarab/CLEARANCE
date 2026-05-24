@@ -7,7 +7,7 @@
 
 // The authoritative owner of all aircraft state and sector environment.
 // Nothing else is allowed to store its own copy of aircraft state - other
-// systems read snapshots from here and route updates back through it.
+// systems read snapshots from here and route updates back through it. - TripleA
 UCLASS(Blueprintable)
 class CLEARANCESIM_API AClearanceAirspaceManager : public AActor
 {
@@ -40,7 +40,7 @@ public:
 	bool RequestStateUpdate(const FAircraftState& UpdatedState);
 
 	// Returns a copy. If the callsign isn't registered the result has
-	// bIsValid == false, so callers can check that instead of relying on a null.
+	// bIsValid == false, so callers check that instead of relying on a null. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Airspace")
 	FAircraftState GetAircraftState(FName Callsign) const;
 

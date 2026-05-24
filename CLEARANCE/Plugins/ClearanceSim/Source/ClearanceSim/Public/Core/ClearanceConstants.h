@@ -19,6 +19,7 @@ namespace ClearanceConstants
 
 	// --- Wake turbulence separation matrix, nm [DOC: Conflict Detector] ---
 	// Required separation of a FOLLOWING aircraft behind a heavier LEADING one.
+	// Pulled from ICAO Doc 4444 category pairs - TripleA
 	constexpr float WakeLightBehindHeavyNm  = 6.f;
 	constexpr float WakeMediumBehindHeavyNm = 5.f;
 	constexpr float WakeLightBehindMediumNm = 5.f;
@@ -31,6 +32,7 @@ namespace ClearanceConstants
 	constexpr float MaxClimbRateHeavy  = 3000.f;	// doc range 2000-3000
 	constexpr float MaxClimbRateSuper  = 2800.f;	// [TODO] not in docs
 
+	// placeholders below until I get real reference figures - TripleA
 	// --- Service ceiling per category, ft [TODO: not in docs, confirm] ---
 	constexpr float ServiceCeilingLight  = 25000.f;
 	constexpr float ServiceCeilingMedium = 41000.f;

@@ -71,7 +71,8 @@ enum class EInstructionResult : uint8
 	Rejected_ConflictAdvisory	UMETA(DisplayName = "Rejected - Conflict Advisory")
 };
 
-/** Wake turbulence category, derived from max takeoff weight (ICAO). */
+// Wake category drives the separation matrix later, so it has to be set per
+// aircraft at spawn, not guessed at conflict time. - TripleA
 UENUM(BlueprintType)
 enum class EWakeCategory : uint8
 {
@@ -87,7 +88,7 @@ enum class EWakeCategory : uint8
 
 /**
  * Authoritative state of a single aircraft. Owned by the Airspace Manager;
- * read by every other system; never mutated outside the Airspace Manager.
+ * read by every other system; never mutated outside the Airspace Manager. - TripleA
  */
 USTRUCT(BlueprintType)
 struct CLEARANCESIM_API FAircraftState

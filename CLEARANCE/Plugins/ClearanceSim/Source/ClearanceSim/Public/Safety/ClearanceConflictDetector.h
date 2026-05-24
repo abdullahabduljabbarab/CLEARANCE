@@ -1,0 +1,64 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/Object.h"
+#include "Core/CLEARANCETypes.h"
+#include "ClearanceConflictDetector.generated.h"
+
+class AClearanceAirspaceManager;
+
+// Watches every aircraft pair each tick for lost separation, oncoming conflicts,
+// and wake turbulence. It only ever READS state and raises alarms - it never
+// moves or edits an aircraft. Driven by the Simulation Controller.
+UCLASS(BlueprintType)
+class CLEARANCESIM_API UClearanceConflictDetector : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(BlueprintAssignable, Category = "Conflict|Events")
+	FOnConflictDetected OnConflictDetected;
+
+	UPROPERTY(BlueprintAssignable, Category = "Conflict|Events")
+	FOnConflictResolved OnConflictResolved;
+
+	UPROPERTY(BlueprintAssignable, Category = "Conflict|Events")
+	FOnGoAroundRequired OnGoAroundRequired;
+
+	UPROPERTY(BlueprintAssignable, Category = "Conflict|Events")
+	FOnWakeTurbulenceAdvisory OnWakeTurbulenceAdvisory;
+
+	UFUNCTION(BlueprintCallable, Category = "Conflict")
+	void SetReferences(AClearanceAirspaceManager* InManager);
+
+	// One monitoring pass over all aircraft. Fires enter/resolve events as the
+	// situation changes, so the UI and Scoring just react to the deltas. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Conflict")
+	void DetectConflicts();
+
+	// Highest active alert level any conflict involving this aircraft is at.
+	UFUNCTION(BlueprintCallable, Category = "Conflict")
+	EAlertLevel GetAlertLevelFor(FName Callsign) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Conflict")
+	void RemoveAircraft(FName Callsign);
+
+	// How far ahead (seconds) to project tracks when looking for oncoming conflicts.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Conflict|Tuning")
+	float ProjectionLookaheadSeconds = 60.f;
+
+private:
+	UPROPERTY()
+	TObjectPtr<AClearanceAirspaceManager> Manager;
+
+	// Keyed by an order-independent pair key, so a pair is one conflict either way.
+	TMap<FString, FConflictEvent> ActiveConflicts;
+	TSet<FString> ActiveWakeAdvisories;
+
+	static float HorizontalSeparationNm(const FAircraftState& A, const FAircraftState& B);
+	static float VerticalSeparationFt(const FAircraftState& A, const FAircraftState& B);
+	static EAlertLevel AlertFromSeparation(float HorizNm, float VertFt);
+	static FString PairKey(FName A, FName B);
+	static bool FollowerIsBehindLeader(const FAircraftState& Leader, const FAircraftState& Follower);
+	static float RequiredWakeSeparationNm(EWakeCategory Leader, EWakeCategory Follower);
+};

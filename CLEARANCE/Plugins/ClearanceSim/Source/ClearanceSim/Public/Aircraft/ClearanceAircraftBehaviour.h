@@ -58,6 +58,9 @@ private:
 	bool bExpediting = false;      // boosted climb/descent for the current altitude change
 
 	void ApplyInstruction(const FAircraftInstruction& Instruction, FAircraftState& State);
+	// When cleared for approach: track the runway centreline and 3-deg glideslope
+	// down to a touchdown. Threshold is the sector centre. - TripleA
+	void RunApproachGuidance(FAircraftState& State, const FSectorEnvironment& Env);
 	void StepHeading(FAircraftState& State, float DeltaTime);
 	void StepAltitude(FAircraftState& State, float DeltaTime);
 	void StepSpeed(FAircraftState& State, float DeltaTime) const;

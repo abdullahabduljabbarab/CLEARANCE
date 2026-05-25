@@ -3,6 +3,7 @@ Binaries/
 DerivedDataCache/
 Intermediate/
 Saved/
+WhisperServer/
 
 # Visual Studio
 .vs/

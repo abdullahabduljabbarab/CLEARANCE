@@ -104,6 +104,13 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 
 	const FSectorEnvironment Env = Manager->GetCurrentEnvironment();
 
+	// Once cleared for approach, the sim flies the ILS - it commands heading,
+	// altitude and speed itself, overriding the player's last targets.
+	if (State.FlightPhase == EFlightPhase::Approach || State.FlightPhase == EFlightPhase::Landing)
+	{
+		RunApproachGuidance(State, Env);
+	}
+
 	StepHeading(State, DeltaTime);
 	StepAltitude(State, DeltaTime);
 	StepSpeed(State, DeltaTime);
@@ -266,6 +273,37 @@ void UClearanceAircraftBehaviour::StepPosition(FAircraftState& State, const FSec
 
 	State.Velocity = FVector(Ground.X, Ground.Y, 0.f);
 	State.Position += State.Velocity * DeltaTime;
+}
+
+void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, const FSectorEnvironment& Env)
+{
+	// Runway threshold = sector centre (origin); X=East, Y=North, in nm.
+	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+	const FVector2D Pos(State.Position.X, State.Position.Y);
+	const float DistNm = Pos.Size();
+
+	const float FacRad = FMath::DegreesToRadians(FAC);
+	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));   // direction flown to land
+	const FVector2D RightOfCourse(Inbound.Y, -Inbound.X);
+	const float CrossTrackNm = FVector2D::DotProduct(Pos, RightOfCourse);
+
+	// Localiser: steer back toward the extended centreline; fly the course on it. - TripleA
+	const float Correction = FMath::Clamp(-CrossTrackNm * 3.f, -30.f, 30.f);
+	State.TargetHeading = FMath::Fmod(FAC + Correction + 360.f, 360.f);
+	ActiveTurnDirection = 0;
+
+	// 3-degree glideslope (~318 ft/nm), captured from above (only descend).
+	const float GlideAlt = FMath::Max(0.f, DistNm * 318.f);
+	State.TargetAltitude = FMath::Min(State.TargetAltitude, GlideAlt);
+
+	// Settle onto a final-approach speed.
+	State.TargetSpeed = State.MinOperatingSpeed + 10.f;
+
+	// Touchdown over the threshold -> hand off to the landing/exit check.
+	if (DistNm < 0.5f && State.Altitude < 200.f)
+	{
+		State.FlightPhase = EFlightPhase::Landing;
+	}
 }
 
 float UClearanceAircraftBehaviour::TurnRateDegPerSec(const FAircraftState& State) const

@@ -13,13 +13,6 @@ namespace
 		return true;
 	}
 
-	bool IsThreeAlpha(const FString& S)
-	{
-		if (S.Len() != 3) return false;
-		for (TCHAR C : S) { if (!FChar::IsAlpha(C)) return false; }
-		return true;
-	}
-
 	// Spoken digits, including the standard ATC variants (niner, tree, fife...).
 	bool DigitWord(const FString& W, int32& Out)
 	{
@@ -69,41 +62,72 @@ namespace
 			{TEXT("emirates"),TEXT("UAE")},{TEXT("airfrance"),TEXT("AFR")}
 		};
 
+		AClearanceAirspaceManager* AM = Controller->GetAirspaceManager();
+		if (!AM)
+		{
+			return NAME_None;
+		}
+
 		FString Prefix;
+		FString NumStr;
+
 		if (Idx < Tokens.Num())
 		{
 			const FString W = Tokens[Idx];
 			if (const FString* P = Telephony.Find(W)) { Prefix = *P; ++Idx; }
 			else if (W == TEXT("air") && Idx + 1 < Tokens.Num() && Tokens[Idx + 1] == TEXT("france")) { Prefix = TEXT("AFR"); Idx += 2; }
-			else if (IsThreeAlpha(W)) { Prefix = W.ToUpper(); ++Idx; } // raw ICAO e.g. "baw"
+			else
+			{
+				// A joined token like "baw101" (ICAO read straight off the tag):
+				// split it into letters (airline) and digits (flight number).
+				FString Letters, Digits;
+				for (TCHAR C : W)
+				{
+					if (FChar::IsAlpha(C)) { Letters.AppendChar(C); }
+					else if (FChar::IsDigit(C)) { Digits.AppendChar(C); }
+				}
+				if (Letters.Len() >= 2)
+				{
+					Prefix = Letters.ToUpper();
+					NumStr = Digits;
+					++Idx;
+				}
+			}
 		}
 
-		int32 Number = 0;
-		const bool bHasNumber = ParseNumberRun(Tokens, Idx, Number);
+		// If the number wasn't already part of the callsign token, read it next.
+		if (NumStr.IsEmpty())
+		{
+			int32 Number = 0;
+			if (ParseNumberRun(Tokens, Idx, Number)) { NumStr = FString::FromInt(Number); }
+		}
 
-		AClearanceAirspaceManager* AM = Controller->GetAirspaceManager();
-		if (!AM || (Prefix.IsEmpty() && !bHasNumber))
+		if (Prefix.IsEmpty() && NumStr.IsEmpty())
 		{
 			return NAME_None;
 		}
 
-		// Exact reconstruction first (e.g. "speedbird one zero one" -> BAW101).
-		if (!Prefix.IsEmpty() && bHasNumber)
-		{
-			const FName Exact(*(Prefix + FString::FromInt(Number)));
-			if (AM->IsCallsignRegistered(Exact)) return Exact;
-		}
+		const FString Candidate = Prefix + NumStr;
 
-		// Otherwise match a live aircraft by prefix and/or number.
-		const FString NumStr = bHasNumber ? FString::FromInt(Number) : FString();
+		// Exact match.
+		for (const FAircraftState& S : AM->GetAllAircraftStates())
+		{
+			if (S.Callsign.ToString().Equals(Candidate, ESearchCase::IgnoreCase)) { return S.Callsign; }
+		}
+		// Prefix match + number contained (handles a mangled airline or number).
 		for (const FAircraftState& S : AM->GetAllAircraftStates())
 		{
 			const FString CS = S.Callsign.ToString();
-			const bool bPrefixOk = Prefix.IsEmpty() || CS.StartsWith(Prefix);
+			const bool bPrefixOk = Prefix.IsEmpty() || CS.StartsWith(Prefix, ESearchCase::IgnoreCase);
 			const bool bNumOk = NumStr.IsEmpty() || CS.Contains(NumStr);
-			if (bPrefixOk && bNumOk)
+			if (bPrefixOk && bNumOk) { return S.Callsign; }
+		}
+		// Number-only last resort.
+		if (!NumStr.IsEmpty())
+		{
+			for (const FAircraftState& S : AM->GetAllAircraftStates())
 			{
-				return S.Callsign;
+				if (S.Callsign.ToString().Contains(NumStr)) { return S.Callsign; }
 			}
 		}
 		return NAME_None;

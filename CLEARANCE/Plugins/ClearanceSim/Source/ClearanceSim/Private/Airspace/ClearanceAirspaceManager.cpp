@@ -130,7 +130,9 @@ void AClearanceAirspaceManager::InitialiseEnvironment(float WindDir, float WindS
 		SectorEnvironment.WindDirection += 360.f;
 	}
 	SectorEnvironment.WindSpeed = FMath::Max(0.f, WindSpeed);
-	SectorEnvironment.AvailableRunways = Runways;
+	// Always have something to choose from so the selection actually runs - default
+	// to a single 09/27 strip (usable both directions). - TripleA
+	SectorEnvironment.AvailableRunways = (Runways.Num() > 0) ? Runways : TArray<float>({ 90.f, 270.f });
 	SectorEnvironment.ActiveRunwayHeading = -1.f; // force a fresh pick
 	RecalculateActiveRunway();
 }

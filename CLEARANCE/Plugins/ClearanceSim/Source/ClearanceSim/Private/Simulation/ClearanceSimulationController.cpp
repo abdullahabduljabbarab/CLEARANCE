@@ -246,12 +246,13 @@ void AClearanceSimulationController::DrawDebugView()
 	DrawDebugCircle(World, Origin, ExitRadiusNm * S, 64, FColor(40, 80, 120), false, -1.f, 0, 120.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
 
 	const TArray<FAircraftState> States = AirspaceManager->GetAllAircraftStates();
-	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  spawn=%.0fs\n"),
+	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f\n"),
 		SessionTime,
 		Scoring ? Scoring->GetCurrentScore() : 0,
 		Scoring ? Scoring->GetEfficiency() * 100.f : 100.f,
 		States.Num(),
-		Scoring ? Scoring->GetCurrentSpawnInterval() : 0.f);
+		Env.WindDirection, Env.WindSpeed, Env.ActiveRunwayHeading);
 
 	for (const FAircraftState& A : States)
 	{

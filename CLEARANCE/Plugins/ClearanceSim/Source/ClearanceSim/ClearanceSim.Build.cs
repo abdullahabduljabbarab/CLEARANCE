@@ -15,6 +15,13 @@ public class ClearanceSim : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			"InputCore",         // FKey / EKeys for push-to-talk
+			"AudioCapture",      // mic input
+			"AudioCaptureCore",  // low-level capture stream
+			"HTTP",              // POST audio to the local whisper server
+			"Json",              // parse the transcription response
+			"Sockets",           // detect an already-running server
+			"Networking"
 		});
 	}
 }

@@ -59,6 +59,8 @@ void UClearanceAircraftBehaviour::ClearInstructions()
 {
 	Pending.Reset();
 	bGoingAround = false;
+	ActiveTurnDirection = 0;
+	bExpediting = false;
 }
 
 void UClearanceAircraftBehaviour::ExecuteGoAround()
@@ -121,16 +123,18 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 	Manager->RequestStateUpdate(State);
 }
 
-void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& Instruction, FAircraftState& State) const
+void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& Instruction, FAircraftState& State)
 {
 	switch (Instruction.Type)
 	{
 	case EInstructionType::HeadingChange:
 		State.TargetHeading = FMath::Fmod(Instruction.TargetValue, 360.f);
 		if (State.TargetHeading < 0.f) State.TargetHeading += 360.f;
+		ActiveTurnDirection = Instruction.TurnDirection; // -1/0/+1
 		break;
 	case EInstructionType::AltitudeChange:
 		State.TargetAltitude = FMath::Clamp(Instruction.TargetValue, 0.f, State.ServiceCeiling);
+		bExpediting = Instruction.bExpedite;
 		break;
 	case EInstructionType::SpeedChange:
 		State.TargetSpeed = FMath::Clamp(Instruction.TargetValue, State.MinOperatingSpeed, State.MaxOperatingSpeed);
@@ -150,34 +154,55 @@ void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& I
 	}
 }
 
-void UClearanceAircraftBehaviour::StepHeading(FAircraftState& State, float DeltaTime) const
+void UClearanceAircraftBehaviour::StepHeading(FAircraftState& State, float DeltaTime)
 {
 	const float Delta = FMath::FindDeltaAngleDegrees(State.Heading, State.TargetHeading);
 	if (FMath::Abs(Delta) <= HeadingToleranceDeg)
 	{
 		State.Heading = State.TargetHeading;
 		State.BankAngle = 0.f;
+		ActiveTurnDirection = 0;
 		return;
 	}
 
 	const float MaxStep = TurnRateDegPerSec(State) * DeltaTime;
-	const float Step = FMath::Clamp(Delta, -MaxStep, MaxStep);
+	const float BankLimit = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).BankLimitDeg;
 
+	if (ActiveTurnDirection != 0)
+	{
+		// Forced turn direction (the controller said "turn left/right"): go that
+		// way even if it's the long way round, until we reach the target. - TripleA
+		const float Remaining = (ActiveTurnDirection > 0)
+			? FMath::Fmod(State.TargetHeading - State.Heading + 360.f, 360.f)  // clockwise / right
+			: FMath::Fmod(State.Heading - State.TargetHeading + 360.f, 360.f); // anticlockwise / left
+
+		if (Remaining <= MaxStep)
+		{
+			State.Heading = State.TargetHeading;
+			State.BankAngle = 0.f;
+			ActiveTurnDirection = 0;
+			return;
+		}
+
+		State.Heading = FMath::Fmod(State.Heading + MaxStep * ActiveTurnDirection + 360.f, 360.f);
+		State.BankAngle = ActiveTurnDirection * BankLimit;
+		return;
+	}
+
+	const float Step = FMath::Clamp(Delta, -MaxStep, MaxStep);
 	State.Heading = FMath::Fmod(State.Heading + Step, 360.f);
 	if (State.Heading < 0.f) State.Heading += 360.f;
-
-	// sign of the bank just reflects which way we're turning, for display
-	const float BankLimit = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).BankLimitDeg;
-	State.BankAngle = FMath::Sign(Delta) * BankLimit;
+	State.BankAngle = FMath::Sign(Delta) * BankLimit; // sign just reflects turn direction, for display
 }
 
-void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float DeltaTime) const
+void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float DeltaTime)
 {
 	const float Delta = State.TargetAltitude - State.Altitude;
 	if (FMath::Abs(Delta) <= AltitudeToleranceFt)
 	{
 		State.Altitude = State.TargetAltitude;
 		State.ClimbRate = 0.f;
+		bExpediting = false;
 		return;
 	}
 
@@ -191,6 +216,11 @@ void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float Delt
 	else
 	{
 		RateFtPerMin = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).MaxDescentRateFtMin;
+	}
+
+	if (bExpediting)
+	{
+		RateFtPerMin *= 1.5f; // "expedite" - push the rate up
 	}
 
 	const float MaxStep = (RateFtPerMin / 60.f) * DeltaTime;

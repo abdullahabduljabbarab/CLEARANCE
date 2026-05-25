@@ -54,10 +54,12 @@ private:
 	FName Callsign;
 	TArray<FAircraftInstruction> Pending;
 	bool bGoingAround = false;
+	int32 ActiveTurnDirection = 0; // -1 left / +1 right / 0 shortest, for the current turn
+	bool bExpediting = false;      // boosted climb/descent for the current altitude change
 
-	void ApplyInstruction(const FAircraftInstruction& Instruction, FAircraftState& State) const;
-	void StepHeading(FAircraftState& State, float DeltaTime) const;
-	void StepAltitude(FAircraftState& State, float DeltaTime) const;
+	void ApplyInstruction(const FAircraftInstruction& Instruction, FAircraftState& State);
+	void StepHeading(FAircraftState& State, float DeltaTime);
+	void StepAltitude(FAircraftState& State, float DeltaTime);
 	void StepSpeed(FAircraftState& State, float DeltaTime) const;
 	void StepPosition(FAircraftState& State, const FSectorEnvironment& Env, float DeltaTime) const;
 

@@ -178,6 +178,14 @@ struct CLEARANCESIM_API FAircraftInstruction
 	/** True when system-triggered (e.g. go-around) rather than player-issued. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instruction")
 	bool bIsGoAround = false;
+
+	/** Heading turns: -1 = turn left, +1 = turn right, 0 = shortest way. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instruction")
+	int32 TurnDirection = 0;
+
+	/** Altitude changes: expedite the climb/descent (faster rate). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instruction")
+	bool bExpedite = false;
 };
 
 /** A detected separation conflict between two aircraft. */

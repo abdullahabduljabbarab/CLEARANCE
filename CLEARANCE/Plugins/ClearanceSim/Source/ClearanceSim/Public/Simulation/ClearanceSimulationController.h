@@ -157,6 +157,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Debug")
 	float AltitudeWorldScale = 0.05f;
 
+	// At or below this height (ft) an approaching/departing aircraft flies gear-down;
+	// above it the gear is up. Fed to the aircraft Blueprint's visual interface.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Visuals")
+	float GearDownAltitudeFt = 2500.f;
+
 	// Model variants per wake category - add several per class, each with its own
 	// yaw/scale; one is chosen at random per spawn. A category left empty falls
 	// back to debug spheres for those aircraft.
@@ -198,6 +203,10 @@ private:
 	bool bPaused = false;
 	float SessionTime = 0.f;
 	bool bInitialised = false;
+
+	// World Z that counts as ground/0ft - taken from the placed runway mesh so the
+	// threshold marker and touchdown sit on the runway, not the controller. - TripleA
+	float GroundWorldZ = 0.f;
 
 	void InitialiseSystems();
 	void BindDelegates();

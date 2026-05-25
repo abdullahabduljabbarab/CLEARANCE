@@ -1,6 +1,7 @@
 #include "Aircraft/ClearanceAircraftBehaviour.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Core/ClearanceConstants.h"
+#include "Engine/Engine.h"
 
 namespace
 {
@@ -61,6 +62,7 @@ void UClearanceAircraftBehaviour::ClearInstructions()
 	bGoingAround = false;
 	ActiveTurnDirection = 0;
 	bExpediting = false;
+	bApproachCaptured = false;
 }
 
 void UClearanceAircraftBehaviour::ExecuteGoAround()
@@ -104,11 +106,43 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 
 	const FSectorEnvironment Env = Manager->GetCurrentEnvironment();
 
-	// Once cleared for approach, the sim flies the ILS - it commands heading,
-	// altitude and speed itself, overriding the player's last targets.
+	// Cleared for approach, but the ILS only TAKES OVER once the aircraft is
+	// established on the localiser - until then it flies the controller's vectors,
+	// so positioning it for the intercept is the player's job. - TripleA
 	if (State.FlightPhase == EFlightPhase::Approach || State.FlightPhase == EFlightPhase::Landing)
 	{
-		RunApproachGuidance(State, Env);
+		// Flew past the threshold still in the air - never lined up, or cleared too
+		// late to get down in time. Fly the missed approach: climb away and hand back
+		// to enroute so the controller can re-vector and clear again. Checked whether
+		// or not it captured, so an overflown landing triggers it too. - TripleA
+		if (HasMissedApproach(State, Env))
+		{
+			bApproachCaptured = false;
+			bGoingAround = true;
+			State.FlightPhase = EFlightPhase::GoAround;
+			State.TargetAltitude = FMath::Min(State.Altitude + GoAroundClimbFt, State.ServiceCeiling);
+			State.TargetSpeed = FMath::Clamp(State.TargetSpeed, State.MinOperatingSpeed, State.MaxOperatingSpeed);
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, FString::Printf(TEXT("%s unable - missed approach, going around, request vectors"), *State.Callsign.ToString()));
+			}
+		}
+		else
+		{
+			if (!bApproachCaptured && IsEstablishedOnApproach(State, Env))
+			{
+				bApproachCaptured = true;
+				if (GEngine)
+				{
+					GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, FString::Printf(TEXT("%s established on the approach"), *State.Callsign.ToString()));
+				}
+			}
+
+			if (bApproachCaptured)
+			{
+				RunApproachGuidance(State, Env);
+			}
+		}
 	}
 
 	StepHeading(State, DeltaTime);
@@ -148,6 +182,7 @@ void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& I
 		break;
 	case EInstructionType::ApproachClearance:
 		State.FlightPhase = EFlightPhase::Approach;
+		bApproachCaptured = false; // must re-establish on the localiser
 		break;
 	case EInstructionType::TakeoffClearance:
 		State.FlightPhase = EFlightPhase::Departing;
@@ -275,17 +310,56 @@ void UClearanceAircraftBehaviour::StepPosition(FAircraftState& State, const FSec
 	State.Position += State.Velocity * DeltaTime;
 }
 
+bool UClearanceAircraftBehaviour::IsEstablishedOnApproach(const FAircraftState& State, const FSectorEnvironment& Env) const
+{
+	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+	const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+	const FVector2D Rel = FVector2D(State.Position.X, State.Position.Y) - Threshold;
+	const float DistNm = Rel.Size();
+
+	const float FacRad = FMath::DegreesToRadians(FAC);
+	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));
+	const FVector2D RightOfCourse(Inbound.Y, -Inbound.X);
+
+	const float CrossTrackNm = FMath::Abs(FVector2D::DotProduct(Rel, RightOfCourse));
+	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound); // < 0 = on the approach side (before threshold)
+	const float HeadingErr = FMath::Abs(FMath::FindDeltaAngleDegrees(State.Heading, FAC));
+
+	return CrossTrackNm <= ClearanceConstants::ApproachCorridorHalfWidthNm // near the centreline (matches the drawn corridor)
+		&& HeadingErr <= 40.f                                  // intercepting at a sane angle, not crossing it
+		&& AlongTrack < 0.f                                    // positioned to fly toward the runway, not away
+		&& DistNm <= ClearanceConstants::ApproachCorridorLengthNm; // within intercept range (matches the drawn centreline)
+}
+
+bool UClearanceAircraftBehaviour::HasMissedApproach(const FAircraftState& State, const FSectorEnvironment& Env) const
+{
+	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+	const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+	const FVector2D Rel = FVector2D(State.Position.X, State.Position.Y) - Threshold;
+
+	const float FacRad = FMath::DegreesToRadians(FAC);
+	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));
+	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound);
+
+	// Past the threshold (out the departure end) and STILL airborne = it overflew the
+	// runway without landing - either never lined up, or cleared too late and couldn't
+	// get down. A landed aircraft rolling through is below the height gate. The slack
+	// stops it tripping right as it crosses while settling on. - TripleA
+	return AlongTrack > 1.f && State.Altitude > 300.f;
+}
+
 void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, const FSectorEnvironment& Env)
 {
-	// Runway threshold = sector centre (origin); X=East, Y=North, in nm.
+	// Aim at the SELECTED runway's threshold (X=East, Y=North, in nm).
 	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
-	const FVector2D Pos(State.Position.X, State.Position.Y);
-	const float DistNm = Pos.Size();
+	const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+	const FVector2D Rel = FVector2D(State.Position.X, State.Position.Y) - Threshold; // aircraft relative to threshold
+	const float DistNm = Rel.Size();
 
 	const float FacRad = FMath::DegreesToRadians(FAC);
 	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));   // direction flown to land
 	const FVector2D RightOfCourse(Inbound.Y, -Inbound.X);
-	const float CrossTrackNm = FVector2D::DotProduct(Pos, RightOfCourse);
+	const float CrossTrackNm = FVector2D::DotProduct(Rel, RightOfCourse);
 
 	// Localiser: steer back toward the extended centreline; fly the course on it. - TripleA
 	const float Correction = FMath::Clamp(-CrossTrackNm * 3.f, -30.f, 30.f);

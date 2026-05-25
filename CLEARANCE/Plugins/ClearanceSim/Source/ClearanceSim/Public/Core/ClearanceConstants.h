@@ -25,6 +25,15 @@ namespace ClearanceConstants
 	// the dead-band that stops the active runway flipping on a marginal wind.
 	constexpr float RunwaySwitchDeadbandKts = 2.f;
 
+	// How far out the approach centreline runs (nm). The drawn corridor and the
+	// distance an aircraft is allowed to capture from both use this, so they can't
+	// drift apart - extend the localiser, extend where you can line up. - TripleA
+	constexpr float ApproachCorridorLengthNm = 40.f;
+
+	// Half-width of the localiser capture corridor (nm) - how far off the centreline
+	// the aircraft can be and still get established (matches the drawn grey lines).
+	constexpr float ApproachCorridorHalfWidthNm = 3.f;
+
 	// Per-category performance from representative real aircraft:
 	//   Light  - Cessna 172S        Medium - Boeing 737-800
 	//   Heavy  - Boeing 777-300ER    Super  - Airbus A380-800

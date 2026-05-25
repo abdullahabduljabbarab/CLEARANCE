@@ -266,6 +266,20 @@ struct CLEARANCESIM_API FAircraftSpawnData
 	EWakeCategory WakeCategory = EWakeCategory::Medium;
 };
 
+/** One runway: where its threshold is (sim nm, X=East/Y=North) and the heading
+ *  flown to land on it. Built from placed runway actors. */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FRunwayInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	FVector2D ThresholdNm = FVector2D::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	float HeadingDeg = 270.f;
+};
+
 /** Sector-wide environmental state owned by the Airspace Manager. */
 USTRUCT(BlueprintType)
 struct CLEARANCESIM_API FSectorEnvironment
@@ -279,10 +293,13 @@ struct CLEARANCESIM_API FSectorEnvironment
 	float WindSpeed = 0.f;				// knots
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
-	float ActiveRunwayHeading = 0.f;	// degrees, chosen from AvailableRunways
+	float ActiveRunwayHeading = 0.f;	// degrees, of the selected runway
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
-	TArray<float> AvailableRunways;		// all selectable runway headings (deg)
+	FVector ActiveRunwayThreshold = FVector::ZeroVector; // nm (X=East, Y=North) of selected runway
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
+	TArray<float> AvailableRunways;		// selectable runway headings (deg), for display
 };
 
 // ============================================================================

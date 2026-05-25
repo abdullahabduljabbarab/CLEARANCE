@@ -56,10 +56,19 @@ private:
 	bool bGoingAround = false;
 	int32 ActiveTurnDirection = 0; // -1 left / +1 right / 0 shortest, for the current turn
 	bool bExpediting = false;      // boosted climb/descent for the current altitude change
+	bool bApproachCaptured = false;// true once established on the localiser (then it flies the ILS)
 
 	void ApplyInstruction(const FAircraftInstruction& Instruction, FAircraftState& State);
-	// When cleared for approach: track the runway centreline and 3-deg glideslope
-	// down to a touchdown. Threshold is the sector centre. - TripleA
+	// True once the aircraft is positioned to intercept the localiser (the
+	// controller's vectoring did its job) - only then does the ILS capture.
+	bool IsEstablishedOnApproach(const FAircraftState& State, const FSectorEnvironment& Env) const;
+
+	// True if a cleared-but-not-yet-established aircraft has flown past the
+	// threshold - it can't make the strip from here, so it calls unable. - TripleA
+	bool HasMissedApproach(const FAircraftState& State, const FSectorEnvironment& Env) const;
+
+	// When established: track the runway centreline and 3-deg glideslope down to a
+	// touchdown at the selected runway's threshold. - TripleA
 	void RunApproachGuidance(FAircraftState& State, const FSectorEnvironment& Env);
 	void StepHeading(FAircraftState& State, float DeltaTime);
 	void StepAltitude(FAircraftState& State, float DeltaTime);

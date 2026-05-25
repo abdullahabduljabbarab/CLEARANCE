@@ -59,10 +59,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
 	FSectorEnvironment GetCurrentEnvironment() const;
 
-	// Set the whole environment up front (wind + selectable runways) and pick the
-	// active runway. Used at session start.
+	// Set the wind up front (runways are provided separately via SetRunways).
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
-	void InitialiseEnvironment(float WindDir, float WindSpeed, const TArray<float>& Runways);
+	void InitialiseEnvironment(float WindDir, float WindSpeed);
+
+	// The runways to choose between, built from placed runway actors. Empty =
+	// fall back to a single 09/27 strip at the sector centre.
+	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
+	void SetRunways(const TArray<FRunwayInfo>& InRunways);
 
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
 	void UpdateWindConditions(float NewWindDirection, float NewWindSpeed);
@@ -103,6 +107,8 @@ private:
 
 	UPROPERTY()
 	FSectorEnvironment SectorEnvironment;
+
+	TArray<FRunwayInfo> Runways;
 
 	bool ValidateState(const FAircraftState& State) const;
 	void ClampStateValues(FAircraftState& State) const;

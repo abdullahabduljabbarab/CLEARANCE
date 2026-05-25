@@ -1,11 +1,14 @@
 #include "Simulation/ClearanceSimulationController.h"
 #include "Airspace/ClearanceAirspaceManager.h"
+#include "Airspace/ClearanceRunway.h"
 #include "Aircraft/ClearanceAircraftSpawner.h"
 #include "Aircraft/ClearanceAircraftBehaviour.h"
+#include "Aircraft/ClearanceAircraftVisualInterface.h"
 #include "Comms/ClearanceInstructionValidator.h"
 #include "Comms/ClearanceCommsRouter.h"
 #include "Safety/ClearanceConflictDetector.h"
 #include "Scoring/ClearanceScoring.h"
+#include "Core/ClearanceConstants.h"
 #include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
 #include "Components/PrimitiveComponent.h"
@@ -68,11 +71,47 @@ void AClearanceSimulationController::InitialiseSystems()
 
 	if (AirspaceManager)
 	{
-		// Set defaults too, in case a level-placed manager runs BeginPlay later.
 		AirspaceManager->DefaultWindDirection = WindDirectionDeg;
 		AirspaceManager->DefaultWindSpeed = WindSpeedKts;
-		AirspaceManager->AvailableRunwayHeadings = RunwayHeadings;
-		AirspaceManager->InitialiseEnvironment(WindDirectionDeg, WindSpeedKts, RunwayHeadings);
+		AirspaceManager->InitialiseEnvironment(WindDirectionDeg, WindSpeedKts);
+
+		// Build the runway list from any placed Runway actors, converting their
+		// world location into sim nautical miles relative to this controller.
+		TArray<FRunwayInfo> RunwayInfos;
+		const FVector Origin = GetActorLocation();
+		GroundWorldZ = Origin.Z; // no runway placed -> ground sits at the controller
+		bool bGroundSet = false;
+		for (TActorIterator<AClearanceRunway> It(GetWorld()); It; ++It)
+		{
+			const FVector W = It->GetActorLocation();
+			const FVector2D CentreNm((W.X - Origin.X) / WorldUnitsPerNm, (W.Y - Origin.Y) / WorldUnitsPerNm);
+			const float H = It->LandingHeadingDeg;
+			const float HalfNm = FMath::Max(0.f, It->RunwayLengthMeters) / 1852.f * 0.5f;
+			const float HRad = FMath::DegreesToRadians(H);
+			const FVector2D Inbound(FMath::Sin(HRad), FMath::Cos(HRad)); // direction flown to land on H
+
+			// Landing on H, you cross the near threshold (behind the centre) and roll
+			// through; the reciprocal lands the other way from the far end. - TripleA
+			FRunwayInfo A; A.ThresholdNm = CentreNm - Inbound * HalfNm; A.HeadingDeg = H;
+			RunwayInfos.Add(A);
+			if (It->bAllowReciprocal)
+			{
+				FRunwayInfo B; B.ThresholdNm = CentreNm + Inbound * HalfNm;
+				B.HeadingDeg = FMath::Fmod(H + 180.f, 360.f);
+				RunwayInfos.Add(B);
+			}
+			if (!bGroundSet) { GroundWorldZ = W.Z; bGroundSet = true; } // 0ft = runway surface
+		}
+		// No placed runways? fall back to any plain headings set on the Controller.
+		if (RunwayInfos.Num() == 0)
+		{
+			for (float H : RunwayHeadings)
+			{
+				FRunwayInfo Info; Info.ThresholdNm = FVector2D::ZeroVector; Info.HeadingDeg = H;
+				RunwayInfos.Add(Info);
+			}
+		}
+		AirspaceManager->SetRunways(RunwayInfos);
 	}
 
 	if (Spawner) { Spawner->SetReferences(AirspaceManager); }
@@ -186,7 +225,10 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 
 FVector AClearanceSimulationController::WorldPositionFor(const FAircraftState& State) const
 {
-	return GetActorLocation() + FVector(State.Position.X * WorldUnitsPerNm, State.Position.Y * WorldUnitsPerNm, State.Altitude * AltitudeWorldScale);
+	const FVector Origin = GetActorLocation();
+	return FVector(Origin.X + State.Position.X * WorldUnitsPerNm,
+		Origin.Y + State.Position.Y * WorldUnitsPerNm,
+		GroundWorldZ + State.Altitude * AltitudeWorldScale);
 }
 
 const TArray<FAircraftVisualVariant>& AClearanceSimulationController::VariantsFor(EWakeCategory Category) const
@@ -206,6 +248,12 @@ void AClearanceSimulationController::UpdateVisuals()
 	{
 		return;
 	}
+
+	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	// More wind = more buffet, but never dead-calm-still: a floor keeps a bit of life
+	// in the airframe even in light air. - TripleA
+	const float Buffet = FMath::Clamp(Env.WindSpeed / 25.f, 0.35f, 1.6f);
 
 	for (const FAircraftState& State : AirspaceManager->GetAllAircraftStates())
 	{
@@ -227,7 +275,44 @@ void AClearanceSimulationController::UpdateVisuals()
 		const FQuat LookAlong = FRotationMatrix::MakeFromXZ(Forward, FVector::UpVector).ToQuat();
 		const FQuat Bank = FQuat(FVector::ForwardVector, FMath::DegreesToRadians(State.BankAngle));
 		const FQuat MeshFix = FRotator(0.f, Found->YawOffsetDeg, 0.f).Quaternion();
-		Found->Actor->SetActorRotation(LookAlong * Bank * MeshFix);
+
+		// Gentle airborne buffet so a straight-and-level aircraft still breathes -
+		// two roll frequencies for a non-repeating wing rock, plus a slower pitch bob
+		// and yaw wander. A per-aircraft phase from the callsign stops the whole sector
+		// wobbling in lockstep. Tiny degrees - it's life, not turbulence. - TripleA
+		const float Ph = (GetTypeHash(State.Callsign) % 628) * 0.01f; // 0..2pi-ish
+		const float RollWob  = (FMath::Sin(Now * 0.9f + Ph) * 1.6f + FMath::Sin(Now * 2.3f + Ph * 1.7f) * 0.5f) * Buffet;
+		const float PitchWob = FMath::Sin(Now * 1.3f + Ph * 0.6f) * 0.8f * Buffet;
+		const float YawWob   = FMath::Sin(Now * 0.7f + Ph * 1.3f) * 0.6f * Buffet;
+		const FQuat BuffetRot = FRotator(PitchWob, YawWob, RollWob).Quaternion();
+
+		const FQuat TargetRot = LookAlong * Bank * BuffetRot * MeshFix;
+
+		// The sim flips bank/pitch instantly when a turn or climb starts; easing the
+		// visual toward it on REAL frame time (not the sped-up sim clock) rolls and
+		// pitches the airframe in and out instead of snapping - kills the stiffness
+		// without touching the flight model. Higher = quicker, stiffer. - TripleA
+		const float RealDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+		const FQuat Smoothed = FMath::QInterpTo(Found->Actor->GetActorQuat(), TargetRot, RealDt, 4.f);
+		Found->Actor->SetActorRotation(Smoothed);
+
+		// Hand the airframe's gear/engine state to the Blueprint (if it implements the
+		// visual interface) so it can retract the gear in the cruise, drop it for the
+		// approach, and spin the prop/turbine with throttle. - TripleA
+		if (Found->Actor->GetClass()->ImplementsInterface(UClearanceAircraftVisualInterface::StaticClass()))
+		{
+			const bool bOnGround = State.Altitude <= 50.f;
+			const bool bGearDeployed = bOnGround
+				|| State.FlightPhase == EFlightPhase::Landing
+				|| (State.FlightPhase == EFlightPhase::Approach && State.Altitude <= GearDownAltitudeFt)
+				|| (State.FlightPhase == EFlightPhase::Departing && State.Altitude <= 1000.f);
+
+			// Engine sits around cruise power, pushes up in a climb and eases back on
+			// descent, idles on the deck - never off while airborne.
+			const float Throttle = bOnGround ? 0.15f : FMath::Clamp(0.6f + State.ClimbRate / 4000.f, 0.25f, 1.f);
+
+			IClearanceAircraftVisualInterface::Execute_UpdateAircraftVisual(Found->Actor, bGearDeployed, Throttle, bOnGround);
+		}
 	}
 }
 
@@ -247,6 +332,24 @@ void AClearanceSimulationController::DrawDebugView()
 
 	const TArray<FAircraftState> States = AirspaceManager->GetAllAircraftStates();
 	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+
+	// Active runway threshold + the extended approach centreline (the localiser you
+	// vector traffic onto) + the +/-3nm capture corridor, so the approach is flyable.
+	{
+		const float Fac = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+		const float FacRad = FMath::DegreesToRadians(Fac);
+		const FVector InboundDir(FMath::Sin(FacRad), FMath::Cos(FacRad), 0.f); // landing direction
+		const FVector RightDir(FMath::Cos(FacRad), -FMath::Sin(FacRad), 0.f);  // perpendicular
+		const float CorridorLen = ClearanceConstants::ApproachCorridorLengthNm;
+		const float CorridorHalf = ClearanceConstants::ApproachCorridorHalfWidthNm;
+		const FVector Thr(Origin.X + Env.ActiveRunwayThreshold.X * S, Origin.Y + Env.ActiveRunwayThreshold.Y * S, GroundWorldZ);
+		const FVector ApproachEnd = Thr - InboundDir * (CorridorLen * S);      // out along the approach side
+
+		DrawDebugSphere(World, Thr, 700.f, 12, FColor::White, false, -1.f, 0, 60.f);
+		DrawDebugLine(World, Thr, ApproachEnd, FColor::White, false, -1.f, 0, 120.f);
+		DrawDebugLine(World, Thr + RightDir * CorridorHalf * S, ApproachEnd + RightDir * CorridorHalf * S, FColor(90, 90, 90), false, -1.f, 0, 40.f);
+		DrawDebugLine(World, Thr - RightDir * CorridorHalf * S, ApproachEnd - RightDir * CorridorHalf * S, FColor(90, 90, 90), false, -1.f, 0, 40.f);
+	}
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f\n"),
 		SessionTime,
 		Scoring ? Scoring->GetCurrentScore() : 0,
@@ -263,7 +366,7 @@ void AClearanceSimulationController::DrawDebugView()
 		// aircraft skip them so the model isn't buried in a debug blob.
 		if (!VisualActors.Contains(A.Callsign))
 		{
-			const FVector P = Origin + FVector(A.Position.X * S, A.Position.Y * S, A.Altitude * AltitudeWorldScale);
+			const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + A.Altitude * AltitudeWorldScale);
 			DrawDebugSphere(World, P, 500.f, 10, C, false, -1.f, 0, 40.f);
 
 			const float HeadingRad = FMath::DegreesToRadians(A.Heading);

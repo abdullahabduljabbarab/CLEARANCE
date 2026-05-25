@@ -12,7 +12,6 @@ void AClearanceAirspaceManager::BeginPlay()
 
 	SectorEnvironment.WindDirection = DefaultWindDirection;
 	SectorEnvironment.WindSpeed = DefaultWindSpeed;
-	SectorEnvironment.AvailableRunways = AvailableRunwayHeadings;
 	SectorEnvironment.ActiveRunwayHeading = -1.f; // forces the first pick below
 
 	RecalculateActiveRunway();
@@ -122,7 +121,7 @@ FSectorEnvironment AClearanceAirspaceManager::GetCurrentEnvironment() const
 	return SectorEnvironment;
 }
 
-void AClearanceAirspaceManager::InitialiseEnvironment(float WindDir, float WindSpeed, const TArray<float>& Runways)
+void AClearanceAirspaceManager::InitialiseEnvironment(float WindDir, float WindSpeed)
 {
 	SectorEnvironment.WindDirection = FMath::Fmod(WindDir, 360.f);
 	if (SectorEnvironment.WindDirection < 0.f)
@@ -130,10 +129,22 @@ void AClearanceAirspaceManager::InitialiseEnvironment(float WindDir, float WindS
 		SectorEnvironment.WindDirection += 360.f;
 	}
 	SectorEnvironment.WindSpeed = FMath::Max(0.f, WindSpeed);
-	// Always have something to choose from so the selection actually runs - default
-	// to a single 09/27 strip (usable both directions). - TripleA
-	SectorEnvironment.AvailableRunways = (Runways.Num() > 0) ? Runways : TArray<float>({ 90.f, 270.f });
 	SectorEnvironment.ActiveRunwayHeading = -1.f; // force a fresh pick
+	RecalculateActiveRunway();
+}
+
+void AClearanceAirspaceManager::SetRunways(const TArray<FRunwayInfo>& InRunways)
+{
+	Runways = InRunways;
+
+	// Mirror the headings for display/Blueprint.
+	SectorEnvironment.AvailableRunways.Reset();
+	for (const FRunwayInfo& R : Runways)
+	{
+		SectorEnvironment.AvailableRunways.Add(R.HeadingDeg);
+	}
+
+	SectorEnvironment.ActiveRunwayHeading = -1.f; // re-pick with the new runways
 	RecalculateActiveRunway();
 }
 
@@ -181,49 +192,53 @@ void AClearanceAirspaceManager::ClampStateValues(FAircraftState& State) const
 
 void AClearanceAirspaceManager::RecalculateActiveRunway()
 {
-	if (SectorEnvironment.AvailableRunways.Num() == 0)
+	// Use the configured runways, or fall back to a default 09/27 strip at the
+	// sector centre so selection still runs with none placed. - TripleA
+	TArray<FRunwayInfo> Effective = Runways;
+	if (Effective.Num() == 0)
 	{
-		return;
+		FRunwayInfo A; A.ThresholdNm = FVector2D::ZeroVector; A.HeadingDeg = 90.f;  Effective.Add(A);
+		FRunwayInfo B; B.ThresholdNm = FVector2D::ZeroVector; B.HeadingDeg = 270.f; Effective.Add(B);
 	}
 
-	// Crosswind for a runway is wind speed times the sine of the angle between
-	// the wind and the runway heading; the best runway is the one that minimises
-	// it. The dead-band below stops the active runway flip-flopping when the wind
-	// sits right on the boundary between two options - TripleA
+	// We land INTO wind. Score each runway by crosswind (want it low) minus headwind
+	// (want it high): crosswind alone can't separate the two ends of one strip - they
+	// share it exactly - so the headwind term is what makes the into-wind end win and
+	// the downwind end lose. Lower score = better. - TripleA
 	const float Wind = SectorEnvironment.WindDirection;
-
-	auto Crosswind = [&](float RunwayHeading)
+	auto RunwayCost = [&](float RunwayHeading)
 	{
 		const float Delta = FMath::DegreesToRadians(Wind - RunwayHeading);
-		return SectorEnvironment.WindSpeed * FMath::Abs(FMath::Sin(Delta));
+		const float Crosswind = SectorEnvironment.WindSpeed * FMath::Abs(FMath::Sin(Delta));
+		const float Headwind  = SectorEnvironment.WindSpeed * FMath::Cos(Delta);
+		return Crosswind - Headwind;
 	};
 
-	float BestRunway = SectorEnvironment.AvailableRunways[0];
-	float BestCrosswind = Crosswind(BestRunway);
-	for (int32 i = 1; i < SectorEnvironment.AvailableRunways.Num(); ++i)
+	int32 BestIdx = 0;
+	float BestCost = RunwayCost(Effective[0].HeadingDeg);
+	for (int32 i = 1; i < Effective.Num(); ++i)
 	{
-		const float ThisCrosswind = Crosswind(SectorEnvironment.AvailableRunways[i]);
-		if (ThisCrosswind < BestCrosswind)
-		{
-			BestCrosswind = ThisCrosswind;
-			BestRunway = SectorEnvironment.AvailableRunways[i];
-		}
+		const float C = RunwayCost(Effective[i].HeadingDeg);
+		if (C < BestCost) { BestCost = C; BestIdx = i; }
 	}
+	const FRunwayInfo& Best = Effective[BestIdx];
 
+	// Dead-band: don't switch away from the current runway for a marginal gain.
 	const bool bHasCurrent = SectorEnvironment.ActiveRunwayHeading >= 0.f;
-	if (bHasCurrent && BestRunway != SectorEnvironment.ActiveRunwayHeading)
+	if (bHasCurrent && !FMath::IsNearlyEqual(Best.HeadingDeg, SectorEnvironment.ActiveRunwayHeading))
 	{
-		// only switch if the new runway is meaningfully better, not marginally
-		const float CurrentCrosswind = Crosswind(SectorEnvironment.ActiveRunwayHeading);
-		if (CurrentCrosswind - BestCrosswind < ClearanceConstants::RunwaySwitchDeadbandKts)
+		const float CurrentCost = RunwayCost(SectorEnvironment.ActiveRunwayHeading);
+		if (CurrentCost - BestCost < ClearanceConstants::RunwaySwitchDeadbandKts)
 		{
 			return;
 		}
 	}
 
-	if (BestRunway != SectorEnvironment.ActiveRunwayHeading)
+	const bool bChanged = !FMath::IsNearlyEqual(Best.HeadingDeg, SectorEnvironment.ActiveRunwayHeading);
+	SectorEnvironment.ActiveRunwayHeading = Best.HeadingDeg;
+	SectorEnvironment.ActiveRunwayThreshold = FVector(Best.ThresholdNm.X, Best.ThresholdNm.Y, 0.f);
+	if (bChanged)
 	{
-		SectorEnvironment.ActiveRunwayHeading = BestRunway;
-		OnRunwayChanged.Broadcast(BestRunway);
+		OnRunwayChanged.Broadcast(Best.HeadingDeg);
 	}
 }

@@ -122,6 +122,19 @@ FSectorEnvironment AClearanceAirspaceManager::GetCurrentEnvironment() const
 	return SectorEnvironment;
 }
 
+void AClearanceAirspaceManager::InitialiseEnvironment(float WindDir, float WindSpeed, const TArray<float>& Runways)
+{
+	SectorEnvironment.WindDirection = FMath::Fmod(WindDir, 360.f);
+	if (SectorEnvironment.WindDirection < 0.f)
+	{
+		SectorEnvironment.WindDirection += 360.f;
+	}
+	SectorEnvironment.WindSpeed = FMath::Max(0.f, WindSpeed);
+	SectorEnvironment.AvailableRunways = Runways;
+	SectorEnvironment.ActiveRunwayHeading = -1.f; // force a fresh pick
+	RecalculateActiveRunway();
+}
+
 void AClearanceAirspaceManager::UpdateWindConditions(float NewWindDirection, float NewWindSpeed)
 {
 	SectorEnvironment.WindDirection = FMath::Fmod(NewWindDirection, 360.f);

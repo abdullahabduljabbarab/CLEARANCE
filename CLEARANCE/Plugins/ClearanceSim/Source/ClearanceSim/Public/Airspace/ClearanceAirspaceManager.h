@@ -59,6 +59,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
 	FSectorEnvironment GetCurrentEnvironment() const;
 
+	// Set the whole environment up front (wind + selectable runways) and pick the
+	// active runway. Used at session start.
+	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
+	void InitialiseEnvironment(float WindDir, float WindSpeed, const TArray<float>& Runways);
+
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
 	void UpdateWindConditions(float NewWindDirection, float NewWindSpeed);
 

@@ -28,7 +28,7 @@ namespace ClearanceConstants
 	// How far out the approach centreline runs (nm). The drawn corridor and the
 	// distance an aircraft is allowed to capture from both use this, so they can't
 	// drift apart - extend the localiser, extend where you can line up. - TripleA
-	constexpr float ApproachCorridorLengthNm = 40.f;
+	constexpr float ApproachCorridorLengthNm = 80.f;
 
 	// Half-width of the localiser capture corridor (nm) - how far off the centreline
 	// the aircraft can be and still get established (matches the drawn grey lines).
@@ -51,6 +51,9 @@ namespace ClearanceConstants
 		float AccelKtsPerSec;
 		float DecelKtsPerSec;
 		float CrosswindLimitKts;
+		// Wheel-braking deceleration on the landing roll (kts/sec). Heavier aircraft
+		// shed speed more slowly, so they roll out far longer than a Light. - TripleA
+		float GroundBrakingKtsPerSec;
 	};
 
 	inline FCategoryPerformance GetCategoryPerformance(EWakeCategory Category)
@@ -58,14 +61,14 @@ namespace ClearanceConstants
 		switch (Category)
 		{
 		case EWakeCategory::Light:   // Cessna 172S
-			return { 14000.f,  65.f, 163.f,  730.f, 1500.f, 30.f, 2.0f, 1.00f, 15.f };
+			return { 14000.f,  65.f, 163.f,  730.f, 1500.f, 30.f, 2.0f, 1.00f, 15.f, 4.5f };
 		case EWakeCategory::Heavy:   // Boeing 777-300ER
-			return { 43100.f, 170.f, 350.f, 2500.f, 3500.f, 25.f, 1.0f, 0.50f, 40.f };
+			return { 43100.f, 170.f, 350.f, 2500.f, 3500.f, 25.f, 1.0f, 0.50f, 40.f, 2.4f };
 		case EWakeCategory::Super:   // Airbus A380-800
-			return { 43000.f, 155.f, 340.f, 1500.f, 3000.f, 25.f, 0.8f, 0.40f, 40.f };
+			return { 43000.f, 155.f, 340.f, 1500.f, 3000.f, 25.f, 0.8f, 0.40f, 40.f, 2.0f };
 		case EWakeCategory::Medium:  // Boeing 737-800
 		default:
-			return { 41000.f, 150.f, 340.f, 1800.f, 3000.f, 25.f, 1.5f, 0.75f, 37.f };
+			return { 41000.f, 150.f, 340.f, 1800.f, 3000.f, 25.f, 1.5f, 0.75f, 37.f, 3.0f };
 		}
 	}
 }

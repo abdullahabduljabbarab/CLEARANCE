@@ -155,12 +155,27 @@ public:
 	float WorldUnitsPerNm = 1000.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Debug")
-	float AltitudeWorldScale = 0.05f;
+	float AltitudeWorldScale = 2.f;
+
+	// Altitude is mapped to height with a curve so low altitudes stay gently scaled (a
+	// shallow, natural approach + flare) while high altitudes tower for dramatic cruise.
+	// 1 = linear (no curve); higher = more exaggeration up top, gentler down low.
+	// AltitudeWorldScale is the scale exactly at AltitudeCurveRefFt. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Debug")
+	float AltitudeCurveExponent = 1.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Debug")
+	float AltitudeCurveRefFt = 30000.f;
 
 	// At or below this height (ft) an approaching/departing aircraft flies gear-down;
 	// above it the gear is up. Fed to the aircraft Blueprint's visual interface.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Visuals")
 	float GearDownAltitudeFt = 2500.f;
+
+	// How far past the threshold (metres) aircraft aim to touch down - the touchdown
+	// zone, so they plant in the runway instead of on the edge. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Visuals")
+	float TouchdownZoneMeters = 1000.f;
 
 	// Model variants per wake category - add several per class, each with its own
 	// yaw/scale; one is chosen at random per spawn. A category left empty falls
@@ -215,6 +230,8 @@ private:
 	void UpdateVisuals();
 	void DrawDebugView();
 	FVector WorldPositionFor(const FAircraftState& State) const;
+	// Altitude (ft) -> vertical world offset above ground, via the altitude curve.
+	float AltitudeToWorldZOffset(float AltitudeFt) const;
 	const TArray<FAircraftVisualVariant>& VariantsFor(EWakeCategory Category) const;
 
 	UFUNCTION()

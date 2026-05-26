@@ -47,6 +47,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behaviour|Tuning")
 	float GoAroundClimbFt = 3000.f;
 
+	// How far past the threshold (nm) to aim the touchdown - the touchdown zone, so it
+	// plants in the runway rather than on the lip. Set by the Controller. - TripleA
+	float TouchdownZoneOffsetNm = 0.16f;
+
 private:
 	UPROPERTY()
 	TObjectPtr<AClearanceAirspaceManager> Manager;

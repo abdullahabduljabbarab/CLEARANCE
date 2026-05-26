@@ -7,13 +7,13 @@
 class UStaticMeshComponent;
 class USceneComponent;
 
-// Drop one (or more) of these in the level to define real runways. The actor's
-// location (the Threshold root) is the CENTRE of the strip; LandingHeadingDeg is
-// one of the two directions flown to land. With bAllowReciprocal on, the strip
-// also offers the opposite direction (heading + 180) from the far end, so traffic
-// can land either way - the Airspace Manager picks whichever end is into-wind.
-// The Simulation Controller discovers these. RunwayMesh is purely the visual -
-// move it about freely to line the mesh up without dragging the strip. - TripleA
+// Drop one (or more) of these in the level to define real runways. Everything the
+// sim needs - the strip's centre, its length and the ground height - is read from
+// the RunwayMesh's bounds, so you just place and scale the mesh and the touchdown
+// points follow it. LandingHeadingDeg is one of the two directions flown to land;
+// with bAllowReciprocal on, the strip also offers the opposite direction
+// (heading + 180), so traffic can land either way and the Airspace Manager picks
+// whichever end is into-wind. The Simulation Controller discovers these. - TripleA
 UCLASS(Blueprintable)
 class CLEARANCESIM_API AClearanceRunway : public AActor
 {
@@ -31,10 +31,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
 	bool bAllowReciprocal = true;
 
-	// Physical strip length. Sets how far apart the two thresholds sit either side
-	// of the actor's centre - so each end's touchdown point lands on the real mesh.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
-	float RunwayLengthMeters = 3000.f;
+	// World-space centre + half-extents of the runway, computed from the mesh ASSET
+	// bounds and the mesh's current transform - reliable even at BeginPlay, unlike the
+	// cached component Bounds which can read stale/zero. Returns false if no mesh is
+	// assigned. Both the sim and the debug draw go through this so they always agree.
+	bool GetRunwayBounds(FVector& OutCentre, FVector& OutExtent) const;
 
 	// The touchdown threshold / runway zone. This is the actor's root, so the
 	// actor's location is the threshold the sim reads. Don't parent the mesh to

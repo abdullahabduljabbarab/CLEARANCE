@@ -106,28 +106,43 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 
 	const FSectorEnvironment Env = Manager->GetCurrentEnvironment();
 
-	// Cleared for approach, but the ILS only TAKES OVER once the aircraft is
-	// established on the localiser - until then it flies the controller's vectors,
-	// so positioning it for the intercept is the player's job. - TripleA
-	if (State.FlightPhase == EFlightPhase::Approach || State.FlightPhase == EFlightPhase::Landing)
+	// Once wheels are down on the runway, fly the ground roll instead of the airborne
+	// model: hold the centreline, stay on the deck, and brake to a stop. Braking goes
+	// below flying minimums, so the speed is set directly here, not via StepSpeed. The
+	// controller pulls it off once it's slowed to taxi speed. - TripleA
+	const bool bGroundRoll = (State.FlightPhase == EFlightPhase::Landing) && (State.Altitude <= 100.f);
+
+	if (bGroundRoll)
 	{
-		// Flew past the threshold still in the air - never lined up, or cleared too
-		// late to get down in time. Fly the missed approach: climb away and hand back
-		// to enroute so the controller can re-vector and clear again. Checked whether
-		// or not it captured, so an overflown landing triggers it too. - TripleA
-		if (HasMissedApproach(State, Env))
-		{
-			bApproachCaptured = false;
-			bGoingAround = true;
-			State.FlightPhase = EFlightPhase::GoAround;
-			State.TargetAltitude = FMath::Min(State.Altitude + GoAroundClimbFt, State.ServiceCeiling);
-			State.TargetSpeed = FMath::Clamp(State.TargetSpeed, State.MinOperatingSpeed, State.MaxOperatingSpeed);
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, FString::Printf(TEXT("%s unable - missed approach, going around, request vectors"), *State.Callsign.ToString()));
-			}
-		}
-		else
+		const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : State.Heading;
+		State.TargetHeading = FAC;
+		State.TargetAltitude = 0.f;
+		State.Altitude = 0.f;
+		State.ClimbRate = 0.f;
+
+		// Wheel braking to a stop, at a rate set by the aircraft's category - a Heavy
+		// rolls out far longer than a Light. - TripleA
+		const float BrakeKtsPerSec = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).GroundBrakingKtsPerSec;
+		State.TargetSpeed = 0.f;
+		State.Speed = FMath::Max(0.f, State.Speed - BrakeKtsPerSec * DeltaTime);
+
+		StepHeading(State, DeltaTime); // keep it tracking straight down the runway
+
+		// Roll forward along the heading only - no wind drift on the ground, otherwise
+		// a stopped aircraft would slide sideways with the wind.
+		const float HeadingRad = FMath::DegreesToRadians(State.Heading);
+		const FVector2D Roll(
+			State.Speed * KnotsToNmPerSec * FMath::Sin(HeadingRad),
+			State.Speed * KnotsToNmPerSec * FMath::Cos(HeadingRad));
+		State.Velocity = FVector(Roll.X, Roll.Y, 0.f);
+		State.Position += State.Velocity * DeltaTime;
+	}
+	else
+	{
+		// Cleared for approach, but the ILS only TAKES OVER once the aircraft is
+		// established on the localiser - until then it flies the controller's vectors,
+		// so positioning it for the intercept is the player's job. - TripleA
+		if (State.FlightPhase == EFlightPhase::Approach || State.FlightPhase == EFlightPhase::Landing)
 		{
 			if (!bApproachCaptured && IsEstablishedOnApproach(State, Env))
 			{
@@ -138,17 +153,32 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 				}
 			}
 
-			if (bApproachCaptured)
+			// Go around ONLY if it never got established and has run past the threshold -
+			// never lined up. Once established it commits to the landing: it flies the
+			// glideslope down and touches down (long, if it came in high) rather than
+			// bailing out at the last moment. - TripleA
+			if (!bApproachCaptured && HasMissedApproach(State, Env))
+			{
+				bGoingAround = true;
+				State.FlightPhase = EFlightPhase::GoAround;
+				State.TargetAltitude = FMath::Min(State.Altitude + GoAroundClimbFt, State.ServiceCeiling);
+				State.TargetSpeed = FMath::Clamp(State.TargetSpeed, State.MinOperatingSpeed, State.MaxOperatingSpeed);
+				if (GEngine)
+				{
+					GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, FString::Printf(TEXT("%s unable - not established, going around, request vectors"), *State.Callsign.ToString()));
+				}
+			}
+			else if (bApproachCaptured)
 			{
 				RunApproachGuidance(State, Env);
 			}
 		}
-	}
 
-	StepHeading(State, DeltaTime);
-	StepAltitude(State, DeltaTime);
-	StepSpeed(State, DeltaTime);
-	StepPosition(State, Env, DeltaTime);
+		StepHeading(State, DeltaTime);
+		StepAltitude(State, DeltaTime);
+		StepSpeed(State, DeltaTime);
+		StepPosition(State, Env, DeltaTime);
+	}
 
 	const bool bHeadingDone = FMath::Abs(FMath::FindDeltaAngleDegrees(State.Heading, State.TargetHeading)) <= HeadingToleranceDeg;
 	const bool bAltitudeDone = FMath::Abs(State.Altitude - State.TargetAltitude) <= AltitudeToleranceFt;
@@ -242,8 +272,11 @@ void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float Delt
 	const float Delta = State.TargetAltitude - State.Altitude;
 	if (FMath::Abs(Delta) <= AltitudeToleranceFt)
 	{
+		// Within tolerance we snap to the target - but when the target is itself moving
+		// (a glideslope dropping under us), zeroing ClimbRate is wrong: it hides the real
+		// descent and breaks anything reading vertical speed. Report the closing rate. - TripleA
+		State.ClimbRate = (DeltaTime > 0.f) ? (Delta / DeltaTime) * 60.f : 0.f;
 		State.Altitude = State.TargetAltitude;
-		State.ClimbRate = 0.f;
 		bExpediting = false;
 		return;
 	}
@@ -325,10 +358,21 @@ bool UClearanceAircraftBehaviour::IsEstablishedOnApproach(const FAircraftState& 
 	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound); // < 0 = on the approach side (before threshold)
 	const float HeadingErr = FMath::Abs(FMath::FindDeltaAngleDegrees(State.Heading, FAC));
 
-	return CrossTrackNm <= ClearanceConstants::ApproachCorridorHalfWidthNm // near the centreline (matches the drawn corridor)
+	// Glideslope height at this distance - must be at or just below it (small margin) so
+	// it intercepts the glidepath from BELOW and rides it down, rather than capturing
+	// from way overhead and diving onto the runway. - TripleA
+	const float GlideAlt = FMath::Max(0.f, -AlongTrack) * 318.f; // ~318 ft per nm (3 deg)
+
+	// Capture corridor is a CONE: narrow at the runway, widening with distance (like a
+	// real localiser beam), so it must be precisely lined up close in but is forgiving
+	// far out. Matches the funnel drawn on the debug overlay. - TripleA
+	const float CorridorHalf = FMath::Clamp(-AlongTrack * 0.1f, 0.3f, ClearanceConstants::ApproachCorridorHalfWidthNm);
+
+	return CrossTrackNm <= CorridorHalf                        // inside the capture cone
 		&& HeadingErr <= 40.f                                  // intercepting at a sane angle, not crossing it
 		&& AlongTrack < 0.f                                    // positioned to fly toward the runway, not away
-		&& DistNm <= ClearanceConstants::ApproachCorridorLengthNm; // within intercept range (matches the drawn centreline)
+		&& DistNm <= ClearanceConstants::ApproachCorridorLengthNm // within intercept range (matches the drawn centreline)
+		&& State.Altitude <= GlideAlt + 300.f;                 // at/below the glidepath - intercept from below, no dive
 }
 
 bool UClearanceAircraftBehaviour::HasMissedApproach(const FAircraftState& State, const FSectorEnvironment& Env) const
@@ -354,27 +398,33 @@ void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, con
 	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
 	const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
 	const FVector2D Rel = FVector2D(State.Position.X, State.Position.Y) - Threshold; // aircraft relative to threshold
-	const float DistNm = Rel.Size();
 
 	const float FacRad = FMath::DegreesToRadians(FAC);
 	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));   // direction flown to land
 	const FVector2D RightOfCourse(Inbound.Y, -Inbound.X);
 	const float CrossTrackNm = FVector2D::DotProduct(Rel, RightOfCourse);
+	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound); // < 0 before the threshold, 0 at it
 
 	// Localiser: steer back toward the extended centreline; fly the course on it. - TripleA
 	const float Correction = FMath::Clamp(-CrossTrackNm * 3.f, -30.f, 30.f);
 	State.TargetHeading = FMath::Fmod(FAC + Correction + 360.f, 360.f);
 	ActiveTurnDirection = 0;
 
-	// 3-degree glideslope (~318 ft/nm), captured from above (only descend).
-	const float GlideAlt = FMath::Max(0.f, DistNm * 318.f);
+	// Aim point sits a little way INTO the runway (the real touchdown zone is ~300m
+	// past the threshold), not right on the lip. The 3-degree glideslope (~318 ft/nm)
+	// is measured to that aim point, so height hits 0 there. - TripleA
+	const float AimAlong = AlongTrack - TouchdownZoneOffsetNm; // < 0 before the aim point, 0 at it
+	const float DistToAimNm = FMath::Max(0.f, -AimAlong);
+	const float GlideAlt = DistToAimNm * 318.f;
 	State.TargetAltitude = FMath::Min(State.TargetAltitude, GlideAlt);
 
 	// Settle onto a final-approach speed.
 	State.TargetSpeed = State.MinOperatingSpeed + 10.f;
 
-	// Touchdown over the threshold -> hand off to the landing/exit check.
-	if (DistNm < 0.5f && State.Altitude < 200.f)
+	// Touchdown once it has reached the aim point (into the runway) and is low, so it
+	// plants in the touchdown zone, not on the edge. If it came in high it carries past
+	// and lands long - but never short of the aim point. - TripleA
+	if (AimAlong >= 0.f && State.Altitude <= 100.f)
 	{
 		State.FlightPhase = EFlightPhase::Landing;
 	}

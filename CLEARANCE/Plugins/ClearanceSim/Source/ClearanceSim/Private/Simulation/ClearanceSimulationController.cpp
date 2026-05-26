@@ -12,6 +12,7 @@
 #include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
 
 namespace
 {
@@ -83,12 +84,26 @@ void AClearanceSimulationController::InitialiseSystems()
 		bool bGroundSet = false;
 		for (TActorIterator<AClearanceRunway> It(GetWorld()); It; ++It)
 		{
-			const FVector W = It->GetActorLocation();
-			const FVector2D CentreNm((W.X - Origin.X) / WorldUnitsPerNm, (W.Y - Origin.Y) / WorldUnitsPerNm);
 			const float H = It->LandingHeadingDeg;
-			const float HalfNm = FMath::Max(0.f, It->RunwayLengthMeters) / 1852.f * 0.5f;
 			const float HRad = FMath::DegreesToRadians(H);
 			const FVector2D Inbound(FMath::Sin(HRad), FMath::Cos(HRad)); // direction flown to land on H
+
+			// Centre, length and ground height all come from the runway MESH bounds, so
+			// placing and scaling the mesh moves and sizes the runway - one object drives
+			// the touchdown points, the markers and everything else. - TripleA
+			FVector CentreW = It->GetActorLocation();
+			float LengthW = 1600.f; // fallback (~1.6nm) until a mesh is assigned
+			float TopZ = CentreW.Z;
+			FVector MeshCentre, MeshExtent;
+			if (It->GetRunwayBounds(MeshCentre, MeshExtent))
+			{
+				CentreW = MeshCentre;
+				LengthW = 2.f * (MeshExtent.X * FMath::Abs(Inbound.X) + MeshExtent.Y * FMath::Abs(Inbound.Y));
+				TopZ = MeshCentre.Z + MeshExtent.Z;
+			}
+
+			const FVector2D CentreNm((CentreW.X - Origin.X) / WorldUnitsPerNm, (CentreW.Y - Origin.Y) / WorldUnitsPerNm);
+			const float HalfNm = (LengthW / WorldUnitsPerNm) * 0.5f;
 
 			// Landing on H, you cross the near threshold (behind the centre) and roll
 			// through; the reciprocal lands the other way from the far end. - TripleA
@@ -100,7 +115,7 @@ void AClearanceSimulationController::InitialiseSystems()
 				B.HeadingDeg = FMath::Fmod(H + 180.f, 360.f);
 				RunwayInfos.Add(B);
 			}
-			if (!bGroundSet) { GroundWorldZ = W.Z; bGroundSet = true; } // 0ft = runway surface
+			if (!bGroundSet) { GroundWorldZ = TopZ; bGroundSet = true; } // 0ft = top of the runway mesh
 		}
 		// No placed runways? fall back to any plain headings set on the Controller.
 		if (RunwayInfos.Num() == 0)
@@ -228,7 +243,20 @@ FVector AClearanceSimulationController::WorldPositionFor(const FAircraftState& S
 	const FVector Origin = GetActorLocation();
 	return FVector(Origin.X + State.Position.X * WorldUnitsPerNm,
 		Origin.Y + State.Position.Y * WorldUnitsPerNm,
-		GroundWorldZ + State.Altitude * AltitudeWorldScale);
+		GroundWorldZ + AltitudeToWorldZOffset(State.Altitude));
+}
+
+float AClearanceSimulationController::AltitudeToWorldZOffset(float AltitudeFt) const
+{
+	const float Alt = FMath::Max(0.f, AltitudeFt);
+	// Linear if the curve is disabled; otherwise a power curve that equals the linear
+	// scale exactly at the reference altitude, sits BELOW it lower down (gentle approach)
+	// and ABOVE it up high (towering cruise). - TripleA
+	if (AltitudeCurveExponent <= 1.f || AltitudeCurveRefFt <= 0.f)
+	{
+		return Alt * AltitudeWorldScale;
+	}
+	return AltitudeWorldScale * AltitudeCurveRefFt * FMath::Pow(Alt / AltitudeCurveRefFt, AltitudeCurveExponent);
 }
 
 const TArray<FAircraftVisualVariant>& AClearanceSimulationController::VariantsFor(EWakeCategory Category) const
@@ -269,7 +297,43 @@ void AClearanceSimulationController::UpdateVisuals()
 		// visibly pitches when climbing/descending, then bank about the nose. The
 		// mesh-fix yaw keeps the roll a real bank, not a pitch, for offset meshes. - TripleA
 		const float HeadingRad = FMath::DegreesToRadians(State.Heading);
-		const float VertOverHoriz = (State.Speed > 1.f) ? ((State.ClimbRate / 101.269f) / State.Speed) : 0.f; // 1 kt = 101.27 ft/min
+
+		// Pitch attitude for the look. Following the raw flight path makes it dive at
+		// the runway on a steep descent, so instead: clamp to a sane body-attitude range,
+		// and near the ground flare the nose UP as it settles, then level on the deck -
+		// reads like a real landing rather than a nose-first plant. - TripleA
+		const bool bApproaching = (State.FlightPhase == EFlightPhase::Approach || State.FlightPhase == EFlightPhase::Landing);
+
+		// VISUAL flight-path angle - how steep the aircraft is actually moving ON SCREEN
+		// (through the altitude curve), so the nose points down its real descent path and
+		// reads as flying DOWN, not falling flat. - TripleA
+		const float HorizSpeedUU = State.Speed * (1.f / 3600.f) * WorldUnitsPerNm;            // uu/sec along the ground
+		const float dZdAlt = (AltitudeToWorldZOffset(State.Altitude + 1.f) - AltitudeToWorldZOffset(FMath::Max(0.f, State.Altitude - 1.f))) * 0.5f;
+		const float VertSpeedUU = dZdAlt * (State.ClimbRate / 60.f);                          // uu/sec vertical (ClimbRate is ft/min)
+		const float VisualFpaDeg = (HorizSpeedUU > 1.f) ? FMath::RadiansToDegrees(FMath::Atan2(VertSpeedUU, HorizSpeedUU)) : 0.f;
+
+		float PitchDeg;
+		if (State.Altitude <= 12.f)
+		{
+			PitchDeg = 0.f; // on the deck - nose-wheel down, level for the rollout
+		}
+		else if (bApproaching && State.Altitude < 150.f && State.ClimbRate < 0.f)
+		{
+			PitchDeg = 8.f; // FLARE - nose lifts up just before touchdown
+		}
+		else if (bApproaching && State.ClimbRate < -50.f)
+		{
+			// On the glidepath the real angle is shallow (~3deg) so it'd read as level;
+			// dramatise a clear nose-DOWN descent attitude for the landing, then the
+			// flare above lifts it right before touchdown. - TripleA
+			PitchDeg = -9.f; // clear nose-down descent attitude
+		}
+		else
+		{
+			PitchDeg = FMath::Clamp(VisualFpaDeg, -22.f, 12.f); // follow the on-screen path; cap the dive
+		}
+
+		const float VertOverHoriz = FMath::Tan(FMath::DegreesToRadians(PitchDeg));
 		const FVector Forward = FVector(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), VertOverHoriz).GetSafeNormal();
 
 		const FQuat LookAlong = FRotationMatrix::MakeFromXZ(Forward, FVector::UpVector).ToQuat();
@@ -330,6 +394,28 @@ void AClearanceSimulationController::DrawDebugView()
 	// sector boundary ring (flat on the XY plane)
 	DrawDebugCircle(World, Origin, ExitRadiusNm * S, 64, FColor(40, 80, 120), false, -1.f, 0, 120.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
 
+	// Compass rose: a tick + heading number every 30deg around the boundary, cardinals
+	// called out, so headings are readable in the world. "Vector 090" = send it toward
+	// the 090 mark. Heading 0=North, 90=East (X=East, Y=North). - TripleA
+	for (int32 Deg = 0; Deg < 360; Deg += 30)
+	{
+		const float R = FMath::DegreesToRadians((float)Deg);
+		const FVector Dir(FMath::Sin(R), FMath::Cos(R), 0.f);
+		const FVector Edge = Origin + Dir * (ExitRadiusNm * S);
+		DrawDebugLine(World, Origin + Dir * (ExitRadiusNm * S - 1.5f * S), Edge, FColor(60, 110, 160), false, -1.f, 0, 90.f);
+
+		FString Label;
+		switch (Deg)
+		{
+		case 0:   Label = TEXT("N 360"); break;
+		case 90:  Label = TEXT("E 090"); break;
+		case 180: Label = TEXT("S 180"); break;
+		case 270: Label = TEXT("W 270"); break;
+		default:  Label = FString::Printf(TEXT("%03d"), Deg); break;
+		}
+		DrawDebugString(World, Edge + FVector(0, 0, 2.f * S), Label, nullptr, FColor::Cyan, 0.f, true, 1.3f);
+	}
+
 	const TArray<FAircraftState> States = AirspaceManager->GetAllAircraftStates();
 	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
 
@@ -341,14 +427,88 @@ void AClearanceSimulationController::DrawDebugView()
 		const FVector InboundDir(FMath::Sin(FacRad), FMath::Cos(FacRad), 0.f); // landing direction
 		const FVector RightDir(FMath::Cos(FacRad), -FMath::Sin(FacRad), 0.f);  // perpendicular
 		const float CorridorLen = ClearanceConstants::ApproachCorridorLengthNm;
-		const float CorridorHalf = ClearanceConstants::ApproachCorridorHalfWidthNm;
+		const FColor Grey(90, 90, 90);
 		const FVector Thr(Origin.X + Env.ActiveRunwayThreshold.X * S, Origin.Y + Env.ActiveRunwayThreshold.Y * S, GroundWorldZ);
-		const FVector ApproachEnd = Thr - InboundDir * (CorridorLen * S);      // out along the approach side
+
+		// Capture funnel/cone: a narrow slot at the orb that opens out to a wide, tall
+		// mouth 40nm away, with the white glidepath down the middle rising on the 3deg
+		// slope. Fly the aircraft into the mouth, then ride the white line down onto the
+		// orb. Matches the cone-shaped capture test in the Behaviour. - TripleA
+		const float WMax = ClearanceConstants::ApproachCorridorHalfWidthNm * S; // far half-width
+		const float WMin = 0.3f * S;                                            // half-width at the orb
+		const float MouthZ = AltitudeToWorldZOffset(CorridorLen * 318.f);       // curved glide height at the mouth
+		const FVector Up(0.f, 0.f, MouthZ);
+		const FVector FarC = Thr - InboundDir * (CorridorLen * S);              // far point, on the ground
+
+		const FVector FBL = FarC + RightDir * WMax;          // far mouth, ground, left/right
+		const FVector FBR = FarC - RightDir * WMax;
+		const FVector FTL = FBL + Up;                        // far mouth, top
+		const FVector FTR = FBR + Up;
 
 		DrawDebugSphere(World, Thr, 700.f, 12, FColor::White, false, -1.f, 0, 60.f);
-		DrawDebugLine(World, Thr, ApproachEnd, FColor::White, false, -1.f, 0, 120.f);
-		DrawDebugLine(World, Thr + RightDir * CorridorHalf * S, ApproachEnd + RightDir * CorridorHalf * S, FColor(90, 90, 90), false, -1.f, 0, 40.f);
-		DrawDebugLine(World, Thr - RightDir * CorridorHalf * S, ApproachEnd - RightDir * CorridorHalf * S, FColor(90, 90, 90), false, -1.f, 0, 40.f);
+
+		// Glidepath centreline as a CURVE - gentle near the orb, steepening out to the
+		// mouth - following the altitude curve so it sits on the path planes actually fly.
+		FVector Prev = Thr;
+		const int32 Segs = 20;
+		for (int32 i = 1; i <= Segs; ++i)
+		{
+			const float DistNm = (CorridorLen * i) / Segs;
+			const FVector Pt = Thr - InboundDir * (DistNm * S) + FVector(0.f, 0.f, AltitudeToWorldZOffset(DistNm * 318.f));
+			DrawDebugLine(World, Prev, Pt, FColor::White, false, -1.f, 0, 120.f);
+			Prev = Pt;
+		}
+
+		DrawDebugLine(World, Thr + RightDir * WMin, FBL, Grey, false, -1.f, 0, 40.f);          // ground edges (widen out)
+		DrawDebugLine(World, Thr - RightDir * WMin, FBR, Grey, false, -1.f, 0, 40.f);
+		DrawDebugLine(World, Thr, FTL, Grey, false, -1.f, 0, 40.f);                            // top edges (rise + widen)
+		DrawDebugLine(World, Thr, FTR, Grey, false, -1.f, 0, 40.f);
+		DrawDebugLine(World, FBL, FBR, Grey, false, -1.f, 0, 40.f);                            // far mouth rectangle
+		DrawDebugLine(World, FTL, FTR, Grey, false, -1.f, 0, 40.f);
+		DrawDebugLine(World, FBL, FTL, Grey, false, -1.f, 0, 40.f);
+		DrawDebugLine(World, FBR, FTR, Grey, false, -1.f, 0, 40.f);
+	}
+
+	// The physical runway strip(s), outlined straight from each runway MESH's bounds -
+	// so the yellow box hugs the mesh and both thresholds sit on its ends. Move or
+	// scale the mesh and this follows it exactly. - TripleA
+	for (TActorIterator<AClearanceRunway> It(World); It; ++It)
+	{
+		const float HRad = FMath::DegreesToRadians(It->LandingHeadingDeg);
+		const FVector Dir(FMath::Sin(HRad), FMath::Cos(HRad), 0.f);
+		const FVector Side(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
+
+		FVector Cw = It->GetActorLocation();
+		float HalfLen = 800.f, HalfWidth = 0.025f * S, Zc = Cw.Z;
+		FVector MeshCentre, MeshExtent;
+		if (It->GetRunwayBounds(MeshCentre, MeshExtent))
+		{
+			Cw = MeshCentre;
+			HalfLen = MeshExtent.X * FMath::Abs(Dir.X) + MeshExtent.Y * FMath::Abs(Dir.Y);
+			HalfWidth = MeshExtent.X * FMath::Abs(Side.X) + MeshExtent.Y * FMath::Abs(Side.Y);
+			Zc = MeshCentre.Z + MeshExtent.Z;
+		}
+		const FVector C(Cw.X, Cw.Y, Zc);
+		const FVector E1 = C - Dir * HalfLen;
+		const FVector E2 = C + Dir * HalfLen;
+
+		DrawDebugLine(World, E1, E2, FColor::Yellow, false, -1.f, 0, 250.f);                 // centreline of the strip
+		DrawDebugLine(World, E1 + Side * HalfWidth, E2 + Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f); // edges
+		DrawDebugLine(World, E1 - Side * HalfWidth, E2 - Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f);
+		DrawDebugLine(World, E1 + Side * HalfWidth, E1 - Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f); // end caps
+		DrawDebugLine(World, E2 + Side * HalfWidth, E2 - Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f);
+		DrawDebugSphere(World, E1, 400.f, 8, FColor::Yellow, false, -1.f, 0, 40.f);
+		DrawDebugSphere(World, E2, 400.f, 8, FColor::Yellow, false, -1.f, 0, 40.f);
+
+		// Label each end with the heading you'd land on it, so you know which way to
+		// vector and whether LandingHeadingDeg matches how the mesh actually points.
+		const int32 H1 = FMath::RoundToInt(It->LandingHeadingDeg);
+		const int32 H2 = (H1 + 180) % 360;
+		DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %03d"), H1), nullptr, FColor::Yellow, 0.f, true, 1.2f);
+		if (It->bAllowReciprocal)
+		{
+			DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %03d"), H2), nullptr, FColor::Yellow, 0.f, true, 1.2f);
+		}
 	}
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f\n"),
 		SessionTime,
@@ -366,7 +526,7 @@ void AClearanceSimulationController::DrawDebugView()
 		// aircraft skip them so the model isn't buried in a debug blob.
 		if (!VisualActors.Contains(A.Callsign))
 		{
-			const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + A.Altitude * AltitudeWorldScale);
+			const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + AltitudeToWorldZOffset(A.Altitude));
 			DrawDebugSphere(World, P, 500.f, 10, C, false, -1.f, 0, 40.f);
 
 			const float HeadingRad = FMath::DegreesToRadians(A.Heading);
@@ -374,12 +534,20 @@ void AClearanceSimulationController::DrawDebugView()
 			DrawDebugLine(World, P, P + Dir * 2200.f, C, false, -1.f, 0, 60.f);
 		}
 
-		// Shows current>target for each axis, so we can see if instructions take.
-		Readout += FString::Printf(TEXT("%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f%s\n"),
+		// Float the callsign + current>target heading over each aircraft, so you can
+		// pick one out and see where it's pointing vs where you've sent it. - TripleA
+		DrawDebugString(World, WorldPositionFor(A) + FVector(0, 0, 1.2f * S),
+			FString::Printf(TEXT("%s  hdg %03.0f>%03.0f"), *A.Callsign.ToString(), A.Heading, A.TargetHeading),
+			nullptr, C, 0.f, true, 1.1f);
+
+		// Shows current>target for each axis + vertical speed, so we can see if it's
+		// actually descending (and whether the nose-down branch should fire).
+		Readout += FString::Printf(TEXT("%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f  vs%+5.0f%s\n"),
 			*A.Callsign.ToString(),
 			A.Heading, A.TargetHeading,
 			A.Altitude, A.TargetAltitude,
 			A.Speed, A.TargetSpeed,
+			A.ClimbRate,
 			Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""));
 	}
 
@@ -401,7 +569,10 @@ void AClearanceSimulationController::CheckExits()
 	{
 		const float Dist = FVector2D(State.Position.X, State.Position.Y).Size();
 
-		if (State.FlightPhase == EFlightPhase::Landing && State.Altitude <= 100.f)
+		// Pull it off only once it's on the deck AND has braked to a FULL STOP, so the
+		// whole roll-out plays out - touch down, brake, slow, stop - before it's
+		// removed, instead of vanishing while still rolling. - TripleA
+		if (State.FlightPhase == EFlightPhase::Landing && State.Altitude <= 100.f && State.Speed <= 1.f)
 		{
 			if (Scoring) { Scoring->LogIncident(EIncidentType::SuccessfulLanding, State.Callsign, NAME_None, TEXT("Landed")); }
 			AirspaceManager->DeregisterAircraft(State.Callsign);
@@ -458,6 +629,7 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 {
 	UClearanceAircraftBehaviour* Behaviour = NewObject<UClearanceAircraftBehaviour>(this);
 	Behaviour->Initialise(AirspaceManager, Callsign);
+	Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
 	BehaviourMap.Add(Callsign, Behaviour);
 	if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
 

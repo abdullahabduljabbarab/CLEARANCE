@@ -298,6 +298,14 @@ void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float Delt
 		RateFtPerMin *= 1.5f; // "expedite" - push the rate up
 	}
 
+	// Flare: in the last few feet of an approach, arrest the sink to a gentle touchdown
+	// rate so it settles softly instead of arriving at full descent rate and dropping
+	// onto the runway. - TripleA
+	if (Delta < 0.f && State.FlightPhase == EFlightPhase::Approach && State.Altitude < 40.f)
+	{
+		RateFtPerMin = FMath::Min(RateFtPerMin, 180.f);
+	}
+
 	const float MaxStep = (RateFtPerMin / 60.f) * DeltaTime;
 	const float Step = FMath::Clamp(Delta, -MaxStep, MaxStep);
 
@@ -424,7 +432,7 @@ void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, con
 	// Touchdown once it has reached the aim point (into the runway) and is low, so it
 	// plants in the touchdown zone, not on the edge. If it came in high it carries past
 	// and lands long - but never short of the aim point. - TripleA
-	if (AimAlong >= 0.f && State.Altitude <= 100.f)
+	if (AimAlong >= 0.f && State.Altitude <= 20.f)
 	{
 		State.FlightPhase = EFlightPhase::Landing;
 	}

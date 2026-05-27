@@ -317,16 +317,16 @@ void AClearanceSimulationController::UpdateVisuals()
 		{
 			PitchDeg = 0.f; // on the deck - nose-wheel down, level for the rollout
 		}
-		else if (bApproaching && State.Altitude < 150.f && State.ClimbRate < 0.f)
+		else if (bApproaching && State.Altitude < 60.f && State.ClimbRate < 0.f)
 		{
-			PitchDeg = 8.f; // FLARE - nose lifts up just before touchdown
+			PitchDeg = 4.f; // FLARE - nose eases up just before touchdown
 		}
 		else if (bApproaching && State.ClimbRate < -50.f)
 		{
 			// On the glidepath the real angle is shallow (~3deg) so it'd read as level;
-			// dramatise a clear nose-DOWN descent attitude for the landing, then the
-			// flare above lifts it right before touchdown. - TripleA
-			PitchDeg = -9.f; // clear nose-down descent attitude
+			// a moderate nose-DOWN descent attitude for the landing, then the flare above
+			// eases it up before touchdown - a smaller swing reads smoother. - TripleA
+			PitchDeg = -6.f;
 		}
 		else
 		{
@@ -345,9 +345,12 @@ void AClearanceSimulationController::UpdateVisuals()
 		// and yaw wander. A per-aircraft phase from the callsign stops the whole sector
 		// wobbling in lockstep. Tiny degrees - it's life, not turbulence. - TripleA
 		const float Ph = (GetTypeHash(State.Callsign) % 628) * 0.01f; // 0..2pi-ish
-		const float RollWob  = (FMath::Sin(Now * 0.9f + Ph) * 1.6f + FMath::Sin(Now * 2.3f + Ph * 1.7f) * 0.5f) * Buffet;
-		const float PitchWob = FMath::Sin(Now * 1.3f + Ph * 0.6f) * 0.8f * Buffet;
-		const float YawWob   = FMath::Sin(Now * 0.7f + Ph * 1.3f) * 0.6f * Buffet;
+		// Fade the buffet out near the ground so it doesn't jitter on the flare/roll-out -
+		// the airframe steadies as it lands. Full effect above 400ft, none on the deck. - TripleA
+		const float GroundFade = FMath::Clamp(State.Altitude / 400.f, 0.f, 1.f) * Buffet;
+		const float RollWob  = (FMath::Sin(Now * 0.9f + Ph) * 1.6f + FMath::Sin(Now * 2.3f + Ph * 1.7f) * 0.5f) * GroundFade;
+		const float PitchWob = FMath::Sin(Now * 1.3f + Ph * 0.6f) * 0.8f * GroundFade;
+		const float YawWob   = FMath::Sin(Now * 0.7f + Ph * 1.3f) * 0.6f * GroundFade;
 		const FQuat BuffetRot = FRotator(PitchWob, YawWob, RollWob).Quaternion();
 
 		const FQuat TargetRot = LookAlong * Bank * BuffetRot * MeshFix;

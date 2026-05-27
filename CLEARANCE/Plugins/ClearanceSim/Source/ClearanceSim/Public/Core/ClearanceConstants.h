@@ -61,14 +61,14 @@ namespace ClearanceConstants
 		switch (Category)
 		{
 		case EWakeCategory::Light:   // Cessna 172S
-			return { 14000.f,  65.f, 163.f,  730.f, 1500.f, 30.f, 2.0f, 1.00f, 15.f, 4.5f };
+			return { 14000.f,  65.f, 163.f,  730.f, 1500.f, 30.f, 2.0f, 1.00f, 15.f, 2.2f };
 		case EWakeCategory::Heavy:   // Boeing 777-300ER
-			return { 43100.f, 170.f, 350.f, 2500.f, 3500.f, 25.f, 1.0f, 0.50f, 40.f, 2.4f };
+			return { 43100.f, 170.f, 350.f, 2500.f, 3500.f, 25.f, 1.0f, 0.50f, 40.f, 1.0f };
 		case EWakeCategory::Super:   // Airbus A380-800
-			return { 43000.f, 155.f, 340.f, 1500.f, 3000.f, 25.f, 0.8f, 0.40f, 40.f, 2.0f };
+			return { 43000.f, 155.f, 340.f, 1500.f, 3000.f, 25.f, 0.8f, 0.40f, 40.f, 0.85f };
 		case EWakeCategory::Medium:  // Boeing 737-800
 		default:
-			return { 41000.f, 150.f, 340.f, 1800.f, 3000.f, 25.f, 1.5f, 0.75f, 37.f, 3.0f };
+			return { 41000.f, 150.f, 340.f, 1800.f, 3000.f, 25.f, 1.5f, 0.75f, 37.f, 1.2f };
 		}
 	}
 }

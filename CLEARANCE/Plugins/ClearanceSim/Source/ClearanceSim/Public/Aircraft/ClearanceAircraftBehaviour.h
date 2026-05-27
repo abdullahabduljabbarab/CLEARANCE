@@ -39,7 +39,7 @@ public:
 	float HeadingToleranceDeg = 1.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behaviour|Tuning")
-	float AltitudeToleranceFt = 50.f;
+	float AltitudeToleranceFt = 10.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behaviour|Tuning")
 	float SpeedToleranceKnots = 2.f;

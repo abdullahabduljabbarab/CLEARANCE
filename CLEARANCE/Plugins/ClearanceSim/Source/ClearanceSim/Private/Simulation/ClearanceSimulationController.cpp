@@ -348,9 +348,20 @@ void AClearanceSimulationController::UpdateVisuals()
 		// Fade the buffet out near the ground so it doesn't jitter on the flare/roll-out -
 		// the airframe steadies as it lands. Full effect above 400ft, none on the deck. - TripleA
 		const float GroundFade = FMath::Clamp(State.Altitude / 400.f, 0.f, 1.f) * Buffet;
-		const float RollWob  = (FMath::Sin(Now * 0.9f + Ph) * 1.6f + FMath::Sin(Now * 2.3f + Ph * 1.7f) * 0.5f) * GroundFade;
-		const float PitchWob = FMath::Sin(Now * 1.3f + Ph * 0.6f) * 0.8f * GroundFade;
-		const float YawWob   = FMath::Sin(Now * 0.7f + Ph * 1.3f) * 0.6f * GroundFade;
+		float RollWob  = (FMath::Sin(Now * 0.9f + Ph) * 1.6f + FMath::Sin(Now * 2.3f + Ph * 1.7f) * 0.5f) * GroundFade;
+		float PitchWob = FMath::Sin(Now * 1.3f + Ph * 0.6f) * 0.8f * GroundFade;
+		const float YawWob = FMath::Sin(Now * 0.7f + Ph * 1.3f) * 0.6f * GroundFade;
+
+		// Wake turbulence: a sharp wing-rock + bump on top of the gentle buffet, scaled
+		// by intensity - a Light behind a Super gets thrown around, a Heavy behind a
+		// Heavy barely twitches. - TripleA
+		const float WakeI = ConflictDetector ? ConflictDetector->GetWakeIntensity(State.Callsign) : 0.f;
+		if (WakeI > 0.f)
+		{
+			RollWob  += (FMath::Sin(Now * 3.2f + Ph) * 18.f + FMath::Sin(Now * 5.7f + Ph * 2.f) * 8.f) * WakeI;
+			PitchWob += FMath::Sin(Now * 4.1f + Ph * 0.5f) * 4.5f * WakeI;
+		}
+
 		const FQuat BuffetRot = FRotator(PitchWob, YawWob, RollWob).Quaternion();
 
 		const FQuat TargetRot = LookAlong * Bank * BuffetRot * MeshFix;
@@ -505,12 +516,19 @@ void AClearanceSimulationController::DrawDebugView()
 
 		// Label each end with the heading you'd land on it, so you know which way to
 		// vector and whether LandingHeadingDeg matches how the mesh actually points.
-		const int32 H1 = FMath::RoundToInt(It->LandingHeadingDeg);
-		const int32 H2 = (H1 + 180) % 360;
-		DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %03d"), H1), nullptr, FColor::Yellow, 0.f, true, 1.2f);
+		// Real runway designator: heading rounded to the nearest 10, divided by 10, two
+		// digits (180deg -> "18", 90 -> "09", 360/0 -> "36"). - TripleA
+		auto Designator = [](float Hdg)
+		{
+			int32 N = FMath::RoundToInt(Hdg / 10.f) % 36;
+			return (N == 0) ? 36 : N;
+		};
+		const int32 D1 = Designator(It->LandingHeadingDeg);
+		const int32 D2 = Designator(FMath::Fmod(It->LandingHeadingDeg + 180.f, 360.f));
+		DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %02d"), D1), nullptr, FColor::Yellow, 0.f, true, 1.2f);
 		if (It->bAllowReciprocal)
 		{
-			DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %03d"), H2), nullptr, FColor::Yellow, 0.f, true, 1.2f);
+			DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %02d"), D2), nullptr, FColor::Yellow, 0.f, true, 1.2f);
 		}
 	}
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f\n"),
@@ -698,6 +716,18 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 	{
 		Scoring->LogIncident(EIncidentType::SeparationLoss, Conflict.AircraftA, Conflict.AircraftB, TEXT("Critical separation loss"));
 	}
+
+	// Surface it on screen until there's a real UI, so conflicts are visible. - TripleA
+	if (GEngine)
+	{
+		const TCHAR* Lvl = Conflict.AlertLevel == EAlertLevel::Critical ? TEXT("CRITICAL")
+			: Conflict.AlertLevel == EAlertLevel::Warning ? TEXT("WARNING") : TEXT("ADVISORY");
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, ColourFor(Conflict.AlertLevel),
+			FString::Printf(TEXT("%s  %s / %s  -  %.1f nm, %.0f ft%s"), Lvl,
+				*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
+				Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
+				Conflict.bRequiresGoAround ? TEXT("  [GO-AROUND]") : TEXT("")));
+	}
 }
 
 void AClearanceSimulationController::HandleGoAroundRequired(FName Callsign)
@@ -713,6 +743,14 @@ void AClearanceSimulationController::HandleWakeAdvisory(FName FollowingCallsign,
 		CommsRouter->ReceiveAdvisory(
 			FString::Printf(TEXT("Wake caution: %s behind %s (need %.0f nm)"), *FollowingCallsign.ToString(), *LeadingCallsign.ToString(), RequiredSeparationNm),
 			EAlertLevel::Advisory);
+	}
+
+	// On screen too, until the UI exists. - TripleA
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor(255, 180, 0),
+			FString::Printf(TEXT("WAKE CAUTION  %s behind %s  (need %.0f nm)"),
+				*FollowingCallsign.ToString(), *LeadingCallsign.ToString(), RequiredSeparationNm));
 	}
 }
 
@@ -825,5 +863,88 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 		{
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
+		}
+	}));
+
+// Drop a single aircraft straight into the sector at a chosen state - used by the test
+// scenarios below to set up a guaranteed conflict / wake situation. - TripleA
+static void SpawnTestAircraft(AClearanceAirspaceManager* Mgr, FName Callsign, FVector PosNm, float AltFt, float HeadingDeg, float SpeedKts, EWakeCategory Cat)
+{
+	if (!Mgr) { return; }
+	FAircraftState S;
+	S.Callsign = Callsign;
+	S.Position = PosNm;
+	S.Altitude = AltFt;
+	S.Heading = HeadingDeg;
+	S.Speed = SpeedKts;
+	S.FlightPhase = EFlightPhase::Enroute;
+	S.WakeCategory = Cat;
+	Mgr->RegisterAircraft(S); // Behaviour holds the entry heading/alt/speed, so it flies straight
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceTestConflictCmd(
+	TEXT("clearance.test.conflict"),
+	TEXT("clearance.test.conflict - two aircraft head-on at the same level; watch the alert escalate"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+		C->ClearTraffic();
+		AClearanceAirspaceManager* M = C->GetAirspaceManager();
+		// 12 nm apart on the E-W line, same altitude, flying at each other.
+		SpawnTestAircraft(M, TEXT("CONFL1"), FVector(-6.f, 0.f, 0.f), 10000.f,  90.f, 250.f, EWakeCategory::Medium);
+		SpawnTestAircraft(M, TEXT("CONFL2"), FVector( 6.f, 0.f, 0.f), 10000.f, 270.f, 250.f, EWakeCategory::Medium);
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, TEXT("TEST: CONFL1/CONFL2 head-on at FL100 - alert should escalate ADVISORY->WARNING->CRITICAL")); }
+	}));
+
+// light/small/L, medium/M, heavy/big/H, super/S - forgiving so you can type the word
+// or just the first letter. - TripleA
+static EWakeCategory ParseWakeCat(const FString& Tok, EWakeCategory Default)
+{
+	const FString T = Tok.ToUpper();
+	if (T.StartsWith(TEXT("MED")) || T == TEXT("M")) return EWakeCategory::Medium;
+	if (T.StartsWith(TEXT("HEA")) || T.StartsWith(TEXT("BIG")) || T == TEXT("H") || T == TEXT("B")) return EWakeCategory::Heavy;
+	if (T.StartsWith(TEXT("SUP")) || T == TEXT("S")) return EWakeCategory::Super;
+	if (T.StartsWith(TEXT("LIG")) || T.StartsWith(TEXT("SMA")) || T == TEXT("L")) return EWakeCategory::Light;
+	return Default;
+}
+
+static const TCHAR* WakeCatName(EWakeCategory C)
+{
+	switch (C)
+	{
+	case EWakeCategory::Light:  return TEXT("Light");
+	case EWakeCategory::Heavy:  return TEXT("Heavy");
+	case EWakeCategory::Super:  return TEXT("Super");
+	default:                    return TEXT("Medium");
+	}
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceTestWakeCmd(
+	TEXT("clearance.test.wake"),
+	TEXT("clearance.test.wake [leader] [follower] - follower trails the leader in wake. Categories: light/medium/heavy/super (default heavy light)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+		AClearanceAirspaceManager* M = C->GetAirspaceManager();
+
+		const EWakeCategory LeadCat = Args.Num() > 0 ? ParseWakeCat(Args[0], EWakeCategory::Heavy) : EWakeCategory::Heavy;
+		const EWakeCategory FollowCat = Args.Num() > 1 ? ParseWakeCat(Args[1], EWakeCategory::Light) : EWakeCategory::Light;
+
+		const ClearanceConstants::FCategoryPerformance LP = ClearanceConstants::GetCategoryPerformance(LeadCat);
+		const ClearanceConstants::FCategoryPerformance FP = ClearanceConstants::GetCategoryPerformance(FollowCat);
+		const float LSpd = FMath::Clamp(175.f, LP.MinOperatingSpeedKts, LP.MaxOperatingSpeedKts);
+		const float FSpd = FMath::Clamp(170.f, FP.MinOperatingSpeedKts, FP.MaxOperatingSpeedKts);
+
+		C->ClearTraffic();
+		// Leader ahead, follower 3.5 nm behind in trail at the same level.
+		SpawnTestAircraft(M, TEXT("LEAD"),  FVector(0.f,  0.f, 0.f), 8000.f, 0.f, LSpd, LeadCat);
+		SpawnTestAircraft(M, TEXT("TRAIL"), FVector(0.f, -3.5f, 0.f), 8000.f, 0.f, FSpd, FollowCat);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Cyan,
+				FString::Printf(TEXT("TEST: %s (TRAIL) 3.5nm behind %s (LEAD) - wake rocks the trailer if the leader makes enough wake"),
+					WakeCatName(FollowCat), WakeCatName(LeadCat)));
 		}
 	}));

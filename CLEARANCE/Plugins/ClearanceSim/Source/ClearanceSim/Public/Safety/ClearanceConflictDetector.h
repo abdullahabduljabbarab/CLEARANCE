@@ -40,6 +40,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Conflict")
 	EAlertLevel GetAlertLevelFor(FName Callsign) const;
 
+	// True while this aircraft is the follower caught in another's wake (read-only -
+	// the visual layer uses it to rock the airframe). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Conflict")
+	bool IsInWakeTurbulence(FName Callsign) const;
+
+	// 0 = not in wake; up to 1 = severe. Scales with how much heavier the leader is
+	// than this follower, so a Light behind a Super is thrown around far more than a
+	// Heavy behind a Heavy. The visual layer scales the wing-rock by this.
+	UFUNCTION(BlueprintCallable, Category = "Conflict")
+	float GetWakeIntensity(FName Callsign) const;
+
 	UFUNCTION(BlueprintCallable, Category = "Conflict")
 	void RemoveAircraft(FName Callsign);
 
@@ -54,6 +65,9 @@ private:
 	// Keyed by an order-independent pair key, so a pair is one conflict either way.
 	TMap<FString, FConflictEvent> ActiveConflicts;
 	TSet<FString> ActiveWakeAdvisories;
+	// Followers currently caught in a wake this pass -> intensity (0..1). Queried by
+	// IsInWakeTurbulence / GetWakeIntensity.
+	TMap<FName, float> WakeAffected;
 
 	static float HorizontalSeparationNm(const FAircraftState& A, const FAircraftState& B);
 	static float VerticalSeparationFt(const FAircraftState& A, const FAircraftState& B);

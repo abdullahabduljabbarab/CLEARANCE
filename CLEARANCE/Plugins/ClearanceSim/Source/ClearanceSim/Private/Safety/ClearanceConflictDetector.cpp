@@ -32,6 +32,7 @@ void UClearanceConflictDetector::DetectConflicts()
 
 	TSet<FString> SeenConflicts;
 	TSet<FString> SeenWake;
+	TMap<FName, float> WakeFollowersThisPass;
 
 	for (int32 i = 0; i < States.Num(); ++i)
 	{
@@ -116,6 +117,13 @@ void UClearanceConflictDetector::DetectConflicts()
 			if (bViolation)
 			{
 				SeenWake.Add(WakeKey);
+				// Intensity scales with how much heavier the leader is than the follower:
+				// (leaderRank - followerRank + 1)/4, so Light-behind-Super ~1.0 and
+				// Heavy-behind-Heavy ~0.25. - TripleA
+				const int32 LeadRank = static_cast<int32>(Leader->WakeCategory);
+				const int32 FollowRank = static_cast<int32>(Follower->WakeCategory);
+				const float Intensity = FMath::Clamp((LeadRank - FollowRank + 1) / 4.f, 0.25f, 1.f);
+				WakeFollowersThisPass.Add(Follower->Callsign, Intensity);
 				if (!ActiveWakeAdvisories.Contains(WakeKey))
 				{
 					ActiveWakeAdvisories.Add(WakeKey);
@@ -142,6 +150,18 @@ void UClearanceConflictDetector::DetectConflicts()
 
 	// Wake advisories clear silently once separation is restored.
 	ActiveWakeAdvisories = ActiveWakeAdvisories.Intersect(SeenWake);
+	WakeAffected = MoveTemp(WakeFollowersThisPass);
+}
+
+bool UClearanceConflictDetector::IsInWakeTurbulence(FName Callsign) const
+{
+	return WakeAffected.Contains(Callsign);
+}
+
+float UClearanceConflictDetector::GetWakeIntensity(FName Callsign) const
+{
+	const float* Found = WakeAffected.Find(Callsign);
+	return Found ? *Found : 0.f;
 }
 
 EAlertLevel UClearanceConflictDetector::GetAlertLevelFor(FName Callsign) const

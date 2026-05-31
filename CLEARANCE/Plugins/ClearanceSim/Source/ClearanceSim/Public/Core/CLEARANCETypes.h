@@ -282,6 +282,32 @@ struct CLEARANCESIM_API FRunwayInfo
 	float HeadingDeg = 270.f;
 };
 
+/** One snapshot of the whole sector at a moment in time, captured by the recorder. */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FRecordedSnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recording")
+	float TimeStamp = 0.f; // session-relative seconds
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recording")
+	TArray<FAircraftState> States;
+};
+
+/** A point-in-time event (instruction, conflict, score change, etc) on the timeline. */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FRecordedEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recording")
+	float TimeStamp = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Recording")
+	FString Description;
+};
+
 /** Sector-wide environmental state owned by the Airspace Manager. */
 USTRUCT(BlueprintType)
 struct CLEARANCESIM_API FSectorEnvironment

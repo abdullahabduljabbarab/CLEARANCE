@@ -13,6 +13,29 @@ class UClearanceInstructionValidator;
 class UClearanceConflictDetector;
 class UClearanceCommsRouter;
 class UClearanceScoring;
+class UClearanceSessionRecorder;
+class ACameraActor;
+
+// Fixed instructor views. Free-cam is intentionally out so the player can't roam. - TripleA
+UENUM(BlueprintType)
+enum class EClearanceCameraView : uint8
+{
+	Default     UMETA(DisplayName = "Default (player pawn)"),
+	Overview    UMETA(DisplayName = "Sector overview"),
+	Tower       UMETA(DisplayName = "Tower (active runway threshold)"),
+	Approach    UMETA(DisplayName = "Far end of approach"),
+	Follow      UMETA(DisplayName = "Chase a chosen aircraft")
+};
+
+// Sub-angles for the Follow camera. - TripleA
+UENUM(BlueprintType)
+enum class EClearanceFollowAngle : uint8
+{
+	Chase    UMETA(DisplayName = "Chase (behind + above)"),
+	Cockpit  UMETA(DisplayName = "Cockpit (forward view)"),
+	Side     UMETA(DisplayName = "Wing/side"),
+	Top      UMETA(DisplayName = "Top-down on aircraft")
+};
 
 // One assignable aircraft model, with its OWN facing correction and size - so
 // different meshes (even within the same category) tune independently. - TripleA
@@ -88,6 +111,54 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceCommsRouter* GetCommsRouter() const { return CommsRouter; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	UClearanceSessionRecorder* GetRecorder() const { return Recorder; }
+
+	// --- After-Action Review ------------------------------------------------
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void StartRecording();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void StopRecording();
+
+	// Suspend the live sim and pose the world to the recording's timeline. Call
+	// SeekReplay/SetReplaySpeed to scrub; ResumeLive() to go back to playing live.
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void EnterReplay();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void ResumeLive();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void SeekReplay(float TimeSeconds);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void SetReplayPaused(bool bInPaused);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void SetReplaySpeed(float Multiplier);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	bool IsInReplay() const { return bReplayMode; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	float GetReplayTime() const { return ReplayTime; }
+
+	// --- Cameras ------------------------------------------------------------
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
+	void SetCameraView(EClearanceCameraView View, FName FollowCallsign = NAME_None);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
+	void CycleCameraView();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
+	void SetFollowAngle(EClearanceFollowAngle Angle);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
+	void CycleFollowAngle();
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceConflictDetector* GetConflictDetector() const { return ConflictDetector; }
@@ -207,6 +278,35 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceScoring> Scoring;
+
+	UPROPERTY()
+	TObjectPtr<UClearanceSessionRecorder> Recorder;
+
+	bool bReplayMode = false;
+	bool bReplayPaused = false;
+	float ReplayTime = 0.f;          // seconds-into-the-recording we're posing the world to
+	float ReplaySpeed = 1.f;
+
+	// Preset cameras spawned on session start. Free-cam is intentionally not exposed.
+	UPROPERTY()
+	TObjectPtr<ACameraActor> CameraOverview;
+	UPROPERTY()
+	TObjectPtr<ACameraActor> CameraTower;
+	UPROPERTY()
+	TObjectPtr<ACameraActor> CameraApproach;
+	UPROPERTY()
+	TObjectPtr<ACameraActor> CameraFollow;
+	EClearanceCameraView CurrentCameraView = EClearanceCameraView::Default;
+	FName FollowTargetCallsign;
+	EClearanceFollowAngle FollowAngle = EClearanceFollowAngle::Chase;
+
+	void SpawnPresetCameras();
+	void UpdateFollowCamera();
+	// Live world frozen on EnterReplay so ResumeLive can restore it. - TripleA
+	UPROPERTY()
+	FRecordedSnapshot PreReplayState;
+	float PreReplaySessionTime = 0.f;
+	bool bHasPreReplayState = false;
 
 	UPROPERTY()
 	TMap<FName, TObjectPtr<UClearanceAircraftBehaviour>> BehaviourMap;

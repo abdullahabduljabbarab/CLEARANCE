@@ -8,6 +8,10 @@
 #include "Comms/ClearanceCommsRouter.h"
 #include "Safety/ClearanceConflictDetector.h"
 #include "Scoring/ClearanceScoring.h"
+#include "Simulation/ClearanceSessionRecorder.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
+#include "Kismet/GameplayStatics.h"
 #include "Core/ClearanceConstants.h"
 #include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
@@ -77,6 +81,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	Scoring = NewObject<UClearanceScoring>(this);
 	ConflictDetector = NewObject<UClearanceConflictDetector>(this);
 	CommsRouter = NewObject<UClearanceCommsRouter>(this);
+	Recorder = NewObject<UClearanceSessionRecorder>(this);
 
 	if (AirspaceManager)
 	{
@@ -142,6 +147,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	if (CommsRouter) { CommsRouter->SetReferences(AirspaceManager, Validator); }
 
 	BindDelegates();
+	SpawnPresetCameras();
 	bInitialised = true;
 }
 
@@ -225,9 +231,35 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		return;
 	}
 
+	if (bReplayMode)
+	{
+		// Replay: don't run the sim - pose the world to the recorded snapshot at the
+		// current replay time, then let UpdateVisuals draw it. - TripleA
+		if (!bReplayPaused && Recorder && AirspaceManager)
+		{
+			ReplayTime = FMath::Clamp(ReplayTime + DeltaTime * ReplaySpeed, 0.f, Recorder->GetDurationSeconds());
+			if (const FRecordedSnapshot* Snap = Recorder->FindSnapshotAt(ReplayTime))
+			{
+				Recorder->ApplySnapshotTo(AirspaceManager, *Snap);
+			}
+		}
+		UpdateVisuals();
+		UpdateFollowCamera();
+		DrawDebugView();
+		return;
+	}
+
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
 	SessionTime += SimDelta;
 	StepSimulation(SimDelta);
+
+	// Capture the post-tick state into the recording timeline.
+	if (Recorder && Recorder->IsRecording() && AirspaceManager)
+	{
+		Recorder->CaptureSnapshot(SessionTime, AirspaceManager->GetAllAircraftStates());
+	}
+
+	UpdateFollowCamera();
 }
 
 void AClearanceSimulationController::StepSimulation(float DeltaTime)
@@ -541,12 +573,24 @@ void AClearanceSimulationController::DrawDebugView()
 			DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %02d"), D2), nullptr, FColor::Yellow, 0.f, true, 1.2f);
 		}
 	}
-	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f\n"),
+	FString AARTag;
+	if (bReplayMode && Recorder)
+	{
+		AARTag = FString::Printf(TEXT("  |  [REPLAY %s %.1f/%.1fs x%.1f]"),
+			bReplayPaused ? TEXT("PAUSED") : TEXT("PLAY"), ReplayTime, Recorder->GetDurationSeconds(), ReplaySpeed);
+	}
+	else if (Recorder && Recorder->IsRecording())
+	{
+		AARTag = FString::Printf(TEXT("  |  [REC %d snapshots]"), Recorder->GetSnapshotCount());
+	}
+
+	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f%s\n"),
 		SessionTime,
 		Scoring ? Scoring->GetCurrentScore() : 0,
 		Scoring ? Scoring->GetEfficiency() * 100.f : 100.f,
 		States.Num(),
-		Env.WindDirection, Env.WindSpeed, Env.ActiveRunwayHeading);
+		Env.WindDirection, Env.WindSpeed, Env.ActiveRunwayHeading,
+		*AARTag);
 
 	// Scoring breakdown, tallied from the session log so we can see what's adding up.
 	if (Scoring)
@@ -646,11 +690,264 @@ void AClearanceSimulationController::CheckExits()
 EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const FAircraftInstruction& Instruction)
 {
 	if (Scoring) { Scoring->RecordInstruction(); }
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("INSTR %s %s %.0f"),
+			*UEnum::GetValueAsString(Instruction.Type), *Instruction.TargetCallsign.ToString(), Instruction.TargetValue));
+	}
 	if (CommsRouter)
 	{
 		return CommsRouter->IssueInstruction(Instruction);
 	}
 	return EInstructionResult::Rejected_InvalidCallsign;
+}
+
+void AClearanceSimulationController::StartRecording()
+{
+	if (!Recorder) { return; }
+	Recorder->ClearRecording();
+	Recorder->StartRecording();
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, TEXT("AAR: recording started")); }
+}
+
+void AClearanceSimulationController::StopRecording()
+{
+	if (!Recorder) { return; }
+	Recorder->StopRecording();
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
+			FString::Printf(TEXT("AAR: stopped - %d snapshots, %.1fs"), Recorder->GetSnapshotCount(), Recorder->GetDurationSeconds()));
+	}
+}
+
+void AClearanceSimulationController::EnterReplay()
+{
+	if (!Recorder || Recorder->GetSnapshotCount() == 0)
+	{
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow, TEXT("AAR: no recording to replay")); }
+		return;
+	}
+	// Freeze the live world so ResumeLive can put it back as it was. - TripleA
+	if (AirspaceManager)
+	{
+		PreReplayState.TimeStamp = SessionTime;
+		PreReplayState.States = AirspaceManager->GetAllAircraftStates();
+		PreReplaySessionTime = SessionTime;
+		bHasPreReplayState = true;
+	}
+
+	Recorder->StopRecording();
+	bReplayMode = true;
+	bReplayPaused = false;
+	ReplayTime = 0.f;
+	// Default replay speed = sim time scale, so the playback runs at the same pace
+	// the user actually saw live (otherwise a 10x sim plays back 10x slower). - TripleA
+	ReplaySpeed = FMath::Max(0.1f, SimulationTimeScale);
+	// Pose to t=0 immediately so the user sees the start of the recording, not a stale frame.
+	if (AirspaceManager)
+	{
+		if (const FRecordedSnapshot* Snap = Recorder->FindSnapshotAt(0.f))
+		{
+			Recorder->ApplySnapshotTo(AirspaceManager, *Snap);
+		}
+	}
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, TEXT("AAR: REPLAY  (clearance.replay.pause/seek/speed/live to control)")); }
+}
+
+void AClearanceSimulationController::ResumeLive()
+{
+	// Put the world back to where the live sim was when we entered replay.
+	if (bHasPreReplayState && AirspaceManager && Recorder)
+	{
+		Recorder->ApplySnapshotTo(AirspaceManager, PreReplayState);
+		SessionTime = PreReplaySessionTime;
+		bHasPreReplayState = false;
+	}
+	bReplayMode = false;
+	bReplayPaused = false;
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("AAR: live")); }
+}
+
+void AClearanceSimulationController::SeekReplay(float TimeSeconds)
+{
+	if (!bReplayMode || !Recorder) { return; }
+	ReplayTime = FMath::Clamp(TimeSeconds, 0.f, Recorder->GetDurationSeconds());
+	if (AirspaceManager)
+	{
+		if (const FRecordedSnapshot* Snap = Recorder->FindSnapshotAt(ReplayTime))
+		{
+			Recorder->ApplySnapshotTo(AirspaceManager, *Snap);
+		}
+	}
+}
+
+void AClearanceSimulationController::SetReplayPaused(bool bInPaused)
+{
+	bReplayPaused = bInPaused;
+}
+
+void AClearanceSimulationController::SetReplaySpeed(float Multiplier)
+{
+	ReplaySpeed = FMath::Max(0.05f, Multiplier);
+}
+
+void AClearanceSimulationController::SpawnPresetCameras()
+{
+	UWorld* World = GetWorld();
+	if (!World || !AirspaceManager) { return; }
+
+	const FVector Origin = GetActorLocation();
+	const float S = WorldUnitsPerNm;
+	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+
+	// Active runway threshold in world space (matches the white orb in the overlay).
+	const FVector ThrW(Origin.X + Env.ActiveRunwayThreshold.X * S,
+		Origin.Y + Env.ActiveRunwayThreshold.Y * S,
+		GroundWorldZ);
+	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+	const float FacRad = FMath::DegreesToRadians(FAC);
+	const FVector InboundDir(FMath::Sin(FacRad), FMath::Cos(FacRad), 0.f); // landing direction
+
+	// OVERVIEW: well above the sector, looking down and slightly toward the runway. - TripleA
+	{
+		const FVector Pos = Origin + FVector(0.f, -ExitRadiusNm * S * 0.55f, ExitRadiusNm * S * 0.95f);
+		const FRotator Rot = (ThrW - Pos).Rotation();
+		CameraOverview = World->SpawnActor<ACameraActor>(Pos, Rot);
+	}
+
+	// TOWER: at the runway threshold a bit elevated, looking down the approach (out
+	// the way aircraft come in from).
+	{
+		const FVector Pos = ThrW + FVector(0.f, 0.f, 600.f);
+		const FVector LookAt = ThrW - InboundDir * (20.f * S);
+		const FRotator Rot = (LookAt - Pos).Rotation();
+		CameraTower = World->SpawnActor<ACameraActor>(Pos, Rot);
+	}
+
+	// APPROACH: out at the far mouth of the corridor at glide altitude, looking back
+	// at the runway - this is where you "see" arriving aircraft from.
+	{
+		const float CorridorLen = ClearanceConstants::ApproachCorridorLengthNm;
+		const FVector FarPos = ThrW - InboundDir * (CorridorLen * 0.6f * S)
+			+ FVector(0.f, 0.f, AltitudeToWorldZOffset(CorridorLen * 0.6f * 318.f));
+		const FRotator Rot = (ThrW - FarPos).Rotation();
+		CameraApproach = World->SpawnActor<ACameraActor>(FarPos, Rot);
+	}
+
+	// FOLLOW: position updated per-tick in UpdateFollowCamera.
+	CameraFollow = World->SpawnActor<ACameraActor>(Origin, FRotator::ZeroRotator);
+}
+
+void AClearanceSimulationController::SetCameraView(EClearanceCameraView View, FName FollowCallsign)
+{
+	APlayerController* PC = UGameplayStatics::GetPlayerController(this, 0);
+	if (!PC) { return; }
+
+	AActor* Target = nullptr;
+	switch (View)
+	{
+	case EClearanceCameraView::Overview: Target = CameraOverview; break;
+	case EClearanceCameraView::Tower:    Target = CameraTower;    break;
+	case EClearanceCameraView::Approach: Target = CameraApproach; break;
+	case EClearanceCameraView::Follow:
+		Target = CameraFollow;
+		FollowTargetCallsign = FollowCallsign;
+		UpdateFollowCamera(); // snap into position before the blend starts
+		break;
+	case EClearanceCameraView::Default:
+	default:
+		Target = PC->GetPawn();
+		break;
+	}
+
+	if (Target)
+	{
+		PC->SetViewTargetWithBlend(Target, 0.6f);
+		CurrentCameraView = View;
+	}
+}
+
+void AClearanceSimulationController::CycleCameraView()
+{
+	// Default -> Overview -> Tower -> Approach -> Follow -> Default ...
+	EClearanceCameraView Next = EClearanceCameraView::Overview;
+	switch (CurrentCameraView)
+	{
+	case EClearanceCameraView::Default:  Next = EClearanceCameraView::Overview; break;
+	case EClearanceCameraView::Overview: Next = EClearanceCameraView::Tower;    break;
+	case EClearanceCameraView::Tower:    Next = EClearanceCameraView::Approach; break;
+	case EClearanceCameraView::Approach: Next = EClearanceCameraView::Follow;   break;
+	case EClearanceCameraView::Follow:   Next = EClearanceCameraView::Default;  break;
+	}
+
+	// For Follow, pick the first aircraft in the sector if none chosen.
+	FName TargetCallsign = FollowTargetCallsign;
+	if (Next == EClearanceCameraView::Follow && TargetCallsign.IsNone() && AirspaceManager)
+	{
+		const TArray<FAircraftState> All = AirspaceManager->GetAllAircraftStates();
+		if (All.Num() > 0) { TargetCallsign = All[0].Callsign; }
+	}
+	SetCameraView(Next, TargetCallsign);
+}
+
+void AClearanceSimulationController::UpdateFollowCamera()
+{
+	if (!CameraFollow || FollowTargetCallsign.IsNone() || !AirspaceManager) { return; }
+	const FAircraftState S = AirspaceManager->GetAircraftState(FollowTargetCallsign);
+	if (!S.bIsValid) { return; }
+
+	const FVector Aircraft = WorldPositionFor(S);
+	const float HeadingRad = FMath::DegreesToRadians(S.Heading);
+	const FVector Forward(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
+	const FVector Right(FMath::Cos(HeadingRad), -FMath::Sin(HeadingRad), 0.f); // 90 right of forward
+	const FVector Up(0.f, 0.f, 1.f);
+
+	FVector CamPos = Aircraft;
+	FRotator CamRot = FRotator::ZeroRotator;
+	switch (FollowAngle)
+	{
+	case EClearanceFollowAngle::Cockpit:
+		// Just ahead/above the aircraft origin, looking forward along heading.
+		CamPos = Aircraft + Forward * 60.f + Up * 80.f;
+		CamRot = Forward.Rotation();
+		break;
+	case EClearanceFollowAngle::Side:
+		// Off the right wing, slightly above, looking back at the aircraft.
+		CamPos = Aircraft + Right * 1800.f + Up * 500.f;
+		CamRot = (Aircraft - CamPos).Rotation();
+		break;
+	case EClearanceFollowAngle::Top:
+		// Directly above, looking straight down.
+		CamPos = Aircraft + Up * 3500.f;
+		CamRot = (Aircraft - CamPos).Rotation();
+		break;
+	case EClearanceFollowAngle::Chase:
+	default:
+		// Behind and above, angled down onto the aircraft.
+		CamPos = Aircraft - Forward * 2500.f + Up * 1200.f;
+		CamRot = (Aircraft - CamPos).Rotation();
+		break;
+	}
+	CameraFollow->SetActorLocationAndRotation(CamPos, CamRot);
+}
+
+void AClearanceSimulationController::SetFollowAngle(EClearanceFollowAngle Angle)
+{
+	FollowAngle = Angle;
+	UpdateFollowCamera();
+}
+
+void AClearanceSimulationController::CycleFollowAngle()
+{
+	switch (FollowAngle)
+	{
+	case EClearanceFollowAngle::Chase:   FollowAngle = EClearanceFollowAngle::Cockpit; break;
+	case EClearanceFollowAngle::Cockpit: FollowAngle = EClearanceFollowAngle::Side;    break;
+	case EClearanceFollowAngle::Side:    FollowAngle = EClearanceFollowAngle::Top;     break;
+	case EClearanceFollowAngle::Top:     FollowAngle = EClearanceFollowAngle::Chase;   break;
+	}
+	UpdateFollowCamera();
 }
 
 void AClearanceSimulationController::SetWind(float DirectionDeg, float SpeedKts)
@@ -757,16 +1054,24 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 		Scoring->LogIncident(EIncidentType::SeparationLoss, Conflict.AircraftA, Conflict.AircraftB, TEXT("Critical separation loss"));
 	}
 
+	const TCHAR* Lvl = Conflict.AlertLevel == EAlertLevel::Critical ? TEXT("CRITICAL")
+		: Conflict.AlertLevel == EAlertLevel::Warning ? TEXT("WARNING") : TEXT("ADVISORY");
+
 	// Surface it on screen until there's a real UI, so conflicts are visible. - TripleA
 	if (GEngine)
 	{
-		const TCHAR* Lvl = Conflict.AlertLevel == EAlertLevel::Critical ? TEXT("CRITICAL")
-			: Conflict.AlertLevel == EAlertLevel::Warning ? TEXT("WARNING") : TEXT("ADVISORY");
 		GEngine->AddOnScreenDebugMessage(-1, 5.f, ColourFor(Conflict.AlertLevel),
 			FString::Printf(TEXT("%s  %s / %s  -  %.1f nm, %.0f ft%s"), Lvl,
 				*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
 				Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
 				Conflict.bRequiresGoAround ? TEXT("  [GO-AROUND]") : TEXT("")));
+	}
+
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("%s %s/%s (%.1fnm %.0fft)"),
+			Lvl, *Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
+			Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt));
 	}
 }
 
@@ -789,12 +1094,19 @@ void AClearanceSimulationController::HandleConflictResolved(FConflictEvent Confl
 				FString::Printf(TEXT("RESOLVED  %s / %s  (+%d)"), *Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution));
 		}
 	}
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("RESOLVED %s/%s%s"),
+			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
+			bTCASHandledThisOne ? TEXT(" (TCAS)") : TEXT("")));
+	}
 }
 
 void AClearanceSimulationController::HandleGoAroundRequired(FName Callsign)
 {
 	if (CommsRouter) { CommsRouter->RouteGoAround(Callsign); }
 	if (Scoring) { Scoring->LogIncident(EIncidentType::GoAroundTriggered, Callsign, NAME_None, TEXT("Go-around")); }
+	if (Recorder) { Recorder->LogEvent(SessionTime, FString::Printf(TEXT("GO-AROUND %s"), *Callsign.ToString())); }
 }
 
 void AClearanceSimulationController::HandleWakeAdvisory(FName FollowingCallsign, FName LeadingCallsign, float RequiredSeparationNm)
@@ -821,6 +1133,11 @@ void AClearanceSimulationController::HandleWakeAdvisory(FName FollowingCallsign,
 		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor(255, 180, 0),
 			FString::Printf(TEXT("WAKE CAUTION  %s behind %s  (need %.0f nm)"),
 				*FollowingCallsign.ToString(), *LeadingCallsign.ToString(), RequiredSeparationNm));
+	}
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("WAKE %s behind %s (need %.0fnm)"),
+			*FollowingCallsign.ToString(), *LeadingCallsign.ToString(), RequiredSeparationNm));
 	}
 }
 
@@ -874,6 +1191,11 @@ void AClearanceSimulationController::HandleTCASResolutionAdvisory(FName ClimberC
 		GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Red,
 			FString::Printf(TEXT("TCAS RA  %s CLIMB  /  %s DESCEND"),
 				*ClimberCallsign.ToString(), *DescenderCallsign.ToString()));
+	}
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("TCAS RA  %s CLIMB / %s DESCEND"),
+			*ClimberCallsign.ToString(), *DescenderCallsign.ToString()));
 	}
 }
 
@@ -986,6 +1308,128 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 		{
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceCameraCmd(
+	TEXT("clearance.camera"),
+	TEXT("clearance.camera <default|overview|tower|approach|follow [callsign]|next>"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C) { return; }
+		if (Args.Num() < 1)
+		{
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow, TEXT("camera: default|overview|tower|approach|follow [callsign]|next")); }
+			return;
+		}
+		const FString Sub = Args[0].ToLower();
+		if (Sub.StartsWith(TEXT("next")))         { C->CycleCameraView(); return; }
+		if (Sub.StartsWith(TEXT("over")))         { C->SetCameraView(EClearanceCameraView::Overview); return; }
+		if (Sub.StartsWith(TEXT("tow")))          { C->SetCameraView(EClearanceCameraView::Tower); return; }
+		if (Sub.StartsWith(TEXT("app")))          { C->SetCameraView(EClearanceCameraView::Approach); return; }
+		if (Sub.StartsWith(TEXT("fol")))
+		{
+			const FName Cs = (Args.Num() > 1) ? FName(*Args[1]) : NAME_None;
+			C->SetCameraView(EClearanceCameraView::Follow, Cs);
+			// Optional 3rd arg = angle (chase/cockpit/side/top).
+			if (Args.Num() > 2)
+			{
+				const FString A = Args[2].ToLower();
+				if (A.StartsWith(TEXT("cock"))) { C->SetFollowAngle(EClearanceFollowAngle::Cockpit); }
+				else if (A.StartsWith(TEXT("sid"))) { C->SetFollowAngle(EClearanceFollowAngle::Side); }
+				else if (A.StartsWith(TEXT("top"))) { C->SetFollowAngle(EClearanceFollowAngle::Top); }
+				else { C->SetFollowAngle(EClearanceFollowAngle::Chase); }
+			}
+			return;
+		}
+		if (Sub.StartsWith(TEXT("angle")))
+		{
+			// Change just the follow sub-angle without changing the followed aircraft.
+			if (Args.Num() > 1)
+			{
+				const FString A = Args[1].ToLower();
+				if (A.StartsWith(TEXT("next"))) { C->CycleFollowAngle(); }
+				else if (A.StartsWith(TEXT("cock"))) { C->SetFollowAngle(EClearanceFollowAngle::Cockpit); }
+				else if (A.StartsWith(TEXT("sid"))) { C->SetFollowAngle(EClearanceFollowAngle::Side); }
+				else if (A.StartsWith(TEXT("top"))) { C->SetFollowAngle(EClearanceFollowAngle::Top); }
+				else { C->SetFollowAngle(EClearanceFollowAngle::Chase); }
+			}
+			else
+			{
+				C->CycleFollowAngle();
+			}
+			return;
+		}
+		C->SetCameraView(EClearanceCameraView::Default);
+	}));
+
+// --- After-Action Review console commands -------------------------------------
+static FAutoConsoleCommandWithWorldAndArgs GClearanceRecStartCmd(
+	TEXT("clearance.rec.start"),
+	TEXT("clearance.rec.start - start recording the session for replay"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->StartRecording(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceRecStopCmd(
+	TEXT("clearance.rec.stop"),
+	TEXT("clearance.rec.stop - stop recording (keeps the buffer)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->StopRecording(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceReplayStartCmd(
+	TEXT("clearance.replay.start"),
+	TEXT("clearance.replay.start - freeze live sim and replay the recording from t=0"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->EnterReplay(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceReplayLiveCmd(
+	TEXT("clearance.replay.live"),
+	TEXT("clearance.replay.live - leave replay and go back to the live sim"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->ResumeLive(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceReplayPauseCmd(
+	TEXT("clearance.replay.pause"),
+	TEXT("clearance.replay.pause [0|1] - pause/unpause the replay (no arg = pause)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			const bool bPaused = Args.Num() > 0 ? (FCString::Atoi(*Args[0]) != 0) : true;
+			C->SetReplayPaused(bPaused);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceReplaySeekCmd(
+	TEXT("clearance.replay.seek"),
+	TEXT("clearance.replay.seek <seconds> - jump the replay to this session time"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->SeekReplay(FCString::Atof(*Args[0]));
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceReplaySpeedCmd(
+	TEXT("clearance.replay.speed"),
+	TEXT("clearance.replay.speed <x> - replay playback speed (e.g. 0.5 slow, 4 fast)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->SetReplaySpeed(FCString::Atof(*Args[0]));
 		}
 	}));
 

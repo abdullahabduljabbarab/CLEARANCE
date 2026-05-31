@@ -64,6 +64,8 @@ public:
 	int32 PenaltyLateInstruction = 25;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PenaltyWakeEncounter = 75;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyTCASResolutionAdvisory = 100;
 
 	// Difficulty: spawn interval (seconds) shrinks toward the minimum as more
 	// aircraft are handled successfully.

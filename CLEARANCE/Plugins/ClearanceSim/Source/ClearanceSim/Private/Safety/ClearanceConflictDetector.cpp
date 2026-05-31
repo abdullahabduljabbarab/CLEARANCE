@@ -94,6 +94,26 @@ void UClearanceConflictDetector::DetectConflicts()
 						OnGoAroundRequired.Broadcast(GoArounder);
 					}
 				}
+
+				// Imminent collision -> TCAS Resolution Advisory: the higher aircraft climbs,
+				// the lower descends. Fires ONCE per encounter; cleared when the pair stops
+				// being in any conflict, so it can fire again on a fresh encounter. - TripleA
+				if (Level == EAlertLevel::Critical && !ActiveTCAS.Contains(Key))
+				{
+					const FAircraftState* Climber = nullptr;
+					const FAircraftState* Descender = nullptr;
+					if (A.Altitude > B.Altitude) { Climber = &A; Descender = &B; }
+					else if (B.Altitude > A.Altitude) { Climber = &B; Descender = &A; }
+					else // same altitude - deterministic split by callsign so both sides agree
+					{
+						if (A.Callsign.ToString() <= B.Callsign.ToString()) { Climber = &A; Descender = &B; }
+						else { Climber = &B; Descender = &A; }
+					}
+					const float ClimbTo = Climber->Altitude + 1500.f;
+					const float DescendTo = FMath::Max(0.f, Descender->Altitude - 1500.f);
+					ActiveTCAS.Add(Key);
+					OnTCASResolutionAdvisory.Broadcast(Climber->Callsign, Descender->Callsign, ClimbTo, DescendTo);
+				}
 			}
 
 			// Wake turbulence is a separate concern: a lighter aircraft trailing a
@@ -151,6 +171,9 @@ void UClearanceConflictDetector::DetectConflicts()
 	// Wake advisories clear silently once separation is restored.
 	ActiveWakeAdvisories = ActiveWakeAdvisories.Intersect(SeenWake);
 	WakeAffected = MoveTemp(WakeFollowersThisPass);
+	// TCAS state clears once the pair is fully out of conflict, so a fresh encounter
+	// can re-fire the RA. - TripleA
+	ActiveTCAS = ActiveTCAS.Intersect(SeenConflicts);
 }
 
 bool UClearanceConflictDetector::IsInWakeTurbulence(FName Callsign) const
@@ -192,6 +215,7 @@ void UClearanceConflictDetector::RemoveAircraft(FName Callsign)
 	{
 		ActiveConflicts.Remove(Key);
 		ActiveWakeAdvisories.Remove(Key);
+		ActiveTCAS.Remove(Key);
 	}
 }
 

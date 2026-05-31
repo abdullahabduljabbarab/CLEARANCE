@@ -26,6 +26,14 @@ namespace
 		default:                    return FColor::Green;
 		}
 	}
+
+	// Order-independent key for a callsign pair, so {A,B} and {B,A} hash the same.
+	FString MakePairKey(FName A, FName B)
+	{
+		const FString SA = A.ToString();
+		const FString SB = B.ToString();
+		return (SA <= SB) ? (SA + TEXT("|") + SB) : (SB + TEXT("|") + SA);
+	}
 }
 
 AClearanceSimulationController::AClearanceSimulationController()
@@ -150,6 +158,7 @@ void AClearanceSimulationController::BindDelegates()
 		ConflictDetector->OnConflictResolved.AddDynamic(this, &AClearanceSimulationController::HandleConflictResolved);
 		ConflictDetector->OnGoAroundRequired.AddDynamic(this, &AClearanceSimulationController::HandleGoAroundRequired);
 		ConflictDetector->OnWakeTurbulenceAdvisory.AddDynamic(this, &AClearanceSimulationController::HandleWakeAdvisory);
+		ConflictDetector->OnTCASResolutionAdvisory.AddDynamic(this, &AClearanceSimulationController::HandleTCASResolutionAdvisory);
 	}
 	if (Scoring)
 	{
@@ -542,7 +551,7 @@ void AClearanceSimulationController::DrawDebugView()
 	// Scoring breakdown, tallied from the session log so we can see what's adding up.
 	if (Scoring)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0;
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0;
 		for (const FIncidentRecord& R : Scoring->GetSessionLog())
 		{
 			switch (R.Type)
@@ -554,11 +563,12 @@ void AClearanceSimulationController::DrawDebugView()
 			case EIncidentType::SeparationLoss:       ++nSep;  break;
 			case EIncidentType::UnresolvedExit:       ++nExit; break;
 			case EIncidentType::WakeEncounter:        ++nWake; break;
+			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
 			default: break;
 			}
 		}
-		Readout += FString::Printf(TEXT("SCORING  +land %d  +dep %d  +resolved %d   |   -go-around %d  -sep-loss %d  -wake %d  -strayed %d   |   next spawn %.0fs\n"),
-			nLand, nDep, nRes, nGA, nSep, nWake, nExit, Scoring->GetCurrentSpawnInterval());
+		Readout += FString::Printf(TEXT("SCORING  +land %d  +dep %d  +resolved %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d   |   next spawn %.0fs\n"),
+			nLand, nDep, nRes, nGA, nSep, nWake, nTCAS, nExit, Scoring->GetCurrentSpawnInterval());
 	}
 
 	for (const FAircraftState& A : States)
@@ -724,6 +734,13 @@ void AClearanceSimulationController::HandleAircraftDeregistered(FName Callsign)
 	if (CommsRouter) { CommsRouter->UnregisterBehaviour(Callsign); }
 	if (ConflictDetector) { ConflictDetector->RemoveAircraft(Callsign); }
 
+	// Drop any TCAS pair entries involving this aircraft so the set doesn't leak.
+	const FString CallStr = Callsign.ToString();
+	for (auto It = TCASPairsAwaitingResolution.CreateIterator(); It; ++It)
+	{
+		if (It->Contains(CallStr)) { It.RemoveCurrent(); }
+	}
+
 	if (FSpawnedAircraftVisual* Visual = VisualActors.Find(Callsign))
 	{
 		if (Visual->Actor) { Visual->Actor->Destroy(); }
@@ -755,10 +772,15 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 
 void AClearanceSimulationController::HandleConflictResolved(FConflictEvent Conflict)
 {
-	// Reward pulling apart a genuine conflict (Warning or worse). Trivial advisories -
-	// especially the projected look-ahead ones - clear constantly on their own and
-	// aren't worth points, or the player would just farm them. - TripleA
-	if (Scoring && (Conflict.AlertLevel == EAlertLevel::Warning || Conflict.AlertLevel == EAlertLevel::Critical))
+	const FString Key = MakePairKey(Conflict.AircraftA, Conflict.AircraftB);
+	const bool bTCASHandledThisOne = TCASPairsAwaitingResolution.Remove(Key) > 0;
+
+	// Reward pulling apart a genuine conflict (Warning or worse) ONLY when the player
+	// actually did it. If TCAS had to fire, the auto-split handled it - no reward, just
+	// take the sep-loss + TCAS penalties. Trivial advisories clear on their own and
+	// aren't worth points either. - TripleA
+	if (Scoring && !bTCASHandledThisOne &&
+		(Conflict.AlertLevel == EAlertLevel::Warning || Conflict.AlertLevel == EAlertLevel::Critical))
 	{
 		Scoring->LogIncident(EIncidentType::SuccessfulResolution, Conflict.AircraftA, Conflict.AircraftB, TEXT("Conflict resolved"));
 		if (GEngine)
@@ -799,6 +821,59 @@ void AClearanceSimulationController::HandleWakeAdvisory(FName FollowingCallsign,
 		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor(255, 180, 0),
 			FString::Printf(TEXT("WAKE CAUTION  %s behind %s  (need %.0f nm)"),
 				*FollowingCallsign.ToString(), *LeadingCallsign.ToString(), RequiredSeparationNm));
+	}
+}
+
+void AClearanceSimulationController::HandleTCASResolutionAdvisory(FName ClimberCallsign, FName DescenderCallsign, float ClimberTargetAltitudeFt, float DescenderTargetAltitudeFt)
+{
+	// Execute the coordinated split. An aircraft on approach converts to a go-around
+	// (the climb has to win against the glideslope); enroute aircraft just get an
+	// expedited altitude change through the normal instruction pipeline. - TripleA
+	auto Issue = [&](FName Callsign, float TargetAlt, bool bClimb)
+	{
+		if (!AirspaceManager) { return; }
+		const FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+		if (!S.bIsValid) { return; }
+
+		const bool bOnApproach = (S.FlightPhase == EFlightPhase::Approach || S.FlightPhase == EFlightPhase::Landing);
+		if (bClimb && bOnApproach)
+		{
+			if (TObjectPtr<UClearanceAircraftBehaviour>* Bp = BehaviourMap.Find(Callsign))
+			{
+				if (*Bp) { (*Bp)->ExecuteGoAround(); }
+			}
+		}
+		else
+		{
+			FAircraftInstruction I;
+			I.TargetCallsign = Callsign;
+			I.Type = EInstructionType::AltitudeChange;
+			I.TargetValue = TargetAlt;
+			I.bExpedite = true; // TCAS RAs are aggressive - shove the rate up
+			PlayerIssueInstruction(I);
+		}
+	};
+
+	Issue(ClimberCallsign, ClimberTargetAltitudeFt, true);
+	Issue(DescenderCallsign, DescenderTargetAltitudeFt, false);
+
+	// Suppress the resolution reward when this pair eventually clears - TCAS did the
+	// resolving, not the player; awarding +50 here would be a point farm. - TripleA
+	TCASPairsAwaitingResolution.Add(MakePairKey(ClimberCallsign, DescenderCallsign));
+
+	if (Scoring)
+	{
+		Scoring->LogIncident(EIncidentType::TCASResolutionAdvisory, ClimberCallsign, DescenderCallsign,
+			FString::Printf(TEXT("TCAS RA: %s CLIMB to %.0fft, %s DESCEND to %.0fft"),
+				*ClimberCallsign.ToString(), ClimberTargetAltitudeFt,
+				*DescenderCallsign.ToString(), DescenderTargetAltitudeFt));
+	}
+
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Red,
+			FString::Printf(TEXT("TCAS RA  %s CLIMB  /  %s DESCEND"),
+				*ClimberCallsign.ToString(), *DescenderCallsign.ToString()));
 	}
 }
 

@@ -23,7 +23,8 @@ void UClearanceScoring::LogIncident(EIncidentType Type, FName AircraftA, FName A
 	case EIncidentType::SeparationLoss:       ++TotalSeparationLosses; ++TotalFailures; break;
 	case EIncidentType::UnresolvedExit:
 	case EIncidentType::MissedHandoff:
-	case EIncidentType::WakeEncounter:        ++TotalFailures;   break;
+	case EIncidentType::WakeEncounter:
+	case EIncidentType::TCASResolutionAdvisory: ++TotalFailures;   break;
 	default: break;
 	}
 
@@ -74,6 +75,7 @@ int32 UClearanceScoring::PointsForIncident(EIncidentType Type) const
 	case EIncidentType::MissedHandoff:         return -PenaltyMissedHandoff;
 	case EIncidentType::LateInstruction:       return -PenaltyLateInstruction;
 	case EIncidentType::WakeEncounter:         return -PenaltyWakeEncounter;
+	case EIncidentType::TCASResolutionAdvisory:return -PenaltyTCASResolutionAdvisory;
 	default:                                   return 0;
 	}
 }

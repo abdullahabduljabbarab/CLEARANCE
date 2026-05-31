@@ -28,6 +28,11 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Conflict|Events")
 	FOnWakeTurbulenceAdvisory OnWakeTurbulenceAdvisory;
 
+	// Fires once per imminent collision (Critical alert), with the climber/descender
+	// split and the target altitudes they should split to. Last-resort safety net. - TripleA
+	UPROPERTY(BlueprintAssignable, Category = "Conflict|Events")
+	FOnTCASResolutionAdvisory OnTCASResolutionAdvisory;
+
 	UFUNCTION(BlueprintCallable, Category = "Conflict")
 	void SetReferences(AClearanceAirspaceManager* InManager);
 
@@ -65,6 +70,9 @@ private:
 	// Keyed by an order-independent pair key, so a pair is one conflict either way.
 	TMap<FString, FConflictEvent> ActiveConflicts;
 	TSet<FString> ActiveWakeAdvisories;
+	// Pairs currently under a TCAS RA - so we fire the RA once per imminent collision
+	// instead of every tick they stay Critical.
+	TSet<FString> ActiveTCAS;
 	// Followers currently caught in a wake this pass -> intensity (0..1). Queried by
 	// IsInWakeTurbulence / GetWakeIntensity.
 	TMap<FName, float> WakeAffected;

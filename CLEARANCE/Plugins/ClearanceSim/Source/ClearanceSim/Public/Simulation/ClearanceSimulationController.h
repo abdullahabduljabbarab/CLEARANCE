@@ -219,6 +219,11 @@ private:
 	float SessionTime = 0.f;
 	bool bInitialised = false;
 
+	// Pair keys (sorted "A|B") that have had TCAS fire on them this encounter; while
+	// the pair is in here we suppress the resolution reward, because TCAS did the
+	// resolving, not the player. Cleared when the pair resolves or either side leaves.
+	TSet<FString> TCASPairsAwaitingResolution;
+
 	// World Z that counts as ground/0ft - taken from the placed runway mesh so the
 	// threshold marker and touchdown sit on the runway, not the controller. - TripleA
 	float GroundWorldZ = 0.f;
@@ -251,6 +256,9 @@ private:
 
 	UFUNCTION()
 	void HandleWakeAdvisory(FName FollowingCallsign, FName LeadingCallsign, float RequiredSeparationNm);
+
+	UFUNCTION()
+	void HandleTCASResolutionAdvisory(FName ClimberCallsign, FName DescenderCallsign, float ClimberTargetAltitudeFt, float DescenderTargetAltitudeFt);
 
 	UFUNCTION()
 	void HandleDifficultyAdjusted(float NewSpawnRate);

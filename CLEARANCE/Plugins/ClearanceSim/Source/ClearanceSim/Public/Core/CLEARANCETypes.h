@@ -56,6 +56,7 @@ enum class EIncidentType : uint8
 	GoAroundTriggered		UMETA(DisplayName = "Go-Around Triggered"),
 	LateInstruction			UMETA(DisplayName = "Late Instruction"),
 	WakeEncounter			UMETA(DisplayName = "Wake Encounter"),
+	TCASResolutionAdvisory	UMETA(DisplayName = "TCAS Resolution Advisory"),
 	SuccessfulLanding		UMETA(DisplayName = "Successful Landing"),
 	SuccessfulDeparture		UMETA(DisplayName = "Successful Departure"),
 	SuccessfulResolution	UMETA(DisplayName = "Successful Resolution")
@@ -318,6 +319,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnConflictDetected, FConflictEvent,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnConflictResolved, FConflictEvent, Conflict);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnGoAroundRequired, FName, Callsign);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnWakeTurbulenceAdvisory, FName, FollowingCallsign, FName, LeadingCallsign, float, RequiredSeparationNm);
+// Coordinated TCAS RA: higher aircraft climbs, lower descends, to the given target
+// altitudes. Last-resort split when separation has been lost. - TripleA
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnTCASResolutionAdvisory, FName, ClimberCallsign, FName, DescenderCallsign, float, ClimberTargetAltitudeFt, float, DescenderTargetAltitudeFt);
 
 // Comms Router
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInstructionResult, FName, Callsign, EInstructionResult, Result);

@@ -244,6 +244,9 @@ private:
 	void HandleConflictDetected(FConflictEvent Conflict);
 
 	UFUNCTION()
+	void HandleConflictResolved(FConflictEvent Conflict);
+
+	UFUNCTION()
 	void HandleGoAroundRequired(FName Callsign);
 
 	UFUNCTION()

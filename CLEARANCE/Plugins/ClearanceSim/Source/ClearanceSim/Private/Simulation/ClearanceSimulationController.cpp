@@ -147,6 +147,7 @@ void AClearanceSimulationController::BindDelegates()
 	if (ConflictDetector)
 	{
 		ConflictDetector->OnConflictDetected.AddDynamic(this, &AClearanceSimulationController::HandleConflictDetected);
+		ConflictDetector->OnConflictResolved.AddDynamic(this, &AClearanceSimulationController::HandleConflictResolved);
 		ConflictDetector->OnGoAroundRequired.AddDynamic(this, &AClearanceSimulationController::HandleGoAroundRequired);
 		ConflictDetector->OnWakeTurbulenceAdvisory.AddDynamic(this, &AClearanceSimulationController::HandleWakeAdvisory);
 	}
@@ -538,6 +539,28 @@ void AClearanceSimulationController::DrawDebugView()
 		States.Num(),
 		Env.WindDirection, Env.WindSpeed, Env.ActiveRunwayHeading);
 
+	// Scoring breakdown, tallied from the session log so we can see what's adding up.
+	if (Scoring)
+	{
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0;
+		for (const FIncidentRecord& R : Scoring->GetSessionLog())
+		{
+			switch (R.Type)
+			{
+			case EIncidentType::SuccessfulLanding:    ++nLand; break;
+			case EIncidentType::SuccessfulDeparture:  ++nDep;  break;
+			case EIncidentType::SuccessfulResolution: ++nRes;  break;
+			case EIncidentType::GoAroundTriggered:    ++nGA;   break;
+			case EIncidentType::SeparationLoss:       ++nSep;  break;
+			case EIncidentType::UnresolvedExit:       ++nExit; break;
+			case EIncidentType::WakeEncounter:        ++nWake; break;
+			default: break;
+			}
+		}
+		Readout += FString::Printf(TEXT("SCORING  +land %d  +dep %d  +resolved %d   |   -go-around %d  -sep-loss %d  -wake %d  -strayed %d   |   next spawn %.0fs\n"),
+			nLand, nDep, nRes, nGA, nSep, nWake, nExit, Scoring->GetCurrentSpawnInterval());
+	}
+
 	for (const FAircraftState& A : States)
 	{
 		const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(A.Callsign) : EAlertLevel::None;
@@ -730,6 +753,22 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 	}
 }
 
+void AClearanceSimulationController::HandleConflictResolved(FConflictEvent Conflict)
+{
+	// Reward pulling apart a genuine conflict (Warning or worse). Trivial advisories -
+	// especially the projected look-ahead ones - clear constantly on their own and
+	// aren't worth points, or the player would just farm them. - TripleA
+	if (Scoring && (Conflict.AlertLevel == EAlertLevel::Warning || Conflict.AlertLevel == EAlertLevel::Critical))
+	{
+		Scoring->LogIncident(EIncidentType::SuccessfulResolution, Conflict.AircraftA, Conflict.AircraftB, TEXT("Conflict resolved"));
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green,
+				FString::Printf(TEXT("RESOLVED  %s / %s  (+%d)"), *Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution));
+		}
+	}
+}
+
 void AClearanceSimulationController::HandleGoAroundRequired(FName Callsign)
 {
 	if (CommsRouter) { CommsRouter->RouteGoAround(Callsign); }
@@ -743,6 +782,15 @@ void AClearanceSimulationController::HandleWakeAdvisory(FName FollowingCallsign,
 		CommsRouter->ReceiveAdvisory(
 			FString::Printf(TEXT("Wake caution: %s behind %s (need %.0f nm)"), *FollowingCallsign.ToString(), *LeadingCallsign.ToString(), RequiredSeparationNm),
 			EAlertLevel::Advisory);
+	}
+
+	// Letting an aircraft into another's wake is a controller failure - scored as an
+	// incident. Fires once per new encounter (the detector only broadcasts on entry),
+	// so it doesn't spam the log. - TripleA
+	if (Scoring)
+	{
+		Scoring->LogIncident(EIncidentType::WakeEncounter, FollowingCallsign, LeadingCallsign,
+			FString::Printf(TEXT("In trail behind heavier traffic (need %.0fnm)"), RequiredSeparationNm));
 	}
 
 	// On screen too, until the UI exists. - TripleA
@@ -863,6 +911,24 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 		{
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceExitCmd(
+	TEXT("clearance.exit"),
+	TEXT("clearance.exit <callsign> - clear an aircraft to leave the sector (scores as a successful departure when it crosses the ring)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.exit <callsign>")); return; }
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			FAircraftInstruction I;
+			I.TargetCallsign = FName(*Args[0]);
+			I.Type = EInstructionType::ExitSector;
+			const EInstructionResult Result = C->PlayerIssueInstruction(I);
+			const FString Msg = FString::Printf(TEXT("exit %s -> %s"), *I.TargetCallsign.ToString(), *UEnum::GetValueAsString(Result));
+			UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		}
 	}));
 

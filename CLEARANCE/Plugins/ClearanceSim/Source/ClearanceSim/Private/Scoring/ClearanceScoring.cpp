@@ -22,7 +22,8 @@ void UClearanceScoring::LogIncident(EIncidentType Type, FName AircraftA, FName A
 	case EIncidentType::GoAroundTriggered:    ++TotalGoArounds;  break;
 	case EIncidentType::SeparationLoss:       ++TotalSeparationLosses; ++TotalFailures; break;
 	case EIncidentType::UnresolvedExit:
-	case EIncidentType::MissedHandoff:        ++TotalFailures;   break;
+	case EIncidentType::MissedHandoff:
+	case EIncidentType::WakeEncounter:        ++TotalFailures;   break;
 	default: break;
 	}
 
@@ -72,6 +73,7 @@ int32 UClearanceScoring::PointsForIncident(EIncidentType Type) const
 	case EIncidentType::UnresolvedExit:        return -PenaltyUnresolvedExit;
 	case EIncidentType::MissedHandoff:         return -PenaltyMissedHandoff;
 	case EIncidentType::LateInstruction:       return -PenaltyLateInstruction;
+	case EIncidentType::WakeEncounter:         return -PenaltyWakeEncounter;
 	default:                                   return 0;
 	}
 }

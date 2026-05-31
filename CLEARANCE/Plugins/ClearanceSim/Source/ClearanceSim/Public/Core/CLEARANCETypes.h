@@ -55,6 +55,7 @@ enum class EIncidentType : uint8
 	MissedHandoff			UMETA(DisplayName = "Missed Handoff"),
 	GoAroundTriggered		UMETA(DisplayName = "Go-Around Triggered"),
 	LateInstruction			UMETA(DisplayName = "Late Instruction"),
+	WakeEncounter			UMETA(DisplayName = "Wake Encounter"),
 	SuccessfulLanding		UMETA(DisplayName = "Successful Landing"),
 	SuccessfulDeparture		UMETA(DisplayName = "Successful Departure"),
 	SuccessfulResolution	UMETA(DisplayName = "Successful Resolution")

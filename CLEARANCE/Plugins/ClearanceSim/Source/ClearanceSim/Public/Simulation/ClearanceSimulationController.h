@@ -14,6 +14,7 @@ class UClearanceConflictDetector;
 class UClearanceCommsRouter;
 class UClearanceScoring;
 class UClearanceSessionRecorder;
+class UClearanceDISEmitter;
 class ACameraActor;
 
 // Fixed instructor views. Free-cam is intentionally out so the player can't roam. - TripleA
@@ -114,6 +115,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceSessionRecorder* GetRecorder() const { return Recorder; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	UClearanceDISEmitter* GetDISEmitter() const { return DISEmitter; }
+
+	// --- DIS interop --------------------------------------------------------
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
+	bool StartDIS(const FString& Host, int32 Port);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
+	void StopDIS();
 
 	// --- After-Action Review ------------------------------------------------
 
@@ -281,6 +293,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceSessionRecorder> Recorder;
+
+	UPROPERTY()
+	TObjectPtr<UClearanceDISEmitter> DISEmitter;
 
 	bool bReplayMode = false;
 	bool bReplayPaused = false;

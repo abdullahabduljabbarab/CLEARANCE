@@ -9,6 +9,7 @@
 #include "Safety/ClearanceConflictDetector.h"
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
+#include "Simulation/ClearanceDISEmitter.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Kismet/GameplayStatics.h"
@@ -82,6 +83,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	ConflictDetector = NewObject<UClearanceConflictDetector>(this);
 	CommsRouter = NewObject<UClearanceCommsRouter>(this);
 	Recorder = NewObject<UClearanceSessionRecorder>(this);
+	DISEmitter = NewObject<UClearanceDISEmitter>(this);
 
 	if (AirspaceManager)
 	{
@@ -245,6 +247,10 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		}
 		UpdateVisuals();
 		UpdateFollowCamera();
+		if (DISEmitter && DISEmitter->IsRunning() && AirspaceManager)
+		{
+			DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), ReplayTime);
+		}
 		DrawDebugView();
 		return;
 	}
@@ -257,6 +263,12 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	if (Recorder && Recorder->IsRecording() && AirspaceManager)
 	{
 		Recorder->CaptureSnapshot(SessionTime, AirspaceManager->GetAllAircraftStates());
+	}
+
+	// Publish each aircraft as a DIS Entity State PDU. Runs in both live and replay.
+	if (DISEmitter && DISEmitter->IsRunning() && AirspaceManager)
+	{
+		DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime);
 	}
 
 	UpdateFollowCamera();
@@ -583,6 +595,10 @@ void AClearanceSimulationController::DrawDebugView()
 	{
 		AARTag = FString::Printf(TEXT("  |  [REC %d snapshots]"), Recorder->GetSnapshotCount());
 	}
+	if (DISEmitter && DISEmitter->IsRunning())
+	{
+		AARTag += FString::Printf(TEXT("  |  [DIS %d/s]"), DISEmitter->GetLastPacketsSent());
+	}
 
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f%s\n"),
 		SessionTime,
@@ -790,6 +806,25 @@ void AClearanceSimulationController::SetReplayPaused(bool bInPaused)
 void AClearanceSimulationController::SetReplaySpeed(float Multiplier)
 {
 	ReplaySpeed = FMath::Max(0.05f, Multiplier);
+}
+
+bool AClearanceSimulationController::StartDIS(const FString& Host, int32 Port)
+{
+	if (!DISEmitter) { return false; }
+	const bool bOk = DISEmitter->Start(Host, Port);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
+			bOk ? FString::Printf(TEXT("DIS: emitting on %s:%d"), (Host.IsEmpty() ? TEXT("broadcast") : *Host), Port)
+			    : FString::Printf(TEXT("DIS: failed to start (%s:%d)"), *Host, Port));
+	}
+	return bOk;
+}
+
+void AClearanceSimulationController::StopDIS()
+{
+	if (DISEmitter) { DISEmitter->Stop(); }
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DIS: stopped")); }
 }
 
 void AClearanceSimulationController::SpawnPresetCameras()
@@ -1309,6 +1344,27 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
 		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDISStartCmd(
+	TEXT("clearance.dis.start"),
+	TEXT("clearance.dis.start [host] [port] - publish DIS Entity State PDUs over UDP. Defaults: broadcast on port 3000."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			const FString Host = (Args.Num() > 0) ? Args[0] : TEXT("broadcast");
+			const int32 Port = (Args.Num() > 1) ? FCString::Atoi(*Args[1]) : 3000;
+			C->StartDIS(Host, Port);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDISStopCmd(
+	TEXT("clearance.dis.stop"),
+	TEXT("clearance.dis.stop - stop emitting DIS PDUs"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->StopDIS(); }
 	}));
 
 static FAutoConsoleCommandWithWorldAndArgs GClearanceCameraCmd(

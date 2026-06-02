@@ -7,6 +7,7 @@
 #include "Comms/ClearanceInstructionValidator.h"
 #include "Comms/ClearanceCommsRouter.h"
 #include "Safety/ClearanceConflictDetector.h"
+#include "Safety/ClearanceRadar.h"
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
 #include "Simulation/ClearanceDISEmitter.h"
@@ -84,6 +85,8 @@ void AClearanceSimulationController::InitialiseSystems()
 	CommsRouter = NewObject<UClearanceCommsRouter>(this);
 	Recorder = NewObject<UClearanceSessionRecorder>(this);
 	DISEmitter = NewObject<UClearanceDISEmitter>(this);
+	Radar = NewObject<UClearanceRadar>(this);
+	if (Radar) { Radar->SetReferences(AirspaceManager); }
 
 	if (AirspaceManager)
 	{
@@ -245,6 +248,8 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 				Recorder->ApplySnapshotTo(AirspaceManager, *Snap);
 			}
 		}
+		// Radar still ticks in replay, so the operator can debrief from the radar view.
+		if (Radar && Radar->IsEnabled()) { Radar->Tick(DeltaTime); }
 		UpdateVisuals();
 		UpdateFollowCamera();
 		if (DISEmitter && DISEmitter->IsRunning() && AirspaceManager)
@@ -271,7 +276,22 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime);
 	}
 
+	// Radar sees truth and produces tracks (what the operator gets to see).
+	if (Radar && Radar->IsEnabled()) { Radar->Tick(DeltaTime); }
+
 	UpdateFollowCamera();
+}
+
+void AClearanceSimulationController::SetRadarEnabled(bool bInEnabled)
+{
+	if (!Radar) { return; }
+	Radar->SetEnabled(bInEnabled);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
+			bInEnabled ? TEXT("Radar ON - sensor view (range, sweep, primary/secondary, fade)")
+			           : TEXT("Radar OFF - god's-eye truth view"));
+	}
 }
 
 void AClearanceSimulationController::StepSimulation(float DeltaTime)
@@ -337,6 +357,9 @@ void AClearanceSimulationController::UpdateVisuals()
 	// in the airframe even in light air. - TripleA
 	const float Buffet = FMath::Clamp(Env.WindSpeed / 25.f, 0.35f, 1.6f);
 
+	// The 3D world always shows real aircraft moving smoothly - they're physical things.
+	// The radar is a separate observer that produces tracks for an operator's scope (a
+	// future 2D HUD overlay); it never deforms the actual airframe visuals. - TripleA
 	for (const FAircraftState& State : AirspaceManager->GetAllAircraftStates())
 	{
 		const FSpawnedAircraftVisual* Found = VisualActors.Find(State.Callsign);
@@ -599,6 +622,10 @@ void AClearanceSimulationController::DrawDebugView()
 	{
 		AARTag += FString::Printf(TEXT("  |  [DIS %d/s]"), DISEmitter->GetLastPacketsSent());
 	}
+	if (Radar && Radar->IsEnabled())
+	{
+		AARTag += FString::Printf(TEXT("  |  [RADAR %.0fnm]"), Radar->RangeNm);
+	}
 
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f%s\n"),
 		SessionTime,
@@ -631,38 +658,57 @@ void AClearanceSimulationController::DrawDebugView()
 			nLand, nDep, nRes, nGA, nSep, nWake, nTCAS, nExit, Scoring->GetCurrentSpawnInterval());
 	}
 
-	for (const FAircraftState& A : States)
+	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
+	// operator should see - but the sweep arm and range ring are NOT drawn in the 3D
+	// world (the operator doesn't see physical green lines in the sky). The radar's
+	// view belongs on the operator's scope - the future 2D UI on the player's display.
+	// For dev visibility, what the radar "knows" is still surfaced as text in the
+	// readout below. - TripleA
+	const bool bRadarOn = Radar && Radar->IsEnabled();
+	if (bRadarOn)
 	{
-		const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(A.Callsign) : EAlertLevel::None;
-		const FColor C = ColourFor(Alert);
-
-		// Spheres are the fallback for any aircraft with no spawned mesh; modelled
-		// aircraft skip them so the model isn't buried in a debug blob.
-		if (!VisualActors.Contains(A.Callsign))
+		for (const FRadarTrack& Trk : Radar->GetTracks())
 		{
-			const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + AltitudeToWorldZOffset(A.Altitude));
-			DrawDebugSphere(World, P, 500.f, 10, C, false, -1.f, 0, 40.f);
-
-			const float HeadingRad = FMath::DegreesToRadians(A.Heading);
-			const FVector Dir(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
-			DrawDebugLine(World, P, P + Dir * 2200.f, C, false, -1.f, 0, 60.f);
+			const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(Trk.TruthCallsign) : EAlertLevel::None;
+			const FString IdLabel = Trk.bHasSecondary ? Trk.DisplayCallsign.ToString() : FString(TEXT("PRI"));
+			Readout += FString::Printf(TEXT("RDR %s  hdg %3.0f  alt %5.0f  spd %3.0f  conf %.0f%%%s\n"),
+				*IdLabel, Trk.Heading, Trk.Altitude, Trk.Speed,
+				Trk.Confidence * 100.f, Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""));
 		}
+	}
 
-		// Float the callsign + current>target heading over each aircraft, so you can
-		// pick one out and see where it's pointing vs where you've sent it. - TripleA
-		DrawDebugString(World, WorldPositionFor(A) + FVector(0, 0, 1.2f * S),
-			FString::Printf(TEXT("%s  hdg %03.0f>%03.0f"), *A.Callsign.ToString(), A.Heading, A.TargetHeading),
-			nullptr, C, 0.f, true, 1.1f);
+	{
+		for (const FAircraftState& A : States)
+		{
+			const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(A.Callsign) : EAlertLevel::None;
+			const FColor C = ColourFor(Alert);
 
-		// Shows current>target for each axis + vertical speed, so we can see if it's
-		// actually descending (and whether the nose-down branch should fire).
-		Readout += FString::Printf(TEXT("%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f  vs%+5.0f%s\n"),
-			*A.Callsign.ToString(),
-			A.Heading, A.TargetHeading,
-			A.Altitude, A.TargetAltitude,
-			A.Speed, A.TargetSpeed,
-			A.ClimbRate,
-			Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""));
+			// Spheres are the fallback for any aircraft with no spawned mesh; modelled
+			// aircraft skip them so the model isn't buried in a debug blob.
+			if (!VisualActors.Contains(A.Callsign))
+			{
+				const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + AltitudeToWorldZOffset(A.Altitude));
+				DrawDebugSphere(World, P, 500.f, 10, C, false, -1.f, 0, 40.f);
+
+				const float HeadingRad = FMath::DegreesToRadians(A.Heading);
+				const FVector Dir(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
+				DrawDebugLine(World, P, P + Dir * 2200.f, C, false, -1.f, 0, 60.f);
+			}
+
+			// Float the callsign + current>target heading over each aircraft, so you can
+			// pick one out and see where it's pointing vs where you've sent it. - TripleA
+			DrawDebugString(World, WorldPositionFor(A) + FVector(0, 0, 1.2f * S),
+				FString::Printf(TEXT("%s  hdg %03.0f>%03.0f"), *A.Callsign.ToString(), A.Heading, A.TargetHeading),
+				nullptr, C, 0.f, true, 1.1f);
+
+			Readout += FString::Printf(TEXT("%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f  vs%+5.0f%s\n"),
+				*A.Callsign.ToString(),
+				A.Heading, A.TargetHeading,
+				A.Altitude, A.TargetAltitude,
+				A.Speed, A.TargetSpeed,
+				A.ClimbRate,
+				Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""));
+		}
 	}
 
 	if (GEngine)
@@ -1343,6 +1389,18 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 		{
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceRadarCmd(
+	TEXT("clearance.radar"),
+	TEXT("clearance.radar <on|off> - toggle the modelled radar view (vs god's-eye truth)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			const bool bOn = (Args.Num() < 1) ? true : (Args[0].ToLower() != TEXT("off") && Args[0] != TEXT("0"));
+			C->SetRadarEnabled(bOn);
 		}
 	}));
 

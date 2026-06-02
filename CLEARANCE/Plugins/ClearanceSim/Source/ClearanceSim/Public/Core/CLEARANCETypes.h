@@ -282,6 +282,42 @@ struct CLEARANCESIM_API FRunwayInfo
 	float HeadingDeg = 270.f;
 };
 
+/** What the RADAR believes about one aircraft. Distinct from the truth held in the
+ *  Airspace Manager: position is the last paint (with sensor noise), heading/speed
+ *  are estimated, callsign is only present if the transponder return was good. */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FRadarTrack
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	FName TruthCallsign = NAME_None;       // internal, always set - used to match to truth
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	FName DisplayCallsign = NAME_None;     // shown to player; empty if no secondary return
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	FVector Position = FVector::ZeroVector; // nm (X=East, Y=North), with sensor jitter
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	float Altitude = 0.f;                   // ft - precise if secondary, estimated if primary only
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	float Heading = 0.f;                    // deg, estimated from successive paints
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	float Speed = 0.f;                      // kt, estimated
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	bool bHasSecondary = false;             // true if the transponder (SSR) responded
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	float LastPaintTime = 0.f;              // session-time, for fading old tracks
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	float Confidence = 0.f;                 // 0..1, fades with time since last paint
+};
+
 /** One snapshot of the whole sector at a moment in time, captured by the recorder. */
 USTRUCT(BlueprintType)
 struct CLEARANCESIM_API FRecordedSnapshot

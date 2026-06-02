@@ -15,6 +15,7 @@ class UClearanceCommsRouter;
 class UClearanceScoring;
 class UClearanceSessionRecorder;
 class UClearanceDISEmitter;
+class UClearanceRadar;
 class ACameraActor;
 
 // Fixed instructor views. Free-cam is intentionally out so the player can't roam. - TripleA
@@ -118,6 +119,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceDISEmitter* GetDISEmitter() const { return DISEmitter; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	UClearanceRadar* GetRadar() const { return Radar; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Radar")
+	void SetRadarEnabled(bool bInEnabled);
 
 	// --- DIS interop --------------------------------------------------------
 
@@ -296,6 +303,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceDISEmitter> DISEmitter;
+
+	UPROPERTY()
+	TObjectPtr<UClearanceRadar> Radar;
 
 	bool bReplayMode = false;
 	bool bReplayPaused = false;

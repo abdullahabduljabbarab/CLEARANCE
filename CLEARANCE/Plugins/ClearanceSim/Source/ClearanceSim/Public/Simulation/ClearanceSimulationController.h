@@ -126,6 +126,29 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Radar")
 	void SetRadarEnabled(bool bInEnabled);
 
+	// --- GCI / Air Defence --------------------------------------------------
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
+	void SetGCIModeEnabled(bool bInEnabled);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
+	bool IsGCIModeEnabled() const { return bGCIMode; }
+
+	// Operator manually classifies a contact (e.g. after IFF interrogation or VID).
+	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
+	void ClassifyAircraft(FName Callsign, EThreatClass NewClass);
+
+	// IFF interrogation - returns the contact's true class + squawk if its IFF is on.
+	// Returns Unknown / 0 / false otherwise.
+	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
+	bool InterrogateIFF(FName Callsign, EThreatClass& OutClass, int32& OutSquawk);
+
+	// Vector a friendly fighter onto an intercept course with a target. Computes the
+	// lead-pursuit heading and issues a HeadingChange instruction. Returns false if
+	// no solution (fighter too slow to ever catch target).
+	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
+	bool VectorIntercept(FName FighterCallsign, FName TargetCallsign);
+
 	// --- DIS interop --------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
@@ -282,6 +305,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Visuals")
 	TArray<FAircraftVisualVariant> SuperVariants;
 
+	// Military aircraft (bIsMilitary on the state) pick from here instead of the
+	// civilian wake-category pools - drop your F-35 / fighter meshes here. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Visuals")
+	TArray<FAircraftVisualVariant> FighterVariants;
+
+	// Hostile aircraft (ThreatClass == Hostile) pick from this pool first - bandits
+	// get a MiG, friendly military still gets the F-35 above. Falls back to the
+	// fighter pool if empty.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Visuals")
+	TArray<FAircraftVisualVariant> HostileVariants;
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -343,6 +377,20 @@ private:
 	bool bPaused = false;
 	float SessionTime = 0.f;
 	bool bInitialised = false;
+
+	bool bGCIMode = false;
+
+	// Active intercepts (fighter -> bandit). Both aircraft go bUnderGCIControl while
+	// in here; ATC commands targeting them are rejected.
+	TMap<FName, FName> ActiveIntercepts;
+	// Fighters that have closed within join-up range - bandit + fighter are now in the
+	// escort-out phase.
+	TSet<FName> JoinedIntercepts;
+	// Joined fighters that have actually flown into their formation slot - from here
+	// they're glued to it; before, they fly themselves in via normal behaviour.
+	TSet<FName> SettledInFormation;
+
+	void TickGCIIntercepts(float DeltaTime);
 
 	// Pair keys (sorted "A|B") that have had TCAS fire on them this encounter; while
 	// the pair is in here we suppress the resolution reward, because TCAS did the

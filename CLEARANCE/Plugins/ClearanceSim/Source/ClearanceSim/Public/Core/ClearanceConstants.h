@@ -71,4 +71,23 @@ namespace ClearanceConstants
 			return { 41000.f, 150.f, 340.f, 1800.f, 3000.f, 25.f, 1.5f, 0.75f, 37.f, 1.2f };
 		}
 	}
+
+	// Military fighter envelope - F-35-ish. Far faster, far higher bank limit, much
+	// quicker climb / accel than an airliner. Wake category still applies for the
+	// separation matrix, but the actual flight envelope comes from here when the
+	// aircraft is flagged bIsMilitary. - TripleA
+	inline FCategoryPerformance GetMilitaryPerformance()
+	{
+		// F-35-ish. Vmax ~Mach 1.6 (~1050 kts), service ceiling 50k, sustained 80deg
+		// bank in a hard turn, ~10 kts/sec accel through the transonic. - TripleA
+		//        ceil    Vmin   Vmax    climb    desc    bank   accel  decel  xwind  brake
+		return { 50000.f, 180.f, 1050.f, 12000.f, 15000.f, 80.f, 10.0f, 6.00f, 45.f, 3.0f };
+	}
+
+	// Picks the right envelope for the airframe. Military gets the fighter profile;
+	// everyone else gets their wake-category profile.
+	inline FCategoryPerformance GetEffectivePerformance(EWakeCategory Category, bool bIsMilitary)
+	{
+		return bIsMilitary ? GetMilitaryPerformance() : GetCategoryPerformance(Category);
+	}
 }

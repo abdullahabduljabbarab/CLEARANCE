@@ -282,6 +282,314 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	UpdateFollowCamera();
 }
 
+void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
+{
+	if (!AirspaceManager || ActiveIntercepts.Num() == 0) { return; }
+
+	constexpr float JoinUpNm = 0.8f;
+	constexpr float JoinUpAltFt = 1500.f;
+	constexpr float FormationSideNm  = 2.0f;   // left/right wing slots
+	constexpr float FormationTrailNm = 3.0f;   // trail slot directly behind
+	// Settle thresholds: a wingman is "in slot" once it's close enough AND its heading
+	// is close to the bandit's. Until then it FLIES toward the slot via the normal
+	// behaviour (heading + StepPosition), so it banks and turns like a real aircraft. - TripleA
+	constexpr float SettleDistNm = 0.4f;
+	constexpr float SettleHeadingDeg = 25.f;
+
+	// Group active intercepts by bandit so a flight (multiple fighters on one bandit)
+	// joins up as a single coordinated escort. - TripleA
+	TMap<FName, TArray<FName>> ByBandit;
+	for (const TPair<FName, FName>& P : ActiveIntercepts)
+	{
+		ByBandit.FindOrAdd(P.Value).Add(P.Key);
+	}
+
+	TArray<FName> DeadFighters;
+	for (TPair<FName, TArray<FName>>& Grp : ByBandit)
+	{
+		const FName BanditCs = Grp.Key;
+		const FAircraftState BanditS0 = AirspaceManager->GetAircraftState(BanditCs);
+		if (!BanditS0.bIsValid)
+		{
+			for (const FName& F : Grp.Value) { DeadFighters.Add(F); }
+			continue;
+		}
+
+		// Was any fighter in the flight already joined BEFORE this tick?
+		bool bWasJoined = false;
+		for (const FName& Fc : Grp.Value)
+		{
+			if (JoinedIntercepts.Contains(Fc)) { bWasJoined = true; break; }
+		}
+
+		// Distance-based join check on the unjoined ones.
+		bool bAnyNewJoin = false;
+		for (const FName& Fc : Grp.Value)
+		{
+			if (JoinedIntercepts.Contains(Fc)) { continue; }
+			const FAircraftState FS = AirspaceManager->GetAircraftState(Fc);
+			if (!FS.bIsValid) { DeadFighters.Add(Fc); continue; }
+			const float Horiz = FVector2D::Distance(
+				FVector2D(FS.Position.X, FS.Position.Y),
+				FVector2D(BanditS0.Position.X, BanditS0.Position.Y));
+			const float Vert = FMath::Abs(FS.Altitude - BanditS0.Altitude);
+			if (Horiz <= JoinUpNm && Vert <= JoinUpAltFt)
+			{
+				JoinedIntercepts.Add(Fc);
+				bAnyNewJoin = true;
+			}
+		}
+
+		// FORMATION REJOIN: the first viper to arrive triggers the whole flight to join.
+		// Without this, stragglers chase a bandit that just turned outward and miss. - TripleA
+		if (bAnyNewJoin && !bWasJoined)
+		{
+			for (const FName& Fc : Grp.Value) { JoinedIntercepts.Add(Fc); }
+
+			// And turn the bandit outward (Exiting) - one time, on the first join-up.
+			FAircraftState B = BanditS0;
+			float OutHdg = FMath::RadiansToDegrees(FMath::Atan2(B.Position.X, B.Position.Y));
+			if (OutHdg < 0.f) { OutHdg += 360.f; }
+			B.TargetHeading = OutHdg;
+			B.FlightPhase = EFlightPhase::Exiting;
+			AirspaceManager->RequestStateUpdate(B);
+
+			if (Recorder) { Recorder->LogEvent(SessionTime, FString::Printf(TEXT("JOIN-UP %d-ship on %s, escorting out heading %.0f"),
+				Grp.Value.Num(), *BanditCs.ToString(), OutHdg)); }
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan,
+					FString::Printf(TEXT("JOIN-UP  %d-ship on %s  escorting out heading %.0f"),
+						Grp.Value.Num(), *BanditCs.ToString(), OutHdg));
+			}
+		}
+
+		// Anyone joined? If so, snap each joined fighter into its formation slot.
+		bool bAnyJoined = false;
+		for (const FName& Fc : Grp.Value)
+		{
+			if (JoinedIntercepts.Contains(Fc)) { bAnyJoined = true; break; }
+		}
+		if (!bAnyJoined) { continue; }
+
+		// Slots, relative to bandit's heading frame:
+		//   0 -> left wing  (side -1nm)        Bandit
+		//   1 -> right wing (side +1nm)     0 [BANDIT] 1
+		//   2 -> trail      (forward -1.5nm)        2
+		const FAircraftState B = AirspaceManager->GetAircraftState(BanditCs);
+		const float Hrad = FMath::DegreesToRadians(B.Heading);
+		const FVector2D Fwd(FMath::Sin(Hrad), FMath::Cos(Hrad));
+		const FVector2D Right(FMath::Cos(Hrad), -FMath::Sin(Hrad));
+		const float SlotSide[3] = { -FormationSideNm, +FormationSideNm, 0.f };
+		const float SlotFwd[3]  = {  0.f,              0.f,             -FormationTrailNm };
+		// Vertical stagger during the rejoin so wingmen don't fly through each other or
+		// the bandit. Hi-rejoin / lo-rejoin / trail-low. The offset smoothly merges to
+		// zero as the fighter approaches its slot. - TripleA
+		const float SlotRejoinAltFt[3] = { +1500.f, -1500.f, -500.f };
+
+		int32 SlotIdx = 0;
+		for (const FName& Fc : Grp.Value)
+		{
+			if (!JoinedIntercepts.Contains(Fc)) { continue; }
+			if (SlotIdx >= 3) { break; }
+
+			const FVector SlotPos(
+				B.Position.X + Right.X * SlotSide[SlotIdx] + Fwd.X * SlotFwd[SlotIdx],
+				B.Position.Y + Right.Y * SlotSide[SlotIdx] + Fwd.Y * SlotFwd[SlotIdx],
+				0.f);
+
+			FAircraftState FS = AirspaceManager->GetAircraftState(Fc);
+			if (!FS.bIsValid) { DeadFighters.Add(Fc); ++SlotIdx; continue; }
+
+			if (SettledInFormation.Contains(Fc))
+			{
+				// In slot - glue to the slot so the formation tracks the bandit.
+				FS.Position = SlotPos;
+				FS.Heading = B.Heading;
+				FS.TargetHeading = B.Heading;
+				FS.BankAngle = 0.f;
+				FS.Altitude = B.Altitude;
+				FS.Speed = B.Speed;
+				FS.ClimbRate = 0.f;
+				FS.FlightPhase = EFlightPhase::Exiting;
+				AirspaceManager->RequestStateUpdate(FS);
+			}
+			else
+			{
+				// Not in slot yet - FLY there. Point the nose at the slot, let the normal
+				// behaviour bank/turn/move forward. Match altitude over time too. - TripleA
+				const FVector2D ToSlot(SlotPos.X - FS.Position.X, SlotPos.Y - FS.Position.Y);
+				const float DistNm = ToSlot.Size();
+				float HeadingToSlot = FMath::RadiansToDegrees(FMath::Atan2(ToSlot.X, ToSlot.Y));
+				if (HeadingToSlot < 0.f) { HeadingToSlot += 360.f; }
+				const float HdgErr = FMath::Abs(FMath::FindDeltaAngleDegrees(FS.Heading, B.Heading));
+
+				if (DistNm <= SettleDistNm && HdgErr <= SettleHeadingDeg)
+				{
+					SettledInFormation.Add(Fc);
+				}
+				else
+				{
+					// Aim the nose at the slot; behaviour does the rest. Stagger altitude
+					// on the way in so wingmen and the bandit never share airspace - it
+					// merges back to zero as we close the last nautical mile. Hold combat
+					// pursuit speed all the way in - only inside the last 0.6nm do we begin
+					// to bleed off so we can settle alongside the bandit instead of shooting
+					// past him. - TripleA
+					const float MergeT   = FMath::Clamp((DistNm - 0.3f) / 0.9f, 0.f, 1.f);
+					const float AltOff   = SlotRejoinAltFt[SlotIdx] * MergeT;
+					const float SlowT    = FMath::Clamp((DistNm - 0.3f) / 0.3f, 0.f, 1.f);
+					const float PursueKt = 640.f;
+					const float SlotKt   = FMath::Max(B.Speed, 200.f);
+
+					FS.TargetHeading  = HeadingToSlot;
+					FS.TargetAltitude = B.Altitude + AltOff;
+					FS.TargetSpeed    = FMath::Lerp(SlotKt, PursueKt, SlowT);
+					FS.FlightPhase    = EFlightPhase::Exiting;
+					AirspaceManager->RequestStateUpdate(FS);
+				}
+			}
+			++SlotIdx;
+		}
+	}
+
+	for (const FName& K : DeadFighters)
+	{
+		ActiveIntercepts.Remove(K);
+		JoinedIntercepts.Remove(K);
+		SettledInFormation.Remove(K);
+	}
+}
+
+void AClearanceSimulationController::SetGCIModeEnabled(bool bInEnabled)
+{
+	bGCIMode = bInEnabled;
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
+			bInEnabled ? TEXT("GCI / Air Defence mode ON - classify contacts, interrogate IFF, vector intercepts")
+			           : TEXT("GCI / Air Defence mode OFF"));
+	}
+}
+
+void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatClass NewClass)
+{
+	if (!AirspaceManager) { return; }
+	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+	if (!S.bIsValid) { return; }
+	S.ThreatClass = NewClass;
+	// Hostile contacts lock out of civilian ATC immediately.
+	S.bUnderGCIControl = (NewClass == EThreatClass::Hostile);
+	AirspaceManager->RequestStateUpdate(S);
+	if (GEngine)
+	{
+		const TCHAR* L = NewClass == EThreatClass::Friendly ? TEXT("FRIENDLY")
+			: NewClass == EThreatClass::Hostile ? TEXT("HOSTILE")
+			: NewClass == EThreatClass::Neutral ? TEXT("NEUTRAL") : TEXT("UNKNOWN");
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
+			FString::Printf(TEXT("CLASSIFY  %s -> %s"), *Callsign.ToString(), L));
+	}
+}
+
+bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass& OutClass, int32& OutSquawk)
+{
+	OutClass = EThreatClass::Unknown;
+	OutSquawk = 0;
+	if (!AirspaceManager) { return false; }
+	const FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+	if (!S.bIsValid) { return false; }
+
+	// A hostile contact may have its IFF off; interrogation returns nothing. - TripleA
+	if (!S.bIFFOperational)
+	{
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red,
+			FString::Printf(TEXT("IFF %s: NO RESPONSE"), *Callsign.ToString())); }
+		return false;
+	}
+	OutClass = S.ThreatClass;
+	OutSquawk = S.SquawkCode;
+	if (GEngine)
+	{
+		const TCHAR* L = OutClass == EThreatClass::Friendly ? TEXT("FRIENDLY")
+			: OutClass == EThreatClass::Hostile ? TEXT("HOSTILE")
+			: OutClass == EThreatClass::Neutral ? TEXT("NEUTRAL") : TEXT("UNKNOWN");
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green,
+			FString::Printf(TEXT("IFF %s: squawk %04d  %s"), *Callsign.ToString(), OutSquawk, L));
+	}
+	return true;
+}
+
+bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FName TargetCallsign)
+{
+	if (!AirspaceManager) { return false; }
+	const FAircraftState F = AirspaceManager->GetAircraftState(FighterCallsign);
+	const FAircraftState T = AirspaceManager->GetAircraftState(TargetCallsign);
+	if (!F.bIsValid || !T.bIsValid) { return false; }
+
+	// Lead-pursuit intercept: find time t with |Pt + Vt*t - Pf| = Sf*t. Quadratic in t.
+	// at^2 + bt + c = 0 where a = |Vt|^2 - Sf^2, b = 2(Pt-Pf).Vt, c = |Pt-Pf|^2. - TripleA
+	const FVector2D Pf(F.Position.X, F.Position.Y);
+	const FVector2D Pt(T.Position.X, T.Position.Y);
+	const FVector2D Vt(T.Velocity.X, T.Velocity.Y); // nm/s (already populated by StepPosition)
+	const float Sf = F.Speed / 3600.f;              // fighter speed in nm/s
+
+	const FVector2D Diff = Pt - Pf;
+	const float a = Vt.SizeSquared() - Sf * Sf;
+	const float b = 2.f * FVector2D::DotProduct(Diff, Vt);
+	const float c = Diff.SizeSquared();
+
+	float TimeToIntercept = -1.f;
+	if (FMath::Abs(a) < KINDA_SMALL_NUMBER)
+	{
+		// Same speed - linear: bt + c = 0.
+		if (FMath::Abs(b) > KINDA_SMALL_NUMBER) { TimeToIntercept = -c / b; }
+	}
+	else
+	{
+		const float Disc = b * b - 4.f * a * c;
+		if (Disc >= 0.f)
+		{
+			const float Sqrt = FMath::Sqrt(Disc);
+			const float T1 = (-b - Sqrt) / (2.f * a);
+			const float T2 = (-b + Sqrt) / (2.f * a);
+			// Smallest positive root.
+			TimeToIntercept = (T1 > 0.f) ? T1 : T2;
+		}
+	}
+	if (TimeToIntercept <= 0.f)
+	{
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red,
+			FString::Printf(TEXT("INTERCEPT %s -> %s: no solution (too slow)"),
+				*FighterCallsign.ToString(), *TargetCallsign.ToString())); }
+		return false;
+	}
+
+	const FVector2D InterceptPt = Pt + Vt * TimeToIntercept;
+	const FVector2D ToIntercept = InterceptPt - Pf;
+	float HeadingDeg = FMath::RadiansToDegrees(FMath::Atan2(ToIntercept.X, ToIntercept.Y));
+	if (HeadingDeg < 0.f) { HeadingDeg += 360.f; }
+
+	// The fighter goes under GCI control too - civilian ATC can't redirect it now.
+	// Issue the heading change directly via the manager (bypass the ATC router which
+	// would reject GCI-controlled aircraft). Push to combat speed so we actually
+	// close on the target - the formation tick slows them back down at the slot. - TripleA
+	FAircraftState F2 = F;
+	F2.TargetHeading = HeadingDeg;
+	F2.TargetSpeed = FMath::Max(F2.TargetSpeed, 1050.f);
+	F2.bUnderGCIControl = true;
+	AirspaceManager->RequestStateUpdate(F2);
+
+	ActiveIntercepts.Add(FighterCallsign, TargetCallsign);
+
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan,
+			FString::Printf(TEXT("INTERCEPT %s -> %s  vector %03.0f  ETA %.0fs"),
+				*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept));
+	}
+	return true;
+}
+
 void AClearanceSimulationController::SetRadarEnabled(bool bInEnabled)
 {
 	if (!Radar) { return; }
@@ -306,6 +614,7 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 
 	if (ConflictDetector) { ConflictDetector->DetectConflicts(); } // 5. monitor (6-8 fire via delegates)
 
+	TickGCIIntercepts(DeltaTime);                                  // join-up + escort
 	CheckExits();                                                  // landings / departures / strays
 
 	UpdateVisuals();
@@ -446,9 +755,11 @@ void AClearanceSimulationController::UpdateVisuals()
 		// The sim flips bank/pitch instantly when a turn or climb starts; easing the
 		// visual toward it on REAL frame time (not the sped-up sim clock) rolls and
 		// pitches the airframe in and out instead of snapping - kills the stiffness
-		// without touching the flight model. Higher = quicker, stiffer. - TripleA
+		// without touching the flight model. Higher = quicker, stiffer. Military jets
+		// roll about twice as fast as an airliner. - TripleA
 		const float RealDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
-		const FQuat Smoothed = FMath::QInterpTo(Found->Actor->GetActorQuat(), TargetRot, RealDt, 4.f);
+		const float RollRate = State.bIsMilitary ? 9.f : 4.f;
+		const FQuat Smoothed = FMath::QInterpTo(Found->Actor->GetActorQuat(), TargetRot, RealDt, RollRate);
 		Found->Actor->SetActorRotation(Smoothed);
 
 		// Hand the airframe's gear/engine state to the Blueprint (if it implements the
@@ -626,6 +937,10 @@ void AClearanceSimulationController::DrawDebugView()
 	{
 		AARTag += FString::Printf(TEXT("  |  [RADAR %.0fnm]"), Radar->RangeNm);
 	}
+	if (bGCIMode)
+	{
+		AARTag += TEXT("  |  [GCI]");
+	}
 
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f%s\n"),
 		SessionTime,
@@ -638,7 +953,7 @@ void AClearanceSimulationController::DrawDebugView()
 	// Scoring breakdown, tallied from the session log so we can see what's adding up.
 	if (Scoring)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0;
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0;
 		for (const FIncidentRecord& R : Scoring->GetSessionLog())
 		{
 			switch (R.Type)
@@ -646,6 +961,7 @@ void AClearanceSimulationController::DrawDebugView()
 			case EIncidentType::SuccessfulLanding:    ++nLand; break;
 			case EIncidentType::SuccessfulDeparture:  ++nDep;  break;
 			case EIncidentType::SuccessfulResolution: ++nRes;  break;
+			case EIncidentType::SuccessfulIntercept:  ++nInt;  break;
 			case EIncidentType::GoAroundTriggered:    ++nGA;   break;
 			case EIncidentType::SeparationLoss:       ++nSep;  break;
 			case EIncidentType::UnresolvedExit:       ++nExit; break;
@@ -654,8 +970,8 @@ void AClearanceSimulationController::DrawDebugView()
 			default: break;
 			}
 		}
-		Readout += FString::Printf(TEXT("SCORING  +land %d  +dep %d  +resolved %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d   |   next spawn %.0fs\n"),
-			nLand, nDep, nRes, nGA, nSep, nWake, nTCAS, nExit, Scoring->GetCurrentSpawnInterval());
+		Readout += FString::Printf(TEXT("SCORING  +land %d  +dep %d  +resolved %d  +intercept %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d   |   next spawn %.0fs\n"),
+			nLand, nDep, nRes, nInt, nGA, nSep, nWake, nTCAS, nExit, Scoring->GetCurrentSpawnInterval());
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -701,7 +1017,22 @@ void AClearanceSimulationController::DrawDebugView()
 				FString::Printf(TEXT("%s  hdg %03.0f>%03.0f"), *A.Callsign.ToString(), A.Heading, A.TargetHeading),
 				nullptr, C, 0.f, true, 1.1f);
 
-			Readout += FString::Printf(TEXT("%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f  vs%+5.0f%s\n"),
+			// In GCI mode prefix the line with a NATO-style threat tag so the operator can
+			// see classification at a glance. - TripleA
+			const TCHAR* GCITag = TEXT("");
+			if (bGCIMode)
+			{
+				switch (A.ThreatClass)
+				{
+				case EThreatClass::Friendly: GCITag = TEXT("[FRI] "); break;
+				case EThreatClass::Hostile:  GCITag = TEXT("[HOS] "); break;
+				case EThreatClass::Neutral:  GCITag = TEXT("[NEU] "); break;
+				default:                     GCITag = TEXT("[UNK] "); break;
+				}
+			}
+
+			Readout += FString::Printf(TEXT("%s%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f  vs%+5.0f%s\n"),
+				GCITag,
 				*A.Callsign.ToString(),
 				A.Heading, A.TargetHeading,
 				A.Altitude, A.TargetAltitude,
@@ -724,10 +1055,77 @@ void AClearanceSimulationController::CheckExits()
 		return;
 	}
 
+	TSet<FName> InterceptCredited; // so we log Successful Intercept once per pair this pass
+
 	// GetAllAircraftStates returns a copy, so deregistering inside the loop is safe.
 	for (const FAircraftState& State : AirspaceManager->GetAllAircraftStates())
 	{
 		const float Dist = FVector2D(State.Position.X, State.Position.Y).Size();
+
+		// GCI-controlled aircraft leaving: a flight (bandit + 1-3 fighters) shares one
+		// bandit key. Credit Successful Intercept once per bandit and deregister the
+		// whole flight. Unjoined / lone aircraft just leave quietly. - TripleA
+		if (State.bUnderGCIControl && Dist > ExitRadiusNm)
+		{
+			FName BanditCs;
+			if (ActiveIntercepts.Contains(State.Callsign))
+			{
+				// state is a fighter -> bandit is the value
+				BanditCs = ActiveIntercepts[State.Callsign];
+			}
+			else
+			{
+				// state may be the bandit itself (a value in the map)
+				for (const TPair<FName, FName>& P : ActiveIntercepts)
+				{
+					if (P.Value == State.Callsign) { BanditCs = State.Callsign; break; }
+				}
+			}
+
+			TArray<FName> Fighters;
+			bool bAnyJoined = false;
+			if (!BanditCs.IsNone())
+			{
+				for (const TPair<FName, FName>& P : ActiveIntercepts)
+				{
+					if (P.Value == BanditCs)
+					{
+						Fighters.Add(P.Key);
+						if (JoinedIntercepts.Contains(P.Key)) { bAnyJoined = true; }
+					}
+				}
+			}
+
+			if (bAnyJoined && !BanditCs.IsNone() && !InterceptCredited.Contains(BanditCs))
+			{
+				InterceptCredited.Add(BanditCs);
+				if (Scoring)
+				{
+					Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None,
+						FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector"), Fighters.Num(), *BanditCs.ToString()));
+				}
+				if (GEngine)
+				{
+					GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green,
+						FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
+							Fighters.Num(), *BanditCs.ToString(),
+							Scoring ? Scoring->PointsIntercept : 0));
+				}
+				AirspaceManager->DeregisterAircraft(BanditCs);
+				for (const FName& F : Fighters) { AirspaceManager->DeregisterAircraft(F); }
+				for (const FName& F : Fighters) { ActiveIntercepts.Remove(F); JoinedIntercepts.Remove(F); SettledInFormation.Remove(F); }
+			}
+			else
+			{
+				AirspaceManager->DeregisterAircraft(State.Callsign);
+				if (ActiveIntercepts.Contains(State.Callsign))
+				{
+					ActiveIntercepts.Remove(State.Callsign);
+					JoinedIntercepts.Remove(State.Callsign);
+				}
+			}
+			continue;
+		}
 
 		// Pull it off only once it's on the deck AND has braked to a FULL STOP, so the
 		// whole roll-out plays out - touch down, brake, slow, stop - before it's
@@ -751,6 +1149,22 @@ void AClearanceSimulationController::CheckExits()
 
 EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const FAircraftInstruction& Instruction)
 {
+	// Civilian ATC can't command anything under air defence control. - TripleA
+	if (AirspaceManager)
+	{
+		const FAircraftState Target = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
+		if (Target.bIsValid && Target.bUnderGCIControl)
+		{
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
+					FString::Printf(TEXT("%s is under GCI control - civilian ATC can't command"),
+						*Instruction.TargetCallsign.ToString()));
+			}
+			return EInstructionResult::Rejected_PhysicallyImpossible;
+		}
+	}
+
 	if (Scoring) { Scoring->RecordInstruction(); }
 	if (Recorder)
 	{
@@ -1069,7 +1483,14 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 	if (GetWorld() && AirspaceManager)
 	{
 		const FAircraftState State = AirspaceManager->GetAircraftState(Callsign);
-		const TArray<FAircraftVisualVariant>& Variants = VariantsFor(State.WakeCategory);
+		// Hostiles get the MiG pool, friendly military gets the F-35 pool, civilians
+		// pick by wake category. Each rung falls back to the next if its pool is empty,
+		// so a half-configured project still spawns something. - TripleA
+		const bool bHostile = (State.ThreatClass == EThreatClass::Hostile);
+		const TArray<FAircraftVisualVariant>& Variants =
+			(bHostile && HostileVariants.Num() > 0)             ? HostileVariants  :
+			(State.bIsMilitary && FighterVariants.Num() > 0)    ? FighterVariants  :
+			                                                      VariantsFor(State.WakeCategory);
 		if (Variants.Num() > 0)
 		{
 			const FAircraftVisualVariant& Variant = Variants[FMath::RandRange(0, Variants.Num() - 1)];
@@ -1118,6 +1539,20 @@ void AClearanceSimulationController::HandleAircraftDeregistered(FName Callsign)
 	{
 		if (It->Contains(CallStr)) { It.RemoveCurrent(); }
 	}
+
+	// Same for any active intercepts referencing this callsign.
+	TArray<FName> InterceptKeysToRemove;
+	for (const TPair<FName, FName>& P : ActiveIntercepts)
+	{
+		if (P.Key == Callsign || P.Value == Callsign) { InterceptKeysToRemove.Add(P.Key); }
+	}
+	for (const FName& K : InterceptKeysToRemove)
+	{
+		ActiveIntercepts.Remove(K);
+		JoinedIntercepts.Remove(K);
+		SettledInFormation.Remove(K);
+	}
+	SettledInFormation.Remove(Callsign);
 
 	if (FSpawnedAircraftVisual* Visual = VisualActors.Find(Callsign))
 	{
@@ -1390,6 +1825,141 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
 		}
+	}));
+
+// --- GCI / Air Defence console commands ---------------------------------------
+static EThreatClass ParseThreatClass(const FString& T)
+{
+	const FString U = T.ToLower();
+	if (U.StartsWith(TEXT("fri"))) return EThreatClass::Friendly;
+	if (U.StartsWith(TEXT("hos"))) return EThreatClass::Hostile;
+	if (U.StartsWith(TEXT("neu"))) return EThreatClass::Neutral;
+	return EThreatClass::Unknown;
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceGCICmd(
+	TEXT("clearance.gci"),
+	TEXT("clearance.gci <on|off> - toggle GCI / air defence mode"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			const bool bOn = (Args.Num() < 1) ? true : (Args[0].ToLower() != TEXT("off") && Args[0] != TEXT("0"));
+			C->SetGCIModeEnabled(bOn);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceClassifyCmd(
+	TEXT("clearance.classify"),
+	TEXT("clearance.classify <callsign> <friendly|hostile|neutral|unknown>"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 2) { return; }
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->ClassifyAircraft(FName(*Args[0]), ParseThreatClass(Args[1]));
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceIFFCmd(
+	TEXT("clearance.iff"),
+	TEXT("clearance.iff <callsign> - interrogate IFF (returns class + squawk if responsive)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			EThreatClass Out; int32 Sq;
+			C->InterrogateIFF(FName(*Args[0]), Out, Sq);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInterceptCmd(
+	TEXT("clearance.intercept"),
+	TEXT("clearance.intercept <fighter> <target> - vector a fighter onto an intercept course"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 2) { return; }
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->VectorIntercept(FName(*Args[0]), FName(*Args[1]));
+		}
+	}));
+
+// Drop a fighter + a hostile contact into the sector for a quick GCI demo. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceGCITestCmd(
+	TEXT("clearance.gci.test"),
+	TEXT("clearance.gci.test - drop a friendly fighter + a hostile contact for an intercept demo"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+		AClearanceAirspaceManager* M = C->GetAirspaceManager();
+		C->ClearTraffic();
+
+		// Hostile: heading west, no IFF response.
+		FAircraftState H;
+		H.Callsign = TEXT("BANDIT");
+		H.Position = FVector(20.f, 5.f, 0.f);
+		H.Altitude = 15000.f;
+		H.Heading = 270.f;
+		H.Speed = 360.f;
+		H.WakeCategory = EWakeCategory::Medium;
+		H.FlightPhase = EFlightPhase::Enroute;
+		H.ThreatClass = EThreatClass::Hostile;
+		H.SquawkCode = 7777;
+		H.bIFFOperational = false;
+		H.bIsMilitary = true;
+		M->RegisterAircraft(H);
+
+		// Three-ship friendly fighter flight ready to intercept (VIPER01/02/03).
+		auto Viper = [&](const TCHAR* Cs, FVector Pos, float Hdg, int32 Sq)
+		{
+			FAircraftState F;
+			F.Callsign = Cs;
+			F.Position = Pos;
+			F.Altitude = 15000.f;
+			F.Heading = Hdg;
+			F.Speed = 620.f;
+			F.WakeCategory = EWakeCategory::Medium;
+			F.FlightPhase = EFlightPhase::Enroute;
+			F.ThreatClass = EThreatClass::Friendly;
+			F.SquawkCode = Sq;
+			F.bIFFOperational = true;
+			F.bIsMilitary = true;
+			M->RegisterAircraft(F);
+		};
+		Viper(TEXT("VIPER01"), FVector(-12.f, -8.f,  0.f),  45.f, 2200);
+		Viper(TEXT("VIPER02"), FVector( 10.f, -10.f, 0.f), 320.f, 2201);
+		Viper(TEXT("VIPER03"), FVector(  0.f, -14.f, 0.f),   0.f, 2202);
+
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 7.f, FColor::Cyan,
+				TEXT("GCI TEST: BANDIT (hostile, IFF off) inbound. 3-ship VIPER flight ready. Try: clearance.gci on; clearance.iff BANDIT; clearance.intercept.flight BANDIT"));
+		}
+	}));
+
+// Send every available friendly military aircraft at this bandit at once. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInterceptFlightCmd(
+	TEXT("clearance.intercept.flight"),
+	TEXT("clearance.intercept.flight <bandit> - vector ALL friendly military aircraft onto an intercept"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+		const FName BanditCs(*Args[0]);
+		int32 N = 0;
+		for (const FAircraftState& S : C->GetAirspaceManager()->GetAllAircraftStates())
+		{
+			if (S.bIsMilitary && S.ThreatClass == EThreatClass::Friendly && S.Callsign != BanditCs)
+			{
+				if (C->VectorIntercept(S.Callsign, BanditCs)) { ++N; }
+			}
+		}
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
+			FString::Printf(TEXT("FLIGHT VECTORED: %d fighter(s) intercepting %s"), N, *BanditCs.ToString())); }
 	}));
 
 static FAutoConsoleCommandWithWorldAndArgs GClearanceRadarCmd(

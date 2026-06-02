@@ -27,7 +27,7 @@ void UClearanceAircraftBehaviour::Initialise(AClearanceAirspaceManager* InManage
 		return;
 	}
 
-	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetCategoryPerformance(State.WakeCategory);
+	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary);
 	State.ServiceCeiling = Perf.ServiceCeilingFt;
 	State.MinOperatingSpeed = Perf.MinOperatingSpeedKts;
 	State.MaxOperatingSpeed = Perf.MaxOperatingSpeedKts;
@@ -122,7 +122,7 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 
 		// Wheel braking to a stop, at a rate set by the aircraft's category - a Heavy
 		// rolls out far longer than a Light. - TripleA
-		const float BrakeKtsPerSec = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).GroundBrakingKtsPerSec;
+		const float BrakeKtsPerSec = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).GroundBrakingKtsPerSec;
 		State.TargetSpeed = 0.f;
 		State.Speed = FMath::Max(0.f, State.Speed - BrakeKtsPerSec * DeltaTime);
 
@@ -238,7 +238,7 @@ void UClearanceAircraftBehaviour::StepHeading(FAircraftState& State, float Delta
 	}
 
 	const float MaxStep = TurnRateDegPerSec(State) * DeltaTime;
-	const float BankLimit = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).BankLimitDeg;
+	const float BankLimit = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).BankLimitDeg;
 
 	if (ActiveTurnDirection != 0)
 	{
@@ -290,7 +290,7 @@ void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float Delt
 	}
 	else
 	{
-		RateFtPerMin = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).MaxDescentRateFtMin;
+		RateFtPerMin = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).MaxDescentRateFtMin;
 	}
 
 	if (bExpediting)
@@ -323,7 +323,7 @@ void UClearanceAircraftBehaviour::StepSpeed(FAircraftState& State, float DeltaTi
 	}
 
 	// Aircraft slow down more reluctantly than they speed up (less drag than thrust).
-	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetCategoryPerformance(State.WakeCategory);
+	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary);
 	const float RateKtsPerSec = (Delta > 0.f) ? Perf.AccelKtsPerSec : Perf.DecelKtsPerSec;
 
 	const float MaxStep = RateKtsPerSec * DeltaTime;
@@ -446,7 +446,7 @@ float UClearanceAircraftBehaviour::TurnRateDegPerSec(const FAircraftState& State
 		return 0.f; // basically stationary, no meaningful turn
 	}
 
-	const float BankLimit = ClearanceConstants::GetCategoryPerformance(State.WakeCategory).BankLimitDeg;
+	const float BankLimit = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).BankLimitDeg;
 	const float Omega = (9.81f * FMath::Tan(FMath::DegreesToRadians(BankLimit))) / SpeedMps;
 	return FMath::RadiansToDegrees(Omega);
 }
@@ -455,7 +455,7 @@ float UClearanceAircraftBehaviour::DensityAdjustedClimbRate(const FAircraftState
 {
 	const float Base = (State.MaxClimbRate > 0.f)
 		? State.MaxClimbRate
-		: ClearanceConstants::GetCategoryPerformance(State.WakeCategory).MaxClimbRateFtMin;
+		: ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).MaxClimbRateFtMin;
 	return Base * ISADensityRatio(State.Altitude);
 }
 

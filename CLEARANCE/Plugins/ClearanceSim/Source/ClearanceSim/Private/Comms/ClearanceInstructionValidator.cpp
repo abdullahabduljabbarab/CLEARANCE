@@ -21,7 +21,7 @@ EInstructionResult UClearanceInstructionValidator::ValidateInstruction(const FAi
 
 	// Limits come from the category, not the (possibly stale) state fields, so the
 	// Validator is the single authority on what's physically allowed. - TripleA
-	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetCategoryPerformance(State.WakeCategory);
+	const ClearanceConstants::FCategoryPerformance Perf = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary);
 
 	switch (Instruction.Type)
 	{

@@ -41,6 +41,13 @@ void UClearanceConflictDetector::DetectConflicts()
 			const FAircraftState& A = States[i];
 			const FAircraftState& B = States[j];
 
+			// Hostile-involved pairs are an engagement, not a civilian conflict: safety
+			// nets (conflict alerts, TCAS, wake) all suppressed. - TripleA
+			if (A.ThreatClass == EThreatClass::Hostile || B.ThreatClass == EThreatClass::Hostile)
+			{
+				continue;
+			}
+
 			const float HorizNow = HorizontalSeparationNm(A, B);
 			const float VertNow = VerticalSeparationFt(A, B);
 			EAlertLevel Level = AlertFromSeparation(HorizNow, VertNow);

@@ -49,6 +49,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PointsLanding = 100;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PointsIntercept = 150;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PointsDeparture = 80;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PointsResolution = 50;

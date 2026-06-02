@@ -46,6 +46,17 @@ enum class EAlertLevel : uint8
 	Critical	UMETA(DisplayName = "Critical")		// Immediate danger
 };
 
+/** NATO-style threat classification carried per aircraft. Used in GCI / air-defence
+ *  mode to mark contacts as friend/foe/unknown. STANAG-style tagging. */
+UENUM(BlueprintType)
+enum class EThreatClass : uint8
+{
+	Friendly  UMETA(DisplayName = "Friendly"),
+	Hostile   UMETA(DisplayName = "Hostile"),
+	Unknown   UMETA(DisplayName = "Unknown"),
+	Neutral   UMETA(DisplayName = "Neutral")
+};
+
 /** Category of a logged incident / outcome (drives scoring). */
 UENUM(BlueprintType)
 enum class EIncidentType : uint8
@@ -59,7 +70,8 @@ enum class EIncidentType : uint8
 	TCASResolutionAdvisory	UMETA(DisplayName = "TCAS Resolution Advisory"),
 	SuccessfulLanding		UMETA(DisplayName = "Successful Landing"),
 	SuccessfulDeparture		UMETA(DisplayName = "Successful Departure"),
-	SuccessfulResolution	UMETA(DisplayName = "Successful Resolution")
+	SuccessfulResolution	UMETA(DisplayName = "Successful Resolution"),
+	SuccessfulIntercept		UMETA(DisplayName = "Successful Intercept")
 };
 
 /** Result of submitting an instruction through the Communication System. */
@@ -156,6 +168,34 @@ struct CLEARANCESIM_API FAircraftState
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
 	float MaxClimbRate = 0.f;		// feet per minute
+
+	// --- GCI / air-defence tagging ----------------------------------------
+	// What this contact actually IS (the truth). The operator's classification of a
+	// track lives elsewhere; this is what an IFF interrogation would resolve to.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	EThreatClass ThreatClass = EThreatClass::Friendly;
+
+	// SSR / Mode A "squawk" code (octal, 0-7777). 1200 = VFR civilian default.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	int32 SquawkCode = 1200;
+
+	// Does the IFF respond to interrogation? Hostile contacts often run silent.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	bool bIFFOperational = true;
+
+	// While true, civilian ATC can't issue instructions to this aircraft - it's
+	// under air defence control (a classified hostile, or a fighter dispatched on
+	// an intercept). ATC's safety nets (TCAS, conflict alerts, separation penalty)
+	// are also suppressed for hostile-involved pairs. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	bool bUnderGCIControl = false;
+
+	// Military aircraft draw their visual from the Controller's FighterVariants pool
+	// (so an F-35 mesh doesn't randomly appear on a civilian airliner). Independent of
+	// threat class - a friendly military intercept aircraft and a hostile fighter both
+	// get fighter mesh assignment.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	bool bIsMilitary = false;
 };
 
 /** A single instruction targeted at one aircraft. */

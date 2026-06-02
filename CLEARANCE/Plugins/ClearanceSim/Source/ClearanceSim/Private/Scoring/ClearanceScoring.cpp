@@ -69,6 +69,7 @@ int32 UClearanceScoring::PointsForIncident(EIncidentType Type) const
 	case EIncidentType::SuccessfulLanding:     return PointsLanding;
 	case EIncidentType::SuccessfulDeparture:   return PointsDeparture;
 	case EIncidentType::SuccessfulResolution:  return PointsResolution;
+	case EIncidentType::SuccessfulIntercept:   return PointsIntercept;
 	case EIncidentType::SeparationLoss:        return -PenaltySeparationLoss;
 	case EIncidentType::GoAroundTriggered:     return -PenaltyGoAround;
 	case EIncidentType::UnresolvedExit:        return -PenaltyUnresolvedExit;

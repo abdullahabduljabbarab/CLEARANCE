@@ -872,57 +872,111 @@ void AClearanceSimulationController::DrawDebugView()
 		AllRunways.Add(Fallback);
 	}
 
+	// Pre-resolve each runway's actual half-width so the capture funnel's narrow end
+	// matches the strip it leads onto, instead of a hard-coded 0.3nm slot. Key by
+	// rounded heading (10 deg buckets, both directions of each strip) so the lookup
+	// works against the FRunwayInfo loop below. - TripleA
+	TMap<int32, float> WidthByHeading;
+	for (TActorIterator<AClearanceRunway> WIt(World); WIt; ++WIt)
+	{
+		FVector MC, ME;
+		if (!WIt->GetRunwayBounds(MC, ME)) { continue; }
+		const float HRad = FMath::DegreesToRadians(WIt->LandingHeadingDeg);
+		const FVector SideV(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
+		const float HW = ME.X * FMath::Abs(SideV.X) + ME.Y * FMath::Abs(SideV.Y);
+		const int32 H1 = (FMath::RoundToInt(WIt->LandingHeadingDeg / 10.f) % 36) * 10;
+		const int32 H2 = (FMath::RoundToInt(FMath::Fmod(WIt->LandingHeadingDeg + 180.f, 360.f) / 10.f) % 36) * 10;
+		WidthByHeading.Add(H1, HW);
+		WidthByHeading.Add(H2, HW);
+	}
+
+	// Slow real-time pulse on the active runway's markings so the operator can find
+	// the in-use threshold at a glance. - TripleA
+	const float RWT2 = GetWorld() ? GetWorld()->GetRealTimeSeconds() : 0.f;
+	const float Pulse2 = 0.65f + 0.35f * (0.5f + 0.5f * FMath::Sin(RWT2 * 4.f));
+
 	for (const FRunwayInfo& Rwy : AllRunways)
 	{
 		const bool bActive = (Env.ActiveRunwayHeading >= 0.f) && FMath::IsNearlyEqual(Rwy.HeadingDeg, Env.ActiveRunwayHeading, 0.5f);
-		const FColor LineCol = bActive ? FColor::White : FColor(140, 140, 140);
-		const FColor OrbCol  = bActive ? FColor::White : FColor(160, 160, 160);
+
+		// Active end gets warm amber pulsing - same family as the runway box. Inactive
+		// ends sit in a cool slate so they read as available but not in use. - TripleA
+		auto Scale = [&](int32 R, int32 G, int32 B, float K) -> FColor
+		{
+			return FColor(
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(R * K), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(G * K), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(B * K), 0, 255)));
+		};
+		const FColor LineCol = bActive ? Scale(255, 200, 80, Pulse2) : FColor(110, 130, 150);
+		const FColor ConeCol = bActive ? Scale(255, 175, 60, Pulse2) : FColor(60, 75, 95);
 
 		const float Fac = Rwy.HeadingDeg;
 		const float FacRad = FMath::DegreesToRadians(Fac);
 		const FVector InboundDir(FMath::Sin(FacRad), FMath::Cos(FacRad), 0.f); // landing direction
 		const FVector RightDir(FMath::Cos(FacRad), -FMath::Sin(FacRad), 0.f);  // perpendicular
 		const float CorridorLen = ClearanceConstants::ApproachCorridorLengthNm;
-		const FColor Grey(90, 90, 90);
 		const FVector Thr(Origin.X + Rwy.ThresholdNm.X * S, Origin.Y + Rwy.ThresholdNm.Y * S, GroundWorldZ);
 
-		// Capture funnel/cone: a narrow slot at the orb that opens out to a wide, tall
-		// mouth 40nm away, with the white glidepath down the middle rising on the 3deg
-		// slope. Fly the aircraft into the mouth, then ride the white line down onto the
-		// orb. Matches the cone-shaped capture test in the Behaviour. - TripleA
+		// Capture funnel/cone: the narrow end now matches the runway's own width, so
+		// the cone visibly leads onto the actual strip. - TripleA
 		const float WMax = ClearanceConstants::ApproachCorridorHalfWidthNm * S; // far half-width
-		const float WMin = 0.3f * S;                                            // half-width at the orb
-		const float MouthZ = AltitudeToWorldZOffset(CorridorLen * 318.f);       // curved glide height at the mouth
+		const int32 HKey = (FMath::RoundToInt(Rwy.HeadingDeg / 10.f) % 36) * 10;
+		const float* FoundHW = WidthByHeading.Find(HKey);
+		const float WMin = FoundHW ? *FoundHW : 0.3f * S;                       // half-width at the orb (= runway half-width)
+		const float MouthZ = AltitudeToWorldZOffset(CorridorLen * 318.f);
 		const FVector Up(0.f, 0.f, MouthZ);
-		const FVector FarC = Thr - InboundDir * (CorridorLen * S);              // far point, on the ground
+		const FVector FarC = Thr - InboundDir * (CorridorLen * S);
 
-		const FVector FBL = FarC + RightDir * WMax;          // far mouth, ground, left/right
+		const FVector FBL = FarC + RightDir * WMax;
 		const FVector FBR = FarC - RightDir * WMax;
-		const FVector FTL = FBL + Up;                        // far mouth, top
+		const FVector FTL = FBL + Up;
 		const FVector FTR = FBR + Up;
 
-		DrawDebugSphere(World, Thr, 700.f, 12, OrbCol, false, -1.f, 0, 60.f);
-
-		// Glidepath centreline as a CURVE - gentle near the orb, steepening out to the
-		// mouth - following the altitude curve so it sits on the path planes actually fly.
-		FVector Prev = Thr;
-		const int32 Segs = 20;
-		for (int32 i = 1; i <= Segs; ++i)
+		// Glidepath centreline - solid, thin, curves up from threshold along the 3deg
+		// slope. With short perpendicular ticks every 10nm acting as range marks so
+		// the line has structure instead of floating empty. - TripleA
 		{
-			const float DistNm = (CorridorLen * i) / Segs;
-			const FVector Pt = Thr - InboundDir * (DistNm * S) + FVector(0.f, 0.f, AltitudeToWorldZOffset(DistNm * 318.f));
-			DrawDebugLine(World, Prev, Pt, LineCol, false, -1.f, 0, 120.f);
-			Prev = Pt;
+			const int32 Segs = 60;
+			const float LineThick = bActive ? 80.f : 40.f;
+			FVector Prev = Thr;
+			for (int32 i = 1; i <= Segs; ++i)
+			{
+				const float DistNm = (CorridorLen * i) / Segs;
+				const FVector Pt = Thr - InboundDir * (DistNm * S) + FVector(0.f, 0.f, AltitudeToWorldZOffset(DistNm * 318.f));
+				DrawDebugLine(World, Prev, Pt, LineCol, false, -1.f, 0, LineThick);
+				Prev = Pt;
+			}
+			// 10-nm range marks along the glidepath.
+			const float Step = 10.f;
+			for (float D = Step; D < CorridorLen; D += Step)
+			{
+				const FVector Pt = Thr - InboundDir * (D * S) + FVector(0.f, 0.f, AltitudeToWorldZOffset(D * 318.f));
+				const float TickHalf = FMath::Max(WMin * 0.25f, 200.f);
+				DrawDebugLine(World, Pt + RightDir * TickHalf, Pt - RightDir * TickHalf, LineCol, false, -1.f, 0, LineThick);
+				DrawDebugString(World, Pt + FVector(0, 0, 0.6f * S),
+					FString::Printf(TEXT("%.0fnm"), D), nullptr, LineCol, 0.f, true, 0.9f);
+			}
 		}
 
-		DrawDebugLine(World, Thr + RightDir * WMin, FBL, Grey, false, -1.f, 0, 40.f);          // ground edges (widen out)
-		DrawDebugLine(World, Thr - RightDir * WMin, FBR, Grey, false, -1.f, 0, 40.f);
-		DrawDebugLine(World, Thr, FTL, Grey, false, -1.f, 0, 40.f);                            // top edges (rise + widen)
-		DrawDebugLine(World, Thr, FTR, Grey, false, -1.f, 0, 40.f);
-		DrawDebugLine(World, FBL, FBR, Grey, false, -1.f, 0, 40.f);                            // far mouth rectangle
-		DrawDebugLine(World, FTL, FTR, Grey, false, -1.f, 0, 40.f);
-		DrawDebugLine(World, FBL, FTL, Grey, false, -1.f, 0, 40.f);
-		DrawDebugLine(World, FBR, FTR, Grey, false, -1.f, 0, 40.f);
+		// Capture funnel as a FLAT GROUND FAN - keeps the runway-extension shape but
+		// drops the 3D wireframe walls that read as a debug widget. Just the strip,
+		// the two diverging ground edges out to the corridor mouth, and the mouth
+		// itself. - TripleA
+		const float ConeThick = bActive ? 50.f : 30.f;
+		DrawDebugLine(World, Thr + RightDir * WMin, FBL, ConeCol, false, -1.f, 0, ConeThick);
+		DrawDebugLine(World, Thr - RightDir * WMin, FBR, ConeCol, false, -1.f, 0, ConeThick);
+		DrawDebugLine(World, FBL, FBR, ConeCol, false, -1.f, 0, ConeThick);
+
+		// Thin cross-bars at 10/20/30/40nm so the fan has scale - reads like sector
+		// chart range rings instead of an empty triangle. - TripleA
+		for (float D = 10.f; D < CorridorLen; D += 10.f)
+		{
+			const float T = D / CorridorLen;
+			const float WHere = FMath::Lerp(WMin, WMax, T);
+			const FVector Mid = Thr - InboundDir * (D * S);
+			DrawDebugLine(World, Mid + RightDir * WHere, Mid - RightDir * WHere, ConeCol, false, -1.f, 0, FMath::Max(ConeThick * 0.5f, 25.f));
+		}
 	}
 
 	// Resolve "RWY 09L / 09R / 09C" labels: every runway endpoint that shares a
@@ -1017,13 +1071,67 @@ void AClearanceSimulationController::DrawDebugView()
 		const FVector E1 = C - Dir * HalfLen;
 		const FVector E2 = C + Dir * HalfLen;
 
-		DrawDebugLine(World, E1, E2, FColor::Yellow, false, -1.f, 0, 250.f);                 // centreline of the strip
-		DrawDebugLine(World, E1 + Side * HalfWidth, E2 + Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f); // edges
-		DrawDebugLine(World, E1 - Side * HalfWidth, E2 - Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f);
-		DrawDebugLine(World, E1 + Side * HalfWidth, E1 - Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f); // end caps
-		DrawDebugLine(World, E2 + Side * HalfWidth, E2 - Side * HalfWidth, FColor::Yellow, false, -1.f, 0, 120.f);
-		DrawDebugSphere(World, E1, 400.f, 8, FColor::Yellow, false, -1.f, 0, 40.f);
-		DrawDebugSphere(World, E2, 400.f, 8, FColor::Yellow, false, -1.f, 0, 40.f);
+		// Real-runway markings instead of one flat yellow rectangle. Warm cream for
+		// the strip surface, a dashed centreline like real paint, and threshold piano
+		// keys at both ends so each touchdown zone reads cleanly from above. - TripleA
+		// Slow breathing pulse on the runway markings - dim to bright over ~1.6s. Real
+		// time, not sim time, so pausing/scaling the sim doesn't freeze the visual. - TripleA
+		const float RWT = GetWorld() ? GetWorld()->GetRealTimeSeconds() : 0.f;
+		const float Pulse = 0.7f + 0.3f * (0.5f + 0.5f * FMath::Sin(RWT * 4.f));
+		auto Scaled = [&](int32 R, int32 G, int32 B) -> FColor
+		{
+			return FColor(
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(R * Pulse), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(G * Pulse), 0, 255)),
+				static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(B * Pulse), 0, 255)));
+		};
+		const FColor Edge   = Scaled(255, 195, 80);   // amber edge paint
+		const FColor Centre = Scaled(255, 180, 60);   // dashed centreline
+		const FColor Keys   = Scaled(255, 220, 130);  // warm keys at the threshold
+		const float EdgeThick = 90.f;
+		const float DashThick = 80.f;
+
+		// Edges + end caps - thinner than before, so the threshold markings read.
+		DrawDebugLine(World, E1 + Side * HalfWidth, E2 + Side * HalfWidth, Edge, false, -1.f, 0, EdgeThick);
+		DrawDebugLine(World, E1 - Side * HalfWidth, E2 - Side * HalfWidth, Edge, false, -1.f, 0, EdgeThick);
+		DrawDebugLine(World, E1 + Side * HalfWidth, E1 - Side * HalfWidth, Edge, false, -1.f, 0, EdgeThick);
+		DrawDebugLine(World, E2 + Side * HalfWidth, E2 - Side * HalfWidth, Edge, false, -1.f, 0, EdgeThick);
+
+		// Dashed centreline - on for half a segment, off for half. Reads as paint
+		// at any scale, not a single laser line. - TripleA
+		{
+			const int32 DashCount = 24;
+			for (int32 i = 0; i < DashCount; ++i)
+			{
+				const float T0 = (i + 0.15f) / DashCount;
+				const float T1 = (i + 0.65f) / DashCount;
+				const FVector P0 = FMath::Lerp(E1, E2, T0);
+				const FVector P1 = FMath::Lerp(E1, E2, T1);
+				DrawDebugLine(World, P0, P1, Centre, false, -1.f, 0, DashThick);
+			}
+		}
+
+		// Threshold piano keys - 8 short bars near each end, spanning most of the width
+		// and offset slightly INBOARD from the threshold. - TripleA
+		{
+			const int32 KeyCount = 8;
+			const float KeyInsetLen = HalfLen * 0.08f;            // how far inboard the keys sit
+			const float KeyLen      = HalfLen * 0.10f;            // length of each key along the strip
+			const float KeySpread   = HalfWidth * 0.85f;
+			for (int32 i = 0; i < KeyCount; ++i)
+			{
+				const float t = (i + 0.5f) / KeyCount;            // 0..1 across width
+				const float Off = (t * 2.f - 1.f) * KeySpread;     // -spread .. +spread
+				// Inboard from E1
+				const FVector P0 = E1 + Dir * KeyInsetLen + Side * Off;
+				const FVector P1 = P0 + Dir * KeyLen;
+				DrawDebugLine(World, P0, P1, Keys, false, -1.f, 0, 60.f);
+				// Inboard from E2 (other end)
+				const FVector Q0 = E2 - Dir * KeyInsetLen + Side * Off;
+				const FVector Q1 = Q0 - Dir * KeyLen;
+				DrawDebugLine(World, Q0, Q1, Keys, false, -1.f, 0, 60.f);
+			}
+		}
 
 		// Label each end with the runway designator from the pre-computed table, so
 		// parallel runways get the L/C/R suffix per ICAO. - TripleA

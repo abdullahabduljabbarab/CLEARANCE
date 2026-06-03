@@ -19,6 +19,30 @@ AClearanceRunway::AClearanceRunway()
 
 bool AClearanceRunway::GetRunwayBounds(FVector& OutCentre, FVector& OutExtent) const
 {
+	// Explicit override wins. Lets the actor define the strip without holding any
+	// mesh of its own - useful when the visual runway is a separate asset placed
+	// elsewhere in the level. - TripleA
+	if (OverrideLengthUnits > 0.f && OverrideWidthUnits > 0.f)
+	{
+		const float HRad = FMath::DegreesToRadians(LandingHeadingDeg);
+		const FVector Forward(FMath::Sin(HRad), FMath::Cos(HRad), 0.f);
+		const FVector Right(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
+		const float HalfLen = OverrideLengthUnits * 0.5f;
+		const float HalfWid = OverrideWidthUnits  * 0.5f;
+		const FVector Centre = GetActorLocation();
+
+		FBox Box(EForceInit::ForceInit);
+		for (int32 i = 0; i < 4; ++i)
+		{
+			const float sx = (i & 1) ? 1.f : -1.f;
+			const float sy = (i & 2) ? 1.f : -1.f;
+			Box += Centre + Forward * (HalfLen * sx) + Right * (HalfWid * sy);
+		}
+		OutCentre = Box.GetCenter();
+		OutExtent = Box.GetExtent();
+		return true;
+	}
+
 	if (!RunwayMesh || !RunwayMesh->GetStaticMesh())
 	{
 		return false;

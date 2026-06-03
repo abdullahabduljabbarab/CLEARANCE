@@ -31,6 +31,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
 	bool bAllowReciprocal = true;
 
+	// Use these to size the runway when the actor has no mesh of its own (the visual
+	// is somewhere else in the level). When > 0 they override any mesh bounds, so the
+	// strip is whatever you type even if a mesh IS attached. Length is along the
+	// heading; width is perpendicular. World units (UE cm in a stock project). - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	float OverrideLengthUnits = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	float OverrideWidthUnits = 0.f;
+
 	// World-space centre + half-extents of the runway, computed from the mesh ASSET
 	// bounds and the mesh's current transform - reliable even at BeginPlay, unlike the
 	// cached component Bounds which can read stale/zero. Returns false if no mesh is

@@ -74,6 +74,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
 	float GetActiveRunway() const;
 
+	// All runway thresholds the manager knows about (each end of each strip is its own
+	// entry). Used by the debug draw so every glideslope shows up, not just the one
+	// the wind picked as active. - TripleA
+	const TArray<FRunwayInfo>& GetAllRunways() const { return Runways; }
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Airspace|Settings", meta = (ClampMin = "1"))
 	int32 MaxAircraftCount = 20;
 

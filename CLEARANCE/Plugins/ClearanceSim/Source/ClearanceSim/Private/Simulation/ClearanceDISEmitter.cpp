@@ -119,6 +119,9 @@ void UClearanceDISEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 
 	for (const FAircraftState& S : States)
 	{
+		// Don't re-broadcast traffic somebody else sent us - that's how federation
+		// loops form. They own the truth for their aircraft. - TripleA
+		if (S.bIsExternal) { continue; }
 		Buf.Reset();
 		BuildEntityStatePDU(Buf, S, SimTimeSeconds);
 		int32 Sent = 0;

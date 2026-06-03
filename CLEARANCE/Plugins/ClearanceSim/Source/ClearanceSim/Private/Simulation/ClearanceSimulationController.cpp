@@ -11,6 +11,7 @@
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
 #include "Simulation/ClearanceDISEmitter.h"
+#include "Simulation/ClearanceDISReceiver.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Kismet/GameplayStatics.h"
@@ -18,6 +19,7 @@
 #include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 
 namespace
@@ -45,6 +47,13 @@ namespace
 AClearanceSimulationController::AClearanceSimulationController()
 {
 	PrimaryActorTick.bCanEverTick = true;
+
+	// Give the controller a real scene root so its transform gizmo shows up in the
+	// editor - the actor's location is the sector centre, so the user has to be
+	// able to drag it around. Without a root component the actor has no widget. - TripleA
+	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("SectorRoot"));
+	RootComponent = Root;
+	Root->SetMobility(EComponentMobility::Movable);
 }
 
 void AClearanceSimulationController::BeginPlay()
@@ -85,6 +94,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	CommsRouter = NewObject<UClearanceCommsRouter>(this);
 	Recorder = NewObject<UClearanceSessionRecorder>(this);
 	DISEmitter = NewObject<UClearanceDISEmitter>(this);
+	DISReceiver = NewObject<UClearanceDISReceiver>(this);
 	Radar = NewObject<UClearanceRadar>(this);
 	if (Radar) { Radar->SetReferences(AirspaceManager); }
 
@@ -250,6 +260,12 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		}
 		// Radar still ticks in replay, so the operator can debrief from the radar view.
 		if (Radar && Radar->IsEnabled()) { Radar->Tick(DeltaTime); }
+		// DIS receiver still polls in replay - a partner sim watching the same debrief
+		// can still drop traffic on our scope. - TripleA
+		if (DISReceiver && DISReceiver->IsRunning() && AirspaceManager && GetWorld())
+		{
+			DISReceiver->Poll(AirspaceManager, GetWorld()->GetRealTimeSeconds());
+		}
 		UpdateVisuals();
 		UpdateFollowCamera();
 		if (DISEmitter && DISEmitter->IsRunning() && AirspaceManager)
@@ -258,6 +274,13 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		}
 		DrawDebugView();
 		return;
+	}
+
+	// Pull anything off the DIS wire BEFORE the local sim steps, so federated
+	// aircraft are present for separation checks this same tick. - TripleA
+	if (DISReceiver && DISReceiver->IsRunning() && AirspaceManager && GetWorld())
+	{
+		DISReceiver->Poll(AirspaceManager, GetWorld()->GetRealTimeSeconds());
 	}
 
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
@@ -677,7 +700,22 @@ void AClearanceSimulationController::UpdateVisuals()
 			continue;
 		}
 
-		Found->Actor->SetActorLocation(WorldPositionFor(State));
+		// External (federated) aircraft only refresh on incoming packets - any small
+		// snap between dead-reckoned and fresh truth would read as a jitter. Smooth
+		// the visual position toward truth on REAL frame time so the jolt becomes a
+		// half-second slide instead. Local aircraft skip this - their state updates
+		// every tick from physics, so a direct write looks correct. - TripleA
+		const FVector TargetPos = WorldPositionFor(State);
+		if (State.bIsExternal)
+		{
+			const float RealDt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
+			const FVector Smoothed = FMath::VInterpTo(Found->Actor->GetActorLocation(), TargetPos, RealDt, 6.f);
+			Found->Actor->SetActorLocation(Smoothed);
+		}
+		else
+		{
+			Found->Actor->SetActorLocation(TargetPos);
+		}
 
 		// Point the nose along the full 3D track (heading + climb), so the aircraft
 		// visibly pitches when climbing/descending, then bank about the nose. The
@@ -821,16 +859,32 @@ void AClearanceSimulationController::DrawDebugView()
 	const TArray<FAircraftState> States = AirspaceManager->GetAllAircraftStates();
 	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
 
-	// Active runway threshold + the extended approach centreline (the localiser you
-	// vector traffic onto) + the +/-3nm capture corridor, so the approach is flyable.
+	// Approach corridor + glidepath for EVERY runway threshold the manager knows
+	// about, not just the wind-active one. The active runway draws white; the others
+	// draw dimmer so the operator can still see they exist. - TripleA
+	TArray<FRunwayInfo> AllRunways = AirspaceManager->GetAllRunways();
+	if (AllRunways.Num() == 0)
 	{
-		const float Fac = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+		// Fallback so we still draw something sensible if no runway actors registered.
+		FRunwayInfo Fallback;
+		Fallback.HeadingDeg = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+		Fallback.ThresholdNm = FVector2D(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+		AllRunways.Add(Fallback);
+	}
+
+	for (const FRunwayInfo& Rwy : AllRunways)
+	{
+		const bool bActive = (Env.ActiveRunwayHeading >= 0.f) && FMath::IsNearlyEqual(Rwy.HeadingDeg, Env.ActiveRunwayHeading, 0.5f);
+		const FColor LineCol = bActive ? FColor::White : FColor(140, 140, 140);
+		const FColor OrbCol  = bActive ? FColor::White : FColor(160, 160, 160);
+
+		const float Fac = Rwy.HeadingDeg;
 		const float FacRad = FMath::DegreesToRadians(Fac);
 		const FVector InboundDir(FMath::Sin(FacRad), FMath::Cos(FacRad), 0.f); // landing direction
 		const FVector RightDir(FMath::Cos(FacRad), -FMath::Sin(FacRad), 0.f);  // perpendicular
 		const float CorridorLen = ClearanceConstants::ApproachCorridorLengthNm;
 		const FColor Grey(90, 90, 90);
-		const FVector Thr(Origin.X + Env.ActiveRunwayThreshold.X * S, Origin.Y + Env.ActiveRunwayThreshold.Y * S, GroundWorldZ);
+		const FVector Thr(Origin.X + Rwy.ThresholdNm.X * S, Origin.Y + Rwy.ThresholdNm.Y * S, GroundWorldZ);
 
 		// Capture funnel/cone: a narrow slot at the orb that opens out to a wide, tall
 		// mouth 40nm away, with the white glidepath down the middle rising on the 3deg
@@ -847,7 +901,7 @@ void AClearanceSimulationController::DrawDebugView()
 		const FVector FTL = FBL + Up;                        // far mouth, top
 		const FVector FTR = FBR + Up;
 
-		DrawDebugSphere(World, Thr, 700.f, 12, FColor::White, false, -1.f, 0, 60.f);
+		DrawDebugSphere(World, Thr, 700.f, 12, OrbCol, false, -1.f, 0, 60.f);
 
 		// Glidepath centreline as a CURVE - gentle near the orb, steepening out to the
 		// mouth - following the altitude curve so it sits on the path planes actually fly.
@@ -857,7 +911,7 @@ void AClearanceSimulationController::DrawDebugView()
 		{
 			const float DistNm = (CorridorLen * i) / Segs;
 			const FVector Pt = Thr - InboundDir * (DistNm * S) + FVector(0.f, 0.f, AltitudeToWorldZOffset(DistNm * 318.f));
-			DrawDebugLine(World, Prev, Pt, FColor::White, false, -1.f, 0, 120.f);
+			DrawDebugLine(World, Prev, Pt, LineCol, false, -1.f, 0, 120.f);
 			Prev = Pt;
 		}
 
@@ -869,6 +923,75 @@ void AClearanceSimulationController::DrawDebugView()
 		DrawDebugLine(World, FTL, FTR, Grey, false, -1.f, 0, 40.f);
 		DrawDebugLine(World, FBL, FTL, Grey, false, -1.f, 0, 40.f);
 		DrawDebugLine(World, FBR, FTR, Grey, false, -1.f, 0, 40.f);
+	}
+
+	// Resolve "RWY 09L / 09R / 09C" labels: every runway endpoint that shares a
+	// designator with another gets a left/right/centre suffix sorted from the
+	// pilot's left to right looking down the landing direction. - TripleA
+	auto Designator = [](float Hdg)
+	{
+		int32 N = FMath::RoundToInt(Hdg / 10.f) % 36;
+		return (N == 0) ? 36 : N;
+	};
+
+	struct FRwyEnd
+	{
+		AClearanceRunway* Actor;
+		float HeadingDeg;
+		FVector Centre;
+		int32 Number;
+		bool bIsReciprocal;
+	};
+	TArray<FRwyEnd> Ends;
+	for (TActorIterator<AClearanceRunway> EIt(World); EIt; ++EIt)
+	{
+		FVector C = EIt->GetActorLocation();
+		FVector MC, ME;
+		if (EIt->GetRunwayBounds(MC, ME)) { C = MC; }
+		Ends.Add({ *EIt, EIt->LandingHeadingDeg, C, Designator(EIt->LandingHeadingDeg), false });
+		if (EIt->bAllowReciprocal)
+		{
+			const float H2 = FMath::Fmod(EIt->LandingHeadingDeg + 180.f, 360.f);
+			Ends.Add({ *EIt, H2, C, Designator(H2), true });
+		}
+	}
+
+	TMap<int32, TArray<int32>> ByNumber;
+	for (int32 i = 0; i < Ends.Num(); ++i) { ByNumber.FindOrAdd(Ends[i].Number).Add(i); }
+
+	TArray<FString> Suffix; Suffix.SetNum(Ends.Num());
+	for (auto& Pair : ByNumber)
+	{
+		TArray<int32>& Grp = Pair.Value;
+		if (Grp.Num() < 2) { continue; }
+		const float HRad = FMath::DegreesToRadians(Ends[Grp[0]].HeadingDeg);
+		const FVector LeftDir(-FMath::Cos(HRad), FMath::Sin(HRad), 0.f); // 90deg CCW from landing direction = pilot's left
+		Grp.Sort([&](int32 A, int32 B)
+		{
+			return FVector::DotProduct(Ends[A].Centre, LeftDir) > FVector::DotProduct(Ends[B].Centre, LeftDir);
+		});
+		if (Grp.Num() == 2)
+		{
+			Suffix[Grp[0]] = TEXT("L");
+			Suffix[Grp[1]] = TEXT("R");
+		}
+		else if (Grp.Num() == 3)
+		{
+			Suffix[Grp[0]] = TEXT("L");
+			Suffix[Grp[1]] = TEXT("C");
+			Suffix[Grp[2]] = TEXT("R");
+		}
+		else
+		{
+			for (int32 i = 0; i < Grp.Num(); ++i) { Suffix[Grp[i]] = FString::Printf(TEXT("%d"), i + 1); }
+		}
+	}
+
+	TMap<TPair<AClearanceRunway*, bool>, FString> Labels;
+	for (int32 i = 0; i < Ends.Num(); ++i)
+	{
+		Labels.Add({ Ends[i].Actor, Ends[i].bIsReciprocal },
+			FString::Printf(TEXT("RWY %02d%s"), Ends[i].Number, *Suffix[i]));
 	}
 
 	// The physical runway strip(s), outlined straight from each runway MESH's bounds -
@@ -902,21 +1025,18 @@ void AClearanceSimulationController::DrawDebugView()
 		DrawDebugSphere(World, E1, 400.f, 8, FColor::Yellow, false, -1.f, 0, 40.f);
 		DrawDebugSphere(World, E2, 400.f, 8, FColor::Yellow, false, -1.f, 0, 40.f);
 
-		// Label each end with the heading you'd land on it, so you know which way to
-		// vector and whether LandingHeadingDeg matches how the mesh actually points.
-		// Real runway designator: heading rounded to the nearest 10, divided by 10, two
-		// digits (180deg -> "18", 90 -> "09", 360/0 -> "36"). - TripleA
-		auto Designator = [](float Hdg)
+		// Label each end with the runway designator from the pre-computed table, so
+		// parallel runways get the L/C/R suffix per ICAO. - TripleA
+		if (const FString* L1 = Labels.Find({ *It, false }))
 		{
-			int32 N = FMath::RoundToInt(Hdg / 10.f) % 36;
-			return (N == 0) ? 36 : N;
-		};
-		const int32 D1 = Designator(It->LandingHeadingDeg);
-		const int32 D2 = Designator(FMath::Fmod(It->LandingHeadingDeg + 180.f, 360.f));
-		DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %02d"), D1), nullptr, FColor::Yellow, 0.f, true, 1.2f);
+			DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), *L1, nullptr, FColor::Yellow, 0.f, true, 1.2f);
+		}
 		if (It->bAllowReciprocal)
 		{
-			DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), FString::Printf(TEXT("RWY %02d"), D2), nullptr, FColor::Yellow, 0.f, true, 1.2f);
+			if (const FString* L2 = Labels.Find({ *It, true }))
+			{
+				DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), *L2, nullptr, FColor::Yellow, 0.f, true, 1.2f);
+			}
 		}
 	}
 	FString AARTag;
@@ -932,6 +1052,11 @@ void AClearanceSimulationController::DrawDebugView()
 	if (DISEmitter && DISEmitter->IsRunning())
 	{
 		AARTag += FString::Printf(TEXT("  |  [DIS %d/s]"), DISEmitter->GetLastPacketsSent());
+	}
+	if (DISReceiver && DISReceiver->IsRunning())
+	{
+		AARTag += FString::Printf(TEXT("  |  [DIS-RX %d/s ext:%d]"),
+			DISReceiver->GetLastPacketsReceived(), DISReceiver->GetExternalAircraftCount());
 	}
 	if (Radar && Radar->IsEnabled())
 	{
@@ -1149,7 +1274,9 @@ void AClearanceSimulationController::CheckExits()
 
 EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const FAircraftInstruction& Instruction)
 {
-	// Civilian ATC can't command anything under air defence control. - TripleA
+	// Civilian ATC can't command anything under air defence control, and can't
+	// command external (federated) aircraft either - those belong to whichever
+	// peer sim is publishing them. - TripleA
 	if (AirspaceManager)
 	{
 		const FAircraftState Target = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
@@ -1159,6 +1286,16 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 			{
 				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
 					FString::Printf(TEXT("%s is under GCI control - civilian ATC can't command"),
+						*Instruction.TargetCallsign.ToString()));
+			}
+			return EInstructionResult::Rejected_PhysicallyImpossible;
+		}
+		if (Target.bIsValid && Target.bIsExternal)
+		{
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
+					FString::Printf(TEXT("%s is external traffic - command its owning sim instead"),
 						*Instruction.TargetCallsign.ToString()));
 			}
 			return EInstructionResult::Rejected_PhysicallyImpossible;
@@ -1285,6 +1422,31 @@ void AClearanceSimulationController::StopDIS()
 {
 	if (DISEmitter) { DISEmitter->Stop(); }
 	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DIS: stopped")); }
+}
+
+bool AClearanceSimulationController::StartDISReceiver(int32 Port)
+{
+	if (!DISReceiver) { return false; }
+	// Keep the receiver's loopback-skip identity in sync with our own emitter's.
+	if (DISEmitter)
+	{
+		DISReceiver->LocalSiteId        = DISEmitter->SiteId;
+		DISReceiver->LocalApplicationId = DISEmitter->ApplicationId;
+	}
+	const bool bOk = DISReceiver->Start(Port);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
+			bOk ? FString::Printf(TEXT("DIS: listening on port %d"), Port)
+			    : FString::Printf(TEXT("DIS: failed to bind port %d"), Port));
+	}
+	return bOk;
+}
+
+void AClearanceSimulationController::StopDISReceiver()
+{
+	if (DISReceiver) { DISReceiver->Stop(); }
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DIS: receiver stopped")); }
 }
 
 void AClearanceSimulationController::SpawnPresetCameras()
@@ -1473,11 +1635,22 @@ void AClearanceSimulationController::ClearTraffic()
 
 void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 {
-	UClearanceAircraftBehaviour* Behaviour = NewObject<UClearanceAircraftBehaviour>(this);
-	Behaviour->Initialise(AirspaceManager, Callsign);
-	Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
-	BehaviourMap.Add(Callsign, Behaviour);
-	if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
+	// External aircraft are driven by an outside source (a DIS feed). Skipping the
+	// local Behaviour and Comms registration here means we mirror their truth on
+	// the scope but never try to fly them or accept commands on their behalf - we
+	// still spawn the visual underneath so the operator sees the mesh. - TripleA
+	const bool bExternal = AirspaceManager
+		? AirspaceManager->GetAircraftState(Callsign).bIsExternal
+		: false;
+
+	if (!bExternal)
+	{
+		UClearanceAircraftBehaviour* Behaviour = NewObject<UClearanceAircraftBehaviour>(this);
+		Behaviour->Initialise(AirspaceManager, Callsign);
+		Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
+		BehaviourMap.Add(Callsign, Behaviour);
+		if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
+	}
 
 	// Spawn a visual for this aircraft's category, picking a random variant.
 	if (GetWorld() && AirspaceManager)
@@ -1993,6 +2166,47 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceDISStopCmd(
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
 	{
 		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->StopDIS(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDISListenCmd(
+	TEXT("clearance.dis.listen"),
+	TEXT("clearance.dis.listen [port] - listen for DIS Entity State PDUs from peers. Default port 3000."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			const int32 Port = (Args.Num() > 0) ? FCString::Atoi(*Args[0]) : 3000;
+			C->StartDISReceiver(Port);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDISUnlistenCmd(
+	TEXT("clearance.dis.unlisten"),
+	TEXT("clearance.dis.unlisten - stop listening for DIS PDUs"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->StopDISReceiver(); }
+	}));
+
+// Change this instance's DIS Site ID at runtime. Two copies of the sim on the
+// same network need different Site IDs or each will filter the other's traffic
+// as its own broadcast loopback. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDISSiteCmd(
+	TEXT("clearance.dis.site"),
+	TEXT("clearance.dis.site <N> - set this instance's DIS Site ID (default 1). Set different IDs on two instances so they can hear each other."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		const int32 NewSite = FCString::Atoi(*Args[0]);
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C) { return; }
+		if (UClearanceDISEmitter* E = C->GetDISEmitter())   { E->SiteId        = NewSite; }
+		if (UClearanceDISReceiver* R = C->GetDISReceiver()) { R->LocalSiteId   = NewSite; }
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
+				FString::Printf(TEXT("DIS Site ID = %d (peers must use a different number)"), NewSite));
+		}
 	}));
 
 static FAutoConsoleCommandWithWorldAndArgs GClearanceCameraCmd(

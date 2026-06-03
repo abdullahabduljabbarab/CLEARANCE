@@ -196,6 +196,13 @@ struct CLEARANCESIM_API FAircraftState
 	// get fighter mesh assignment.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
 	bool bIsMilitary = false;
+
+	// True if this aircraft is fed in from an outside source (a DIS feed, a network
+	// peer). The local Behaviour doesn't fly it, the local player can't command it,
+	// and the local emitter doesn't re-broadcast it. Truth lives with whoever sent
+	// it; we just mirror it onto our scope. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network")
+	bool bIsExternal = false;
 };
 
 /** A single instruction targeted at one aircraft. */

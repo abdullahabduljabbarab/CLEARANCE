@@ -15,6 +15,7 @@ class UClearanceCommsRouter;
 class UClearanceScoring;
 class UClearanceSessionRecorder;
 class UClearanceDISEmitter;
+class UClearanceDISReceiver;
 class UClearanceRadar;
 class ACameraActor;
 
@@ -121,6 +122,9 @@ public:
 	UClearanceDISEmitter* GetDISEmitter() const { return DISEmitter; }
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	UClearanceDISReceiver* GetDISReceiver() const { return DISReceiver; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceRadar* GetRadar() const { return Radar; }
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Radar")
@@ -156,6 +160,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
 	void StopDIS();
+
+	// Bind a UDP port and start ingesting Entity State PDUs from anyone else on
+	// the network publishing DIS. Their aircraft appear on our scope as external
+	// traffic (no local Behaviour, not commandable by the player, not re-emitted).
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
+	bool StartDISReceiver(int32 Port);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
+	void StopDISReceiver();
 
 	// --- After-Action Review ------------------------------------------------
 
@@ -337,6 +350,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceDISEmitter> DISEmitter;
+
+	UPROPERTY()
+	TObjectPtr<UClearanceDISReceiver> DISReceiver;
 
 	UPROPERTY()
 	TObjectPtr<UClearanceRadar> Radar;

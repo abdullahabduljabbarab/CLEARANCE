@@ -203,6 +203,9 @@ void AClearanceSimulationController::StartSession()
 		Spawner->MaxConcurrentAircraft = MaxConcurrentAircraft;
 		Spawner->SetAutoSpawn(bAutoSpawn);
 		Spawner->SetSpawnInterval(SpawnIntervalSeconds);
+		// Keep the entry circle locked to the visible sector boundary so aircraft
+		// appear ON the edge, not 10nm inside it. - TripleA
+		Spawner->EntryRadiusNm = ExitRadiusNm;
 	}
 
 	SessionTime = 0.f;

@@ -444,6 +444,12 @@ private:
 	// RegisterAircraft would collide with the first. - TripleA
 	int32 NextViperNumber = 1;
 
+	// (Zone name, aircraft callsign) pairs that have already triggered the
+	// catastrophic ViolationZoneBreached incident this session. One-shot per
+	// pair - prevents a hostile that's stuck inside a zone from spamming the
+	// penalty every tick. Cleared on session reset. - TripleA
+	TSet<FName> ViolatedPairs;
+
 	void TickGCIIntercepts(float DeltaTime);
 
 	// Pair keys (sorted "A|B") that have had TCAS fire on them this encounter; while

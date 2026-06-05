@@ -76,7 +76,12 @@ enum class EIncidentType : uint8
 	// The single biggest failure in air defence doctrine - Vincennes / KAL-007 /
 	// PS752 territory. Catastrophic score penalty; further scrambles locked for
 	// the rest of the session. - TripleA
-	MisidentifiedCivilian	UMETA(DisplayName = "Misidentified Civilian")
+	MisidentifiedCivilian	UMETA(DisplayName = "Misidentified Civilian"),
+	// A declared-hostile aircraft reached a protected violation zone (downtown,
+	// airbase, etc.). The mirror of MisidentifiedCivilian - the operator either
+	// missed the intercept call, declared too late, or vectored too slowly. Same
+	// catastrophic weight. - TripleA
+	ViolationZoneBreached	UMETA(DisplayName = "Violation Zone Breached")
 };
 
 /** Result of submitting an instruction through the Communication System. */

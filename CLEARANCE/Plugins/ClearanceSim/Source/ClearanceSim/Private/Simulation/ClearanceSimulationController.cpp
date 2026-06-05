@@ -1,6 +1,7 @@
 #include "Simulation/ClearanceSimulationController.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Airspace/ClearanceRunway.h"
+#include "Airspace/ClearanceViolationZone.h"
 #include "Aircraft/ClearanceAircraftSpawner.h"
 #include "Aircraft/ClearanceAircraftBehaviour.h"
 #include "Aircraft/ClearanceAircraftVisualInterface.h"
@@ -212,6 +213,7 @@ void AClearanceSimulationController::StartSession()
 	bPaused = false;
 	bSessionActive = true;
 	NextViperNumber = 1;
+	ViolatedPairs.Reset();
 
 	// Background systems that should "just be on" for normal operator play. Each
 	// console toggle stays for dev use, but the player layer doesn't see them. - TripleA
@@ -295,6 +297,59 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
 	SessionTime += SimDelta;
+
+	// Violation zone check: any declared-hostile aircraft inside a protected zone
+	// fires a catastrophic ViolationZoneBreached incident (mirror of mis-ID). One-
+	// shot per (zone, aircraft) pair so a stuck hostile doesn't spam the score. - TripleA
+	if (AirspaceManager && GetWorld())
+	{
+		TArray<AClearanceViolationZone*> Zones;
+		for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
+		if (Zones.Num() > 0)
+		{
+			const FVector OriginW = GetActorLocation();
+			const float W = FMath::Max(1.f, WorldUnitsPerNm);
+			for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
+			{
+				// Real ROE: protected airspace doesn't care about your formal classification.
+				// Hostile, Unknown, or NORDO civilians are all unauthorised - any of them
+				// inside is the failure. Friendly only is safe. - TripleA
+				const bool bUncooperative = (S.ThreatClass == EThreatClass::Hostile)
+					|| (S.ThreatClass == EThreatClass::Unknown)
+					|| !S.bIFFOperational;
+				const bool bSafe = (S.ThreatClass == EThreatClass::Friendly) && S.bIFFOperational;
+				if (bSafe || !bUncooperative) { continue; }
+				for (AClearanceViolationZone* Z : Zones)
+				{
+					if (!Z) { continue; }
+					const FVector ZW = Z->GetActorLocation();
+					const FVector2D ZNm((ZW.X - OriginW.X) / W, (ZW.Y - OriginW.Y) / W);
+					const float DistNm = FVector2D::Distance(FVector2D(S.Position.X, S.Position.Y), ZNm);
+					if (DistNm > Z->RadiusNm) { continue; }
+					const FName PairKey = FName(*(S.Callsign.ToString() + TEXT("|") + Z->ZoneName.ToString()));
+					if (ViolatedPairs.Contains(PairKey)) { continue; }
+					ViolatedPairs.Add(PairKey);
+					if (Scoring)
+					{
+						Scoring->LogIncident(EIncidentType::ViolationZoneBreached, S.Callsign, Z->ZoneName,
+							FString::Printf(TEXT("Hostile %s reached %s"), *S.Callsign.ToString(), *Z->ZoneName.ToString()));
+					}
+					if (Recorder)
+					{
+						Recorder->LogEvent(SessionTime, FString::Printf(
+							TEXT("VIOLATION - hostile %s breached %s"), *S.Callsign.ToString(), *Z->ZoneName.ToString()));
+					}
+					if (GEngine)
+					{
+						GEngine->AddOnScreenDebugMessage(102, 30.f, FColor::Red,
+							FString::Printf(TEXT("*** VIOLATION *** HOSTILE %s REACHED %s (-%d)"),
+								*S.Callsign.ToString(), *Z->ZoneName.ToString(),
+								Scoring ? Scoring->PenaltyViolationZoneBreached : 1000));
+					}
+				}
+			}
+		}
+	}
 
 	// GCI mode flips on the moment any non-cooperative or non-friendly aircraft
 	// is in the sector, off when only normal civilian traffic remains. Reflects
@@ -965,6 +1020,25 @@ void AClearanceSimulationController::DrawDebugView()
 	// sector boundary ring (flat on the XY plane)
 	DrawDebugCircle(World, Origin, ExitRadiusNm * S, 64, FColor(40, 80, 120), false, -1.f, 0, 120.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
 
+	// Protected violation zones - pulsing red circles on the ground. Stand out
+	// without being obnoxious, the same pulse cadence as the active runway. - TripleA
+	{
+		const float RWTv = World->GetRealTimeSeconds();
+		const float Pv = 0.65f + 0.35f * (0.5f + 0.5f * FMath::Sin(RWTv * 3.f));
+		const FColor ZoneCol(
+			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(255 * Pv), 0, 255)),
+			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt( 60 * Pv), 0, 255)),
+			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt( 60 * Pv), 0, 255)));
+		for (TActorIterator<AClearanceViolationZone> ZIt(World); ZIt; ++ZIt)
+		{
+			if (!*ZIt) { continue; }
+			const FVector C(ZIt->GetActorLocation().X, ZIt->GetActorLocation().Y, GroundWorldZ);
+			DrawDebugCircle(World, C, ZIt->RadiusNm * S, 48, ZoneCol, false, -1.f, 0, 120.f, FVector(1,0,0), FVector(0,1,0), false);
+			DrawDebugString(World, C + FVector(0, 0, 1.5f * S),
+				FString::Printf(TEXT("[%s]"), *ZIt->ZoneName.ToString()), nullptr, ZoneCol, 0.f, true, 1.3f);
+		}
+	}
+
 	// Compass rose: a tick + heading number every 30deg around the boundary, cardinals
 	// called out, so headings are readable in the world. "Vector 090" = send it toward
 	// the 090 mark. Heading 0=North, 90=East (X=East, Y=North). - TripleA
@@ -1317,7 +1391,7 @@ void AClearanceSimulationController::DrawDebugView()
 	// Scoring breakdown, tallied from the session log so we can see what's adding up.
 	if (Scoring)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0;
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0;
 		for (const FIncidentRecord& R : Scoring->GetSessionLog())
 		{
 			switch (R.Type)
@@ -1332,12 +1406,13 @@ void AClearanceSimulationController::DrawDebugView()
 			case EIncidentType::WakeEncounter:        ++nWake; break;
 			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
 			case EIncidentType::MisidentifiedCivilian: ++nMisID; break;
+			case EIncidentType::ViolationZoneBreached: ++nViol; break;
 			default: break;
 			}
 		}
-		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d   |   next spawn %.0fs\n"),
+		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d   |   next spawn %.0fs\n"),
 			Scoring->GetCurrentScore(),
-			nLand, nDep, nRes, nInt, nGA, nSep, nWake, nTCAS, nExit, nMisID, Scoring->GetCurrentSpawnInterval());
+			nLand, nDep, nRes, nInt, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, Scoring->GetCurrentSpawnInterval());
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -1901,6 +1976,38 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 		Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
 		BehaviourMap.Add(Callsign, Behaviour);
 		if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
+
+		// If the freshly-spawned aircraft is a bandit profile (NORDO, not declared
+		// friendly), redirect it AT a random violation zone instead of leaving it
+		// pointed at sector centre. A real intruder has an objective - that's what
+		// makes the operator's intercept call meaningful. - TripleA
+		if (AirspaceManager && GetWorld())
+		{
+			const FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+			if (S.bIsValid && !S.bIFFOperational && S.ThreatClass != EThreatClass::Friendly)
+			{
+				TArray<AClearanceViolationZone*> Zones;
+				for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
+				if (Zones.Num() > 0)
+				{
+					AClearanceViolationZone* Z = Zones[FMath::RandRange(0, Zones.Num() - 1)];
+					if (Z)
+					{
+						const FVector ZW = Z->GetActorLocation();
+						const FVector OriginW = GetActorLocation();
+						const float W = FMath::Max(1.f, WorldUnitsPerNm);
+						const FVector2D ZNm((ZW.X - OriginW.X) / W, (ZW.Y - OriginW.Y) / W);
+						const FVector2D ToZone = ZNm - FVector2D(S.Position.X, S.Position.Y);
+						float Hdg = FMath::RadiansToDegrees(FMath::Atan2(ToZone.X, ToZone.Y));
+						if (Hdg < 0.f) { Hdg += 360.f; }
+						FAircraftState NewS = S;
+						NewS.Heading = Hdg;
+						NewS.TargetHeading = Hdg;
+						AirspaceManager->RequestStateUpdate(NewS);
+					}
+				}
+			}
+		}
 	}
 
 	// Spawn a visual for this aircraft's category, picking a random variant.

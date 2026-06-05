@@ -73,6 +73,11 @@ public:
 	// scoring table or the cognitive-fidelity lesson is lost. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PenaltyMisidentifiedCivilian = 1000;
+	// Mirror of MisidentifiedCivilian: a declared-hostile aircraft reached a
+	// protected violation zone. Same catastrophic weight - the operator failed
+	// to intercept (or declared too late) and a real target got through. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyViolationZoneBreached = 1000;
 
 	// Difficulty: spawn interval (seconds) shrinks toward the minimum as more
 	// aircraft are handled successfully.

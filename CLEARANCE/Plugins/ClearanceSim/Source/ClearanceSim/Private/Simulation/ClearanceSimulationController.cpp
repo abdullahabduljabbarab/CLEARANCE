@@ -7,6 +7,7 @@
 #include "Aircraft/ClearanceAircraftVisualInterface.h"
 #include "Comms/ClearanceInstructionValidator.h"
 #include "Comms/ClearanceCommsRouter.h"
+#include "Comms/ClearanceVoiceOutput.h"
 #include "Safety/ClearanceConflictDetector.h"
 #include "Safety/ClearanceRadar.h"
 #include "Scoring/ClearanceScoring.h"
@@ -214,6 +215,7 @@ void AClearanceSimulationController::StartSession()
 	bSessionActive = true;
 	NextViperNumber = 1;
 	ViolatedPairs.Reset();
+	CrashSites.Reset();
 
 	// Background systems that should "just be on" for normal operator play. Each
 	// console toggle stays for dev use, but the player layer doesn't see them. - TripleA
@@ -312,13 +314,13 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 			for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
 			{
 				// Real ROE: protected airspace doesn't care about your formal classification.
-				// Hostile, Unknown, or NORDO civilians are all unauthorised - any of them
-				// inside is the failure. Friendly only is safe. - TripleA
+				// Hostile, Unknown, NORDO, or a hijacked civilian (squawk 7500) are all
+				// unauthorised - any of them inside is the failure. - TripleA
 				const bool bUncooperative = (S.ThreatClass == EThreatClass::Hostile)
 					|| (S.ThreatClass == EThreatClass::Unknown)
-					|| !S.bIFFOperational;
-				const bool bSafe = (S.ThreatClass == EThreatClass::Friendly) && S.bIFFOperational;
-				if (bSafe || !bUncooperative) { continue; }
+					|| !S.bIFFOperational
+					|| (S.ActiveEmergency == EEmergencyType::Hijack);
+				if (!bUncooperative) { continue; }
 				for (AClearanceViolationZone* Z : Zones)
 				{
 					if (!Z) { continue; }
@@ -346,6 +348,183 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 								*S.Callsign.ToString(), *Z->ZoneName.ToString(),
 								Scoring ? Scoring->PenaltyViolationZoneBreached : 1000));
 					}
+				}
+			}
+		}
+	}
+
+	// Emergency declaration + fuel tick + crash check. Runs on REAL DeltaTime so
+	// the fuel clock is consistent regardless of simulation time scale. - TripleA
+	if (AirspaceManager)
+	{
+		const TArray<FAircraftState> Snapshot = AirspaceManager->GetAllAircraftStates();
+		for (const FAircraftState& Ro : Snapshot)
+		{
+			// Civilian only - military, external, and GCI-controlled aircraft don't
+			// roll for emergencies, and aircraft already in one don't re-roll.
+			if (Ro.bIsExternal || Ro.bIsMilitary || Ro.bUnderGCIControl) { continue; }
+			if (Ro.FlightPhase == EFlightPhase::Landing || Ro.FlightPhase == EFlightPhase::Approach) { continue; }
+
+			// Conversion roll.
+			if (Ro.ActiveEmergency == EEmergencyType::None && EmergencyChancePerSecond > 0.f)
+			{
+				const float PerTick = EmergencyChancePerSecond * DeltaTime;
+				if (FMath::FRand() < PerTick)
+				{
+					FAircraftState S = Ro;
+					const int32 R = FMath::RandRange(0, 3);
+					int32 NewSquawk = S.SquawkCode;
+					switch (R)
+					{
+					case 0:
+					{
+						S.ActiveEmergency = EEmergencyType::GeneralMayday;
+						NewSquawk = 7700;
+						S.FuelRemainingMinutes = MaydayTimeoutMinutes;
+						// Pick a specific failure - real MAYDAYs always state the cause.
+						static const TCHAR* Causes[] = {
+							TEXT("engine failure"),
+							TEXT("engine fire"),
+							TEXT("smoke in the cockpit"),
+							TEXT("hydraulic failure"),
+							TEXT("cabin depressurization"),
+							TEXT("bird strike, lost both engines"),
+							TEXT("medical emergency, captain incapacitated"),
+							TEXT("cargo fire"),
+							TEXT("landing gear failure"),
+							TEXT("electrical failure"),
+							TEXT("flight controls jammed"),
+						};
+						S.EmergencyDetail = Causes[FMath::RandRange(0, UE_ARRAY_COUNT(Causes) - 1)];
+						break;
+					}
+					case 1: S.ActiveEmergency = EEmergencyType::CommsFailure;  NewSquawk = 7600; break;
+					case 2: S.ActiveEmergency = EEmergencyType::Hijack;        NewSquawk = 7500; break;
+					default: S.ActiveEmergency = EEmergencyType::FuelLow;       S.FuelRemainingMinutes = FuelEmergencyMinutes; break;
+					}
+					S.SquawkCode = NewSquawk;
+					S.EmergencyDeclaredAtSeconds = SessionTime;
+
+					// Comms failure (7600): the pilot follows the published lost-comms
+					// procedure - descend to pattern altitude, head for the active
+					// runway, fly the approach as if cleared. ATC's job is keeping
+					// other traffic clear; the NORDO flies itself in. - TripleA
+					if (S.ActiveEmergency == EEmergencyType::CommsFailure && AirspaceManager)
+					{
+						const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+						if (Env.ActiveRunwayHeading >= 0.f)
+						{
+							const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+							const FVector2D Here(S.Position.X, S.Position.Y);
+							// Aim ~10nm out on the localiser so we capture from outside the corridor.
+							const float HRad = FMath::DegreesToRadians(Env.ActiveRunwayHeading);
+							const FVector2D Inbound(FMath::Sin(HRad), FMath::Cos(HRad));
+							const FVector2D ApproachGate = Threshold - Inbound * 10.f;
+							const FVector2D ToGate = ApproachGate - Here;
+							float Hdg = FMath::RadiansToDegrees(FMath::Atan2(ToGate.X, ToGate.Y));
+							if (Hdg < 0.f) { Hdg += 360.f; }
+							S.TargetHeading = Hdg;
+							S.TargetAltitude = 3000.f;
+							S.FlightPhase = EFlightPhase::Approach;
+						}
+					}
+
+					// Hijacks: the hijackers now point the aircraft at a high-value
+					// target. If any violation zone is placed, the aircraft turns onto
+					// it from this moment. - TripleA
+					if (S.ActiveEmergency == EEmergencyType::Hijack && GetWorld())
+					{
+						TArray<AClearanceViolationZone*> Zones;
+						for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
+						if (Zones.Num() > 0)
+						{
+							AClearanceViolationZone* Z = Zones[FMath::RandRange(0, Zones.Num() - 1)];
+							if (Z)
+							{
+								const FVector ZW = Z->GetActorLocation();
+								const FVector OriginW = GetActorLocation();
+								const float W = FMath::Max(1.f, WorldUnitsPerNm);
+								const FVector2D ZNm((ZW.X - OriginW.X) / W, (ZW.Y - OriginW.Y) / W);
+								const FVector2D ToZone = ZNm - FVector2D(S.Position.X, S.Position.Y);
+								float Hdg = FMath::RadiansToDegrees(FMath::Atan2(ToZone.X, ToZone.Y));
+								if (Hdg < 0.f) { Hdg += 360.f; }
+								S.TargetHeading = Hdg;
+							}
+						}
+					}
+
+					AirspaceManager->RequestStateUpdate(S);
+
+					if (Recorder)
+					{
+						Recorder->LogEvent(SessionTime, FString::Printf(TEXT("EMERGENCY - %s declared %s (sq %d)"),
+							*S.Callsign.ToString(), *UEnum::GetValueAsString(S.ActiveEmergency), NewSquawk));
+					}
+					if (GEngine)
+					{
+						const FColor Col = (S.ActiveEmergency == EEmergencyType::Hijack) ? FColor::Red : FColor::Yellow;
+						GEngine->AddOnScreenDebugMessage(-1, 8.f, Col,
+							FString::Printf(TEXT("EMERGENCY: %s SQUAWK %d (%s)"),
+								*S.Callsign.ToString(), NewSquawk, *UEnum::GetValueAsString(S.ActiveEmergency)));
+					}
+
+					// Audio cue via any placed VoiceOutput:
+					//   Mayday / FuelLow -> voice the declaration (different lines)
+					//   CommsFailure     -> short static burst (broken radio)
+					//   Hijack           -> very brief static (pilot keyed mic and was cut off)
+					// The static cue for hijack is a small concession to gameplay over
+					// strict doctrine; pure silence is more authentic but leaves the
+					// player wondering if anything happened. - TripleA
+					if (GetWorld())
+					{
+						for (TActorIterator<AClearanceVoiceOutput> VoIt(GetWorld()); VoIt; ++VoIt)
+						{
+							if (!*VoIt) { break; }
+							switch (S.ActiveEmergency)
+							{
+							case EEmergencyType::GeneralMayday:
+								VoIt->Speak(S.Callsign,
+									S.EmergencyDetail.IsEmpty()
+										? FString::Printf(TEXT("Mayday, mayday, mayday, %s, declaring emergency, request immediate landing"), *S.Callsign.ToString())
+										: FString::Printf(TEXT("Mayday, mayday, mayday, %s, %s, request immediate landing"), *S.Callsign.ToString(), *S.EmergencyDetail),
+									FString());
+								break;
+							case EEmergencyType::FuelLow:
+								VoIt->Speak(S.Callsign,
+									FString::Printf(TEXT("Mayday, mayday, mayday, %s, fuel emergency, request immediate landing"), *S.Callsign.ToString()),
+									FString());
+								break;
+							case EEmergencyType::CommsFailure:
+								VoIt->PlayStatic(2.0f);
+								break;
+							case EEmergencyType::Hijack:
+								VoIt->PlayStatic(0.6f);
+								break;
+							default: break;
+							}
+							break;
+						}
+					}
+					continue;
+				}
+			}
+
+			// Countdown tick + crash for any emergency carrying a timer (fuel or
+			// mayday). Hijack and comms failure don't time out by themselves. - TripleA
+			const bool bHasTimer = (Ro.ActiveEmergency == EEmergencyType::FuelLow)
+				|| (Ro.ActiveEmergency == EEmergencyType::GeneralMayday);
+			if (bHasTimer && Ro.FuelRemainingMinutes > 0.f && !Ro.bCrashing)
+			{
+				FAircraftState S = Ro;
+				S.FuelRemainingMinutes -= DeltaTime / 60.f;
+				if (S.FuelRemainingMinutes <= 0.f)
+				{
+					BeginCrash(S, (Ro.ActiveEmergency == EEmergencyType::FuelLow)
+						? TEXT("Fuel exhaustion") : TEXT("Mayday situation deteriorated"));
+				}
+				else
+				{
+					AirspaceManager->RequestStateUpdate(S);
 				}
 			}
 		}
@@ -462,12 +641,13 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 		}
 
 		// FORMATION REJOIN: the first viper to arrive triggers the whole flight to join.
-		// Without this, stragglers chase a bandit that just turned outward and miss. - TripleA
+		// Without this, stragglers chase a bandit that just turned outward and miss.
+		// Shadow ops on a hijack get the same outward escort - intercepting the
+		// aircraft is the win condition either way. - TripleA
 		if (bAnyNewJoin && !bWasJoined)
 		{
 			for (const FName& Fc : Grp.Value) { JoinedIntercepts.Add(Fc); }
 
-			// And turn the bandit outward (Exiting) - one time, on the first join-up.
 			FAircraftState B = BanditS0;
 			float OutHdg = FMath::RadiansToDegrees(FMath::Atan2(B.Position.X, B.Position.Y));
 			if (OutHdg < 0.f) { OutHdg += 360.f; }
@@ -475,13 +655,15 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 			B.FlightPhase = EFlightPhase::Exiting;
 			AirspaceManager->RequestStateUpdate(B);
 
-			if (Recorder) { Recorder->LogEvent(SessionTime, FString::Printf(TEXT("JOIN-UP %d-ship on %s, escorting out heading %.0f"),
-				Grp.Value.Num(), *BanditCs.ToString(), OutHdg)); }
+			const bool bShadow = ShadowTargets.Contains(BanditCs);
+			const TCHAR* Verb = bShadow ? TEXT("shadowing out") : TEXT("escorting out");
+			if (Recorder) { Recorder->LogEvent(SessionTime, FString::Printf(TEXT("JOIN-UP %d-ship on %s, %s heading %.0f"),
+				Grp.Value.Num(), *BanditCs.ToString(), Verb, OutHdg)); }
 			if (GEngine)
 			{
 				GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan,
-					FString::Printf(TEXT("JOIN-UP  %d-ship on %s  escorting out heading %.0f"),
-						Grp.Value.Num(), *BanditCs.ToString(), OutHdg));
+					FString::Printf(TEXT("JOIN-UP  %d-ship on %s  %s heading %.0f"),
+						Grp.Value.Num(), *BanditCs.ToString(), Verb, OutHdg));
 			}
 		}
 
@@ -742,6 +924,199 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 	return true;
 }
 
+void AClearanceSimulationController::BeginCrash(const FAircraftState& InState, const FString& Reason)
+{
+	if (!AirspaceManager || InState.bCrashing) { return; }
+	FAircraftState S = InState;
+	S.bCrashing = true;
+	AirspaceManager->RequestStateUpdate(S);
+	PendingCrashReasons.Add(S.Callsign, Reason);
+
+	// Pilot panic line out of the cockpit (panic FX chain) at the moment things
+	// go physically irrecoverable. The deadpan "Lost contact" comes later, from
+	// CrashAircraft, after the wreck actually hits the ground. - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
+		{
+			if (!*VoIt) { break; }
+			static const TCHAR* PanicLines[] = {
+				TEXT("Oh God, oh God, oh God. We're going down. We're going down. I'm sorry. I'm sorry."),
+				TEXT("Oh shit, oh shit, oh shit. We're out of control. We're out of control. This is it. This is it."),
+				TEXT("Mayday, mayday, mayday. We're going down. Pull up. Pull up. Oh God."),
+				TEXT("She's not responding. She's not responding. We're going in. We're going in."),
+			};
+			const int32 Pick = FMath::RandRange(0, UE_ARRAY_COUNT(PanicLines) - 1);
+			VoIt->SpeakPanic(S.Callsign, PanicLines[Pick], FString());
+			break;
+		}
+	}
+}
+
+void AClearanceSimulationController::TickCrashingAircraft(float DeltaTime)
+{
+	if (!AirspaceManager || DeltaTime <= 0.f) { return; }
+	const float SimDt = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
+
+	const TArray<FAircraftState> Snap = AirspaceManager->GetAllAircraftStates();
+	for (const FAircraftState& Ro : Snap)
+	{
+		if (!Ro.bCrashing) { continue; }
+
+		FAircraftState S = Ro;
+
+		// Values are SIM ft/min - multiplied by SimulationTimeScale for the visual.
+		// At default 10x: 1500 sim = 15,000 ft/min real = 250 ft/sec real visual.
+		// From FL150 that's ~60 real seconds to ground - watchable, dramatic, not
+		// instant. Pitch is forced -55deg in the visual layer separately. - TripleA
+		constexpr float TerminalDescentFtMin = 1500.f;
+		constexpr float DescentAccelFtMinPerSec = 80.f;     // ramp up over ~20 sim sec
+		constexpr float ForwardDecayKtsPerSec = 0.2f;
+
+		const float CurDescent = FMath::Max(0.f, -S.ClimbRate);
+		const float NewDescent = FMath::Min(TerminalDescentFtMin, CurDescent + DescentAccelFtMinPerSec * SimDt);
+		S.ClimbRate = -NewDescent;
+		S.Altitude  = FMath::Max(0.f, S.Altitude - (NewDescent / 60.f) * SimDt);
+
+		// No spiral, no wobble - the forced -55deg pitch in the visual layer makes
+		// the dive obvious. Aircraft holds its current heading and flies forward
+		// into the ground. - TripleA
+		S.BankAngle = 0.f;
+		S.Speed     = FMath::Max(60.f, S.Speed - ForwardDecayKtsPerSec * SimDt);
+
+		// Move forward along current heading at current speed (nm/s = kt/3600).
+		const float HRad = FMath::DegreesToRadians(S.Heading);
+		const float SpeedNmPerSec = S.Speed / 3600.f;
+		const FVector2D Step(FMath::Sin(HRad) * SpeedNmPerSec * SimDt,
+		                     FMath::Cos(HRad) * SpeedNmPerSec * SimDt);
+		S.Position.X += Step.X;
+		S.Position.Y += Step.Y;
+		S.Velocity   = FVector(FMath::Sin(HRad) * SpeedNmPerSec, FMath::Cos(HRad) * SpeedNmPerSec, 0.f);
+
+		S.TargetAltitude = S.Altitude;
+		S.TargetHeading  = S.Heading;
+		S.TargetSpeed    = S.Speed;
+
+		if (S.Altitude <= 0.f)
+		{
+			S.Altitude = 0.f;
+			AirspaceManager->RequestStateUpdate(S);
+			const FString Reason = PendingCrashReasons.Contains(S.Callsign)
+				? PendingCrashReasons[S.Callsign] : TEXT("Crash");
+			PendingCrashReasons.Remove(S.Callsign);
+			CrashAircraft(S, Reason);
+		}
+		else
+		{
+			AirspaceManager->RequestStateUpdate(S);
+		}
+	}
+}
+
+void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, const FString& Reason)
+{
+	if (Scoring)
+	{
+		Scoring->LogIncident(EIncidentType::AircraftCrashed, S.Callsign, NAME_None, Reason);
+	}
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("CRASH - %s (%s)"), *S.Callsign.ToString(), *Reason));
+	}
+	FCrashSite Site;
+	Site.PositionNm = S.Position;
+	Site.SessionSeconds = SessionTime;
+	Site.Callsign = S.Callsign;
+	CrashSites.Add(Site);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red,
+			FString::Printf(TEXT("*** CRASH *** %s - %s (-%d)"),
+				*S.Callsign.ToString(), *Reason,
+				Scoring ? Scoring->PenaltyAircraftCrashed : 500));
+	}
+
+	// Controller's deadpan "Lost contact" on the en_US voice, ~1.5s after impact
+	// so the listener hears the silence first. - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
+		{
+			if (!*VoIt) { break; }
+			const FName Cs = S.Callsign;
+			TWeakObjectPtr<AClearanceVoiceOutput> WeakVO(*VoIt);
+			FTimerHandle Handle;
+			W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
+				[WeakVO, Cs]()
+				{
+					if (WeakVO.IsValid())
+					{
+						WeakVO->Speak(NAME_None,
+							FString::Printf(TEXT("Lost contact, %s"), *Cs.ToString()),
+							TEXT("en-US-EricNeural"));  // deadpan controller voice
+					}
+				}), 1.5f, false);
+			break;
+		}
+	}
+
+	if (AirspaceManager) { AirspaceManager->DeregisterAircraft(S.Callsign); }
+}
+
+int32 AClearanceSimulationController::ShadowEscort(FName HijackCallsign)
+{
+	if (!AirspaceManager) { return 0; }
+	const FAircraftState Hijack = AirspaceManager->GetAircraftState(HijackCallsign);
+	if (!Hijack.bIsValid) { return 0; }
+
+	// Doctrine: SHADOW is only authorised against a 7500 squawk. Without that
+	// signal there's no justification for launching - that's what SCRAMBLE is
+	// for. Refuse loudly so the operator doesn't shadow normal traffic. - TripleA
+	if (Hijack.ActiveEmergency != EEmergencyType::Hijack)
+	{
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red,
+				FString::Printf(TEXT("SHADOW refused: %s not squawking 7500"), *HijackCallsign.ToString()));
+		}
+		return 0;
+	}
+
+	ShadowTargets.Add(HijackCallsign);
+
+	const float R = FMath::Max(10.f, ExitRadiusNm);
+	const float Bearing = FMath::Fmod(
+		FMath::RadiansToDegrees(FMath::Atan2(Hijack.Position.X, Hijack.Position.Y)) + 360.f, 360.f);
+	const float FanDeg = 8.f;
+	int32 Launched = 0;
+	for (int32 i = 0; i < 3; ++i)
+	{
+		const float ADeg = FMath::Fmod(Bearing + (i - 1) * (FanDeg * 0.5f) + 360.f, 360.f);
+		const float ARad = FMath::DegreesToRadians(ADeg);
+		const FVector Pos(R * FMath::Sin(ARad), R * FMath::Cos(ARad), 0.f);
+
+		const float Inbound = FMath::RadiansToDegrees(FMath::Atan2(Hijack.Position.X - Pos.X, Hijack.Position.Y - Pos.Y));
+		const float Hdg = FMath::Fmod(Inbound + 360.f, 360.f);
+
+		const int32 Num = NextViperNumber++;
+		FAircraftState V;
+		V.Callsign         = FName(*FString::Printf(TEXT("VIPER%02d"), Num));
+		V.Position         = Pos;
+		V.Altitude         = Hijack.Altitude;
+		V.Heading          = Hdg;
+		V.Speed            = 620.f;
+		V.WakeCategory     = EWakeCategory::Medium;
+		V.FlightPhase      = EFlightPhase::Enroute;
+		V.ThreatClass      = EThreatClass::Friendly;
+		V.SquawkCode       = 2200 + Num;
+		V.bIFFOperational  = true;
+		V.bIsMilitary      = true;
+		if (!AirspaceManager->RegisterAircraft(V)) { continue; }
+		if (VectorIntercept(V.Callsign, HijackCallsign)) { ++Launched; }
+	}
+	return Launched;
+}
+
 int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 {
 	if (!AirspaceManager) { return 0; }
@@ -824,6 +1199,7 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 	if (ConflictDetector) { ConflictDetector->DetectConflicts(); } // 5. monitor (6-8 fire via delegates)
 
 	TickGCIIntercepts(DeltaTime);                                  // join-up + escort
+	TickCrashingAircraft(DeltaTime);                               // drop falling aircraft to the ground
 	CheckExits();                                                  // landings / departures / strays
 
 	UpdateVisuals();
@@ -923,7 +1299,15 @@ void AClearanceSimulationController::UpdateVisuals()
 		const float VisualFpaDeg = (HorizSpeedUU > 1.f) ? FMath::RadiansToDegrees(FMath::Atan2(VertSpeedUU, HorizSpeedUU)) : 0.f;
 
 		float PitchDeg;
-		if (State.Altitude <= 12.f)
+		if (State.bCrashing)
+		{
+			// Forced steep nose-down attitude regardless of the FPA calculation -
+			// derived FPA can read shallow at this sim's scaling and the operator
+			// just sees the aircraft glide level. -55deg is unmistakeably "diving
+			// into the ground". - TripleA
+			PitchDeg = -55.f;
+		}
+		else if (State.Altitude <= 12.f)
 		{
 			PitchDeg = 0.f; // on the deck - nose-wheel down, level for the rollout
 		}
@@ -1019,6 +1403,17 @@ void AClearanceSimulationController::DrawDebugView()
 
 	// sector boundary ring (flat on the XY plane)
 	DrawDebugCircle(World, Origin, ExitRadiusNm * S, 64, FColor(40, 80, 120), false, -1.f, 0, 120.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
+
+	// Crash sites - red ring + label on the ground, persistent for the session.
+	// Reads as "something bad happened HERE" without being a particle effect. - TripleA
+	for (const FCrashSite& Cr : CrashSites)
+	{
+		const FVector CrW(Origin.X + Cr.PositionNm.X * S, Origin.Y + Cr.PositionNm.Y * S, GroundWorldZ);
+		DrawDebugCircle(World, CrW, 0.5f * S, 32, FColor(200, 30, 30), false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
+		DrawDebugCircle(World, CrW, 0.25f * S, 24, FColor(120, 20, 20), false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
+		DrawDebugString(World, CrW + FVector(0, 0, 0.8f * S),
+			FString::Printf(TEXT("WRECK %s"), *Cr.Callsign.ToString()), nullptr, FColor(220, 60, 60), 0.f, true, 1.0f);
+	}
 
 	// Protected violation zones - pulsing red circles on the ground. Stand out
 	// without being obnoxious, the same pulse cadence as the active runway. - TripleA
@@ -1391,7 +1786,7 @@ void AClearanceSimulationController::DrawDebugView()
 	// Scoring breakdown, tallied from the session log so we can see what's adding up.
 	if (Scoring)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0;
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0;
 		for (const FIncidentRecord& R : Scoring->GetSessionLog())
 		{
 			switch (R.Type)
@@ -1407,12 +1802,14 @@ void AClearanceSimulationController::DrawDebugView()
 			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
 			case EIncidentType::MisidentifiedCivilian: ++nMisID; break;
 			case EIncidentType::ViolationZoneBreached: ++nViol; break;
+			case EIncidentType::SuccessfulEmergencyHandling: ++nEmer; break;
+			case EIncidentType::AircraftCrashed:       ++nCrash; break;
 			default: break;
 			}
 		}
-		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d   |   next spawn %.0fs\n"),
+		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d   |   next spawn %.0fs\n"),
 			Scoring->GetCurrentScore(),
-			nLand, nDep, nRes, nInt, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, Scoring->GetCurrentSpawnInterval());
+			nLand, nDep, nRes, nInt, nEmer, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, nCrash, Scoring->GetCurrentSpawnInterval());
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -1472,14 +1869,37 @@ void AClearanceSimulationController::DrawDebugView()
 				}
 			}
 
-			Readout += FString::Printf(TEXT("%s%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f  vs%+5.0f%s\n"),
+			// Emergency tag (squawk + countdown where applicable) so the operator
+			// has all the time-pressure info on one line. - TripleA
+			FString EmTag;
+			switch (A.ActiveEmergency)
+			{
+			case EEmergencyType::GeneralMayday:
+				EmTag = A.EmergencyDetail.IsEmpty()
+					? FString::Printf(TEXT(" <MAYDAY sq7700 %.1fmin>"), FMath::Max(0.f, A.FuelRemainingMinutes))
+					: FString::Printf(TEXT(" <MAYDAY sq7700 %s %.1fmin>"), *A.EmergencyDetail, FMath::Max(0.f, A.FuelRemainingMinutes));
+				break;
+			case EEmergencyType::CommsFailure:
+				EmTag = TEXT(" <NORDO sq7600>");
+				break;
+			case EEmergencyType::Hijack:
+				EmTag = TEXT(" <HIJACK sq7500>");
+				break;
+			case EEmergencyType::FuelLow:
+				EmTag = FString::Printf(TEXT(" <FUEL %.1fmin>"), FMath::Max(0.f, A.FuelRemainingMinutes));
+				break;
+			default: break;
+			}
+
+			Readout += FString::Printf(TEXT("%s%s  hdg %3.0f>%3.0f  alt %5.0f>%5.0f  spd %3.0f>%3.0f  vs%+5.0f%s%s\n"),
 				GCITag,
 				*A.Callsign.ToString(),
 				A.Heading, A.TargetHeading,
 				A.Altitude, A.TargetAltitude,
 				A.Speed, A.TargetSpeed,
 				A.ClimbRate,
-				Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""));
+				Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""),
+				*EmTag);
 		}
 	}
 
@@ -1573,15 +1993,38 @@ void AClearanceSimulationController::CheckExits()
 		// removed, instead of vanishing while still rolling. - TripleA
 		if (State.FlightPhase == EFlightPhase::Landing && State.Altitude <= 100.f && State.Speed <= 1.f)
 		{
-			if (Scoring) { Scoring->LogIncident(EIncidentType::SuccessfulLanding, State.Callsign, NAME_None, TEXT("Landed")); }
+			if (Scoring)
+			{
+				Scoring->LogIncident(EIncidentType::SuccessfulLanding, State.Callsign, NAME_None, TEXT("Landed"));
+				// Emergency aircraft that lands cleanly gets the handling bonus on top
+				// of the normal landing reward. - TripleA
+				if (State.ActiveEmergency != EEmergencyType::None)
+				{
+					Scoring->LogIncident(EIncidentType::SuccessfulEmergencyHandling, State.Callsign, NAME_None,
+						FString::Printf(TEXT("Emergency %s safely landed"), *UEnum::GetValueAsString(State.ActiveEmergency)));
+				}
+			}
 			AirspaceManager->DeregisterAircraft(State.Callsign);
 		}
 		else if (Dist > ExitRadiusNm)
 		{
 			// Cleared to leave = a clean departure; drifting out otherwise is a miss.
-			const EIncidentType Outcome = (State.FlightPhase == EFlightPhase::Exiting)
-				? EIncidentType::SuccessfulDeparture
-				: EIncidentType::UnresolvedExit;
+			// An emergency aircraft drifting out unhandled is a catastrophic loss. - TripleA
+			EIncidentType Outcome;
+			if (State.ActiveEmergency != EEmergencyType::None && State.FlightPhase != EFlightPhase::Exiting)
+			{
+				Outcome = EIncidentType::AircraftCrashed;
+			}
+			else if (State.FlightPhase == EFlightPhase::Exiting)
+			{
+				Outcome = (State.ActiveEmergency != EEmergencyType::None)
+					? EIncidentType::SuccessfulEmergencyHandling
+					: EIncidentType::SuccessfulDeparture;
+			}
+			else
+			{
+				Outcome = EIncidentType::UnresolvedExit;
+			}
 			if (Scoring) { Scoring->LogIncident(Outcome, State.Callsign, NAME_None, TEXT("Left sector")); }
 			AirspaceManager->DeregisterAircraft(State.Callsign);
 		}
@@ -1603,6 +2046,30 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 			{
 				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
 					FString::Printf(TEXT("%s, NO RESPONSE"), *Instruction.TargetCallsign.ToString()));
+			}
+			return EInstructionResult::Rejected_NoResponse;
+		}
+		// Comms-failure (squawk 7600): the IFF is still squawking but the radio is
+		// broken - aircraft can't hear us. ATC has to clear airspace and watch them
+		// fly the published lost-comms procedure. - TripleA
+		if (Target.bIsValid && Target.ActiveEmergency == EEmergencyType::CommsFailure)
+		{
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
+					FString::Printf(TEXT("%s, NO RADIO (squawk 7600)"), *Instruction.TargetCallsign.ToString()));
+			}
+			return EInstructionResult::Rejected_NoResponse;
+		}
+		// Hijack (squawk 7500): the hijackers are flying it now - ATC instructions
+		// don't get followed. Silent rejection is the cognitive-fidelity choice:
+		// the operator notices the aircraft isn't doing what was asked. - TripleA
+		if (Target.bIsValid && Target.ActiveEmergency == EEmergencyType::Hijack)
+		{
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
+					FString::Printf(TEXT("%s, NOT COMPLYING (squawk 7500)"), *Instruction.TargetCallsign.ToString()));
 			}
 			return EInstructionResult::Rejected_NoResponse;
 		}
@@ -2064,6 +2531,16 @@ void AClearanceSimulationController::HandleAircraftDeregistered(FName Callsign)
 	if (CommsRouter) { CommsRouter->UnregisterBehaviour(Callsign); }
 	if (ConflictDetector) { ConflictDetector->RemoveAircraft(Callsign); }
 
+	// Return this aircraft's voice slot to the pool so a future aircraft can use it.
+	if (GetWorld())
+	{
+		for (TActorIterator<AClearanceVoiceOutput> VoIt(GetWorld()); VoIt; ++VoIt)
+		{
+			if (*VoIt) { VoIt->ReleaseVoiceForCallsign(Callsign); break; }
+		}
+	}
+	ShadowTargets.Remove(Callsign);
+
 	// Drop any TCAS pair entries involving this aircraft so the set doesn't leak.
 	const FString CallStr = Callsign.ToString();
 	for (auto It = TCASPairsAwaitingResolution.CreateIterator(); It; ++It)
@@ -2492,6 +2969,26 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceScrambleCmd(
 			GEngine->AddOnScreenDebugMessage(-1, 6.f, N > 0 ? FColor::Cyan : FColor::Red,
 				N > 0 ? FString::Printf(TEXT("SCRAMBLE: %d-ship VIPER flight inbound on %s"), N, *BanditCs.ToString())
 				      : FString::Printf(TEXT("SCRAMBLE: no such contact '%s'"), *Args[0]));
+		}
+	}));
+
+// Launch a shadow escort flight on a hijacked aircraft (must be squawking 7500).
+// The fighters tail without forcing the aircraft onto a heading - real doctrine. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceShadowCmd(
+	TEXT("clearance.shadow"),
+	TEXT("clearance.shadow <hijack> - launch a 3-ship shadow escort onto a 7500-squawking aircraft (no declare-hostile required)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C) { return; }
+		const FName Cs(*Args[0]);
+		const int32 N = C->ShadowEscort(Cs);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 6.f, N > 0 ? FColor::Cyan : FColor::Red,
+				N > 0 ? FString::Printf(TEXT("SHADOW: %d-ship VIPER flight tailing %s"), N, *Cs.ToString())
+				      : FString::Printf(TEXT("SHADOW: refused (target must be squawking 7500)")));
 		}
 	}));
 

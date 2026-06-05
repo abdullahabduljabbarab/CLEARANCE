@@ -57,6 +57,19 @@ enum class EThreatClass : uint8
 	Neutral   UMETA(DisplayName = "Neutral")
 };
 
+// ICAO emergency states. The squawk code is the universal IFF signal - civilian
+// pilots set these and any controller / federation peer immediately sees what's
+// wrong. None = normal operation. - TripleA
+UENUM(BlueprintType)
+enum class EEmergencyType : uint8
+{
+	None                UMETA(DisplayName = "None"),
+	GeneralMayday       UMETA(DisplayName = "General Mayday (7700)"),
+	CommsFailure        UMETA(DisplayName = "Comms Failure (7600)"),
+	Hijack              UMETA(DisplayName = "Hijack (7500)"),
+	FuelLow             UMETA(DisplayName = "Fuel Emergency")
+};
+
 /** Category of a logged incident / outcome (drives scoring). */
 UENUM(BlueprintType)
 enum class EIncidentType : uint8
@@ -81,7 +94,14 @@ enum class EIncidentType : uint8
 	// airbase, etc.). The mirror of MisidentifiedCivilian - the operator either
 	// missed the intercept call, declared too late, or vectored too slowly. Same
 	// catastrophic weight. - TripleA
-	ViolationZoneBreached	UMETA(DisplayName = "Violation Zone Breached")
+	ViolationZoneBreached	UMETA(DisplayName = "Violation Zone Breached"),
+	// Aircraft declared an emergency (7700 / 7600 / 7500 / fuel) and was landed or
+	// exited the sector safely under the operator's care. Real ATC rewards calm
+	// emergency handling - so do we. - TripleA
+	SuccessfulEmergencyHandling UMETA(DisplayName = "Successful Emergency Handling"),
+	// Aircraft destroyed - fuel exhaustion in an unhandled fuel emergency, or
+	// any other catastrophic loss. - TripleA
+	AircraftCrashed			UMETA(DisplayName = "Aircraft Crashed")
 };
 
 /** Result of submitting an instruction through the Communication System. */
@@ -218,6 +238,35 @@ struct CLEARANCESIM_API FAircraftState
 	// it; we just mirror it onto our scope. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network")
 	bool bIsExternal = false;
+
+	// Currently-declared emergency (or None for normal flight). Sets the squawk
+	// code automatically when transitioning out of None - 7700/7600/7500. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emergency")
+	EEmergencyType ActiveEmergency = EEmergencyType::None;
+
+	// Real-world minutes of fuel remaining. Only meaningful while ActiveEmergency
+	// is FuelLow - decremented each tick by the Controller. Aircraft crashes when
+	// this hits zero. -1 = not tracked. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emergency")
+	float FuelRemainingMinutes = -1.f;
+
+	// Session-time seconds at which the emergency was declared - used for the
+	// debug readout (how long has this been going on?) and AAR review. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emergency")
+	float EmergencyDeclaredAtSeconds = 0.f;
+
+	// Aircraft has run out of options and is physically falling. Behaviour stops
+	// flying it; the Controller takes over and drives it to the ground each tick.
+	// On ground impact the score / wreck site / lost-contact call fire. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emergency")
+	bool bCrashing = false;
+
+	// Free-text description of WHAT'S wrong - engine failure, smoke in cockpit,
+	// bird strike, etc. Real MAYDAYs always include the cause; the operator
+	// needs to know whether to clear them for fast approach (engine fire) or
+	// slow controlled descent (medical emergency). - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emergency")
+	FString EmergencyDetail;
 };
 
 /** A single instruction targeted at one aircraft. */

@@ -1,4 +1,5 @@
 #include "Comms/ClearancePhraseology.h"
+#include "Comms/ClearanceVoiceOutput.h"
 #include "Simulation/ClearanceSimulationController.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Comms/ClearanceCommsRouter.h"
@@ -6,6 +7,37 @@
 
 namespace
 {
+	// Push a line to the first VoiceOutput actor in the level so the pilot/aircraft
+	// (or alert flight, for GCI) actually speaks the readback. Silent no-op if no
+	// VoiceOutput actor is placed. - TripleA
+	void SpeakOut(AClearanceSimulationController* Controller, FName Callsign, const FString& Text)
+	{
+		if (!Controller || Text.IsEmpty()) { return; }
+		UWorld* World = Controller->GetWorld();
+		if (!World) { return; }
+		for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+		{
+			if (*It) { It->Speak(Callsign, Text, FString()); }
+			break;
+		}
+	}
+
+	// System / controller voice for messages that aren't tied to a specific
+	// aircraft - "Station calling, say again", "SCRAMBLE - say again bandit",
+	// etc. Fixed voice (Eric) so the operator learns to recognise "this is the
+	// system asking me to repeat" vs "a specific pilot replied". - TripleA
+	void SpeakAsController(AClearanceSimulationController* Controller, const FString& Text)
+	{
+		if (!Controller || Text.IsEmpty()) { return; }
+		UWorld* World = Controller->GetWorld();
+		if (!World) { return; }
+		for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+		{
+			if (*It) { It->Speak(NAME_None, Text, TEXT("en-US-EricNeural")); }
+			break;
+		}
+	}
+
 	bool IsAllDigits(const FString& S)
 	{
 		if (S.IsEmpty()) return false;
@@ -183,19 +215,35 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			if (Verb == TEXT("interrogate"))
 			{
 				const FName Cs = ResolveCallsign(Controller, Tokens, After);
-				if (Cs.IsNone()) { return TEXT("INTERROGATE - say again target"); }
+				if (Cs.IsNone())
+				{
+					const FString R = TEXT("INTERROGATE - say again target");
+					SpeakAsController(Controller, R);
+					return R;
+				}
 				EThreatClass C; int32 Sq;
 				const bool bOk = Controller->InterrogateIFF(Cs, C, Sq);
-				if (!bOk) { return FString::Printf(TEXT("%s, NO RESPONSE"), *Cs.ToString()); }
+				if (!bOk)
+				{
+					const FString R = FString::Printf(TEXT("%s, NO RESPONSE"), *Cs.ToString());
+					return R;  // NORDO - silent on purpose
+				}
 				const TCHAR* CL = (C == EThreatClass::Friendly) ? TEXT("FRIENDLY") :
 				                  (C == EThreatClass::Hostile)  ? TEXT("HOSTILE")  :
 				                  (C == EThreatClass::Neutral)  ? TEXT("NEUTRAL")  : TEXT("UNKNOWN");
-				return FString::Printf(TEXT("%s, %s, SQUAWK %04d"), *Cs.ToString(), CL, Sq);
+				const FString R = FString::Printf(TEXT("%s, %s, SQUAWK %04d"), *Cs.ToString(), CL, Sq);
+				SpeakOut(Controller, Cs, R);
+				return R;
 			}
 			if (Verb == TEXT("declare") || Verb == TEXT("show"))
 			{
 				const FName Cs = ResolveCallsign(Controller, Tokens, After);
-				if (Cs.IsNone()) { return FString::Printf(TEXT("%s - say again target"), *Verb.ToUpper()); }
+				if (Cs.IsNone())
+				{
+					const FString R = FString::Printf(TEXT("%s - say again target"), *Verb.ToUpper());
+					SpeakAsController(Controller, R);
+					return R;
+				}
 				EThreatClass NewC = EThreatClass::Unknown;
 				if (After < Tokens.Num())
 				{
@@ -204,24 +252,74 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 					else if (Cls == TEXT("friendly")) { NewC = EThreatClass::Friendly; }
 					else if (Cls == TEXT("neutral"))  { NewC = EThreatClass::Neutral;  }
 					else if (Cls == TEXT("unknown"))  { NewC = EThreatClass::Unknown;  }
-					else { return FString::Printf(TEXT("%s - say again classification"), *Cs.ToString()); }
+					else
+					{
+						const FString R = FString::Printf(TEXT("%s - say again classification"), *Cs.ToString());
+						SpeakAsController(Controller, R);
+						return R;
+					}
 				}
-				else { return FString::Printf(TEXT("%s - say again classification"), *Cs.ToString()); }
+				else
+				{
+					const FString R = FString::Printf(TEXT("%s - say again classification"), *Cs.ToString());
+					SpeakAsController(Controller, R);
+					return R;
+				}
 				Controller->ClassifyAircraft(Cs, NewC);
 				const TCHAR* CL = (NewC == EThreatClass::Friendly) ? TEXT("FRIENDLY") :
 				                  (NewC == EThreatClass::Hostile)  ? TEXT("HOSTILE")  :
 				                  (NewC == EThreatClass::Neutral)  ? TEXT("NEUTRAL")  : TEXT("UNKNOWN");
-				return FString::Printf(TEXT("%s SHOWING %s"), *Cs.ToString(), CL);
+				const FString R = FString::Printf(TEXT("%s SHOWING %s"), *Cs.ToString(), CL);
+				SpeakOut(Controller, Cs, R);
+				return R;
+			}
+			if (Verb == TEXT("shadow") || Verb == TEXT("intercept"))
+			{
+				// "shadow <cs>", "intercept <cs>", "intercept visual <cs>" - all
+				// launch a tailing escort on a 7500 / 7600 aircraft.
+				if (Verb == TEXT("intercept") && After < Tokens.Num() && Tokens[After] == TEXT("visual"))
+				{
+					++After;
+				}
+				const FName Cs = ResolveCallsign(Controller, Tokens, After);
+				if (Cs.IsNone())
+				{
+					const FString R = TEXT("SHADOW - say again target");
+					SpeakAsController(Controller, R);
+					return R;
+				}
+				const int32 N = Controller->ShadowEscort(Cs);
+				if (N <= 0)
+				{
+					const FString R = FString::Printf(TEXT("SHADOW %s - unable, not 7500"), *Cs.ToString());
+					SpeakAsController(Controller, R);
+					return R;
+				}
+				const FString R = FString::Printf(TEXT("ALPHA FLIGHT SHADOWING, %d-SHIP TAILING %s"), N, *Cs.ToString());
+				SpeakOut(Controller, FName(TEXT("VIPER01")), R);
+				return R;
 			}
 			if (Verb == TEXT("scramble"))
 			{
 				// "scramble bandit <cs>" or "scramble <cs>"
 				if (After < Tokens.Num() && (Tokens[After] == TEXT("bandit") || Tokens[After] == TEXT("bogey"))) { ++After; }
 				const FName Cs = ResolveCallsign(Controller, Tokens, After);
-				if (Cs.IsNone()) { return TEXT("SCRAMBLE - say again bandit"); }
+				if (Cs.IsNone())
+				{
+					const FString R = TEXT("SCRAMBLE - say again bandit");
+					SpeakAsController(Controller, R);
+					return R;
+				}
 				const int32 N = Controller->ScrambleInterceptors(Cs);
-				if (N <= 0) { return FString::Printf(TEXT("SCRAMBLE %s - unable"), *Cs.ToString()); }
-				return FString::Printf(TEXT("ALPHA FLIGHT SCRAMBLED, %d-SHIP INBOUND %s"), N, *Cs.ToString());
+				if (N <= 0)
+				{
+					const FString R = FString::Printf(TEXT("SCRAMBLE %s - unable"), *Cs.ToString());
+					SpeakAsController(Controller, R);
+					return R;
+				}
+				const FString R = FString::Printf(TEXT("ALPHA FLIGHT SCRAMBLED, %d-SHIP INBOUND %s"), N, *Cs.ToString());
+				SpeakOut(Controller, FName(TEXT("VIPER01")), R);
+				return R;
 			}
 		}
 	}
@@ -230,7 +328,9 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	const FName Callsign = ResolveCallsign(Controller, Tokens, Idx);
 	if (Callsign.IsNone())
 	{
-		return TEXT("Station calling, say again your callsign");
+		const FString R = TEXT("Station calling, say again your callsign");
+		SpeakAsController(Controller, R);
+		return R;
 	}
 
 	struct FParsed { FAircraftInstruction Instruction; FString Readback; };
@@ -238,6 +338,9 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 
 	const bool bExpedite = Lower.Contains(TEXT("expedite")); // applies to altitude changes
 	bool bGoAround = false;
+	bool bApproachIssued = false;   // "cleared ILS approach" has two keywords, only count once
+	bool bTakeoffIssued  = false;
+	bool bExitIssued     = false;
 
 	auto Make = [&](EInstructionType Type, float TargetValue, const FString& Readback, int32 TurnDir, bool bExp)
 	{
@@ -269,10 +372,14 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("left")) { Dir = -1; ++Idx; }
 			else if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("right")) { Dir = 1; ++Idx; }
 
+			// Pilot readback: "turning left heading two seven zero" - include verb. - TripleA
+			const TCHAR* TurningWord = (Dir < 0) ? TEXT("turning left ") :
+			                           (Dir > 0) ? TEXT("turning right ") : TEXT("turning ");
+
 			if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("heading"))
 			{
 				++Idx;
-				if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("%sheading %03d"), *DirWord(Dir), Value), Dir, false); }
+				if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("%sheading %03d"), TurningWord, Value), Dir, false); }
 			}
 			else if (ParseNumberRun(Tokens, Idx, Value)) // relative: "turn left 30 [degrees]"
 			{
@@ -280,24 +387,54 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { Cur = AM->GetAircraftState(Callsign).Heading; }
 				float Target = (Dir < 0) ? Cur - (float)Value : Cur + (float)Value;
 				Target = FMath::Fmod(Target + 360.f, 360.f);
-				Make(EInstructionType::HeadingChange, Target, FString::Printf(TEXT("%s%d degrees"), *DirWord(Dir), Value), Dir, false);
+				Make(EInstructionType::HeadingChange, Target, FString::Printf(TEXT("%s%d degrees"), TurningWord, Value), Dir, false);
 				if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("degrees")) { ++Idx; }
 			}
 		}
 		else if (T == TEXT("heading"))
 		{
 			++Idx;
-			if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("heading %03d"), Value), 0, false); }
+			if (ParseNumberRun(Tokens, Idx, Value))
+			{
+				// No turn verb said by the controller; the pilot readback infers the
+				// direction from the shortest turn ("turning right" vs "turning left")
+				// so it still sounds like radio comms. - TripleA
+				float Cur = 0.f;
+				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { Cur = AM->GetAircraftState(Callsign).Heading; }
+				const float Delta = FMath::FindDeltaAngleDegrees(Cur, (float)Value);
+				const TCHAR* TurningWord = (Delta < -1.f) ? TEXT("turning left ") :
+				                           (Delta >  1.f) ? TEXT("turning right ") : TEXT("");
+				const int32 InferredDir = (Delta < 0.f) ? -1 : (Delta > 0.f ? 1 : 0);
+				Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("%sheading %03d"), TurningWord, Value), InferredDir, false);
+			}
 		}
 		else if (T == TEXT("flight") && Idx + 1 < Tokens.Num() && Tokens[Idx + 1] == TEXT("level"))
 		{
 			Idx += 2;
-			if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::AltitudeChange, (float)Value * 100.f, FString::Printf(TEXT("flight level %d"), Value), 0, bExpedite); }
+			if (ParseNumberRun(Tokens, Idx, Value))
+			{
+				// Pilot readback includes the verb - "descending to flight level 250"
+				// or "climbing to flight level 250" depending on current altitude. - TripleA
+				float CurAlt = 0.f;
+				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { CurAlt = AM->GetAircraftState(Callsign).Altitude; }
+				const float Target = (float)Value * 100.f;
+				const TCHAR* Verb = (CurAlt > Target + 50.f) ? TEXT("descending to") :
+				                    (CurAlt < Target - 50.f) ? TEXT("climbing to")   : TEXT("maintaining");
+				Make(EInstructionType::AltitudeChange, Target, FString::Printf(TEXT("%s flight level %d"), Verb, Value), 0, bExpedite);
+			}
 		}
 		else if (T == TEXT("altitude"))
 		{
 			++Idx;
-			if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::AltitudeChange, (float)Value, FString::Printf(TEXT("altitude %d"), Value), 0, bExpedite); }
+			if (ParseNumberRun(Tokens, Idx, Value))
+			{
+				float CurAlt = 0.f;
+				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { CurAlt = AM->GetAircraftState(Callsign).Altitude; }
+				const float Target = (float)Value;
+				const TCHAR* Verb = (CurAlt > Target + 50.f) ? TEXT("descending to") :
+				                    (CurAlt < Target - 50.f) ? TEXT("climbing to")   : TEXT("maintaining");
+				Make(EInstructionType::AltitudeChange, Target, FString::Printf(TEXT("%s altitude %d"), Verb, Value), 0, bExpedite);
+			}
 		}
 		else if (T == TEXT("speed"))
 		{
@@ -306,29 +443,46 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		}
 		else if (T == TEXT("descend") || T == TEXT("climb"))
 		{
-			// "descend 8000" with no "altitude"/"flight level" keyword -> plain altitude.
+			// "descend 8000" / "climb 8000" - the verb the operator used is the readback verb.
+			const bool bDescend = (T == TEXT("descend"));
 			++Idx;
 			int32 Peek = Idx;
 			while (Peek < Tokens.Num() && (Tokens[Peek] == TEXT("to") || Tokens[Peek] == TEXT("and"))) { ++Peek; }
 			if (Peek < Tokens.Num() && (IsAllDigits(Tokens[Peek]) || DigitWord(Tokens[Peek], D)))
 			{
 				Idx = Peek;
-				if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::AltitudeChange, (float)Value, FString::Printf(TEXT("altitude %d"), Value), 0, bExpedite); }
+				if (ParseNumberRun(Tokens, Idx, Value))
+				{
+					const TCHAR* Verb = bDescend ? TEXT("descending to") : TEXT("climbing to");
+					Make(EInstructionType::AltitudeChange, (float)Value, FString::Printf(TEXT("%s altitude %d"), Verb, Value), 0, bExpedite);
+				}
 			}
 		}
 		else if (T == TEXT("approach") || T == TEXT("ils") || T == TEXT("land"))
 		{
 			++Idx;
-			Make(EInstructionType::ApproachClearance, 0.f, TEXT("cleared approach"), 0, false);
+			if (!bApproachIssued)
+			{
+				Make(EInstructionType::ApproachClearance, 0.f, TEXT("cleared the approach"), 0, false);
+				bApproachIssued = true;
+			}
 		}
 		else if (T == TEXT("takeoff"))
 		{
 			++Idx;
-			Make(EInstructionType::TakeoffClearance, 0.f, TEXT("cleared for takeoff"), 0, false);
+			if (!bTakeoffIssued)
+			{
+				Make(EInstructionType::TakeoffClearance, 0.f, TEXT("cleared for takeoff"), 0, false);
+				bTakeoffIssued = true;
+			}
 		}
 		else if (T == TEXT("contact") || T == TEXT("leave"))
 		{
-			Make(EInstructionType::ExitSector, 0.f, TEXT("leaving the sector"), 0, false);
+			if (!bExitIssued)
+			{
+				Make(EInstructionType::ExitSector, 0.f, TEXT("leaving the sector"), 0, false);
+				bExitIssued = true;
+			}
 			break; // the rest is the facility/frequency - don't parse it as commands
 		}
 		else
@@ -339,7 +493,9 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 
 	if (Parsed.Num() == 0 && !bGoAround)
 	{
-		return FString::Printf(TEXT("%s, say again"), *Callsign.ToString());
+		const FString R = FString::Printf(TEXT("%s, say again"), *Callsign.ToString());
+		SpeakOut(Controller, Callsign, R);
+		return R;
 	}
 
 	// Issue everything, read back the accepted parts, flag any the aircraft can't take.
@@ -369,6 +525,7 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	FString Readback = Callsign.ToString();
 	if (Accepted.Num() > 0) { Readback += TEXT(", ") + FString::Join(Accepted, TEXT(", ")); }
 	if (Unable.Num() > 0) { Readback += TEXT(" -- UNABLE ") + FString::Join(Unable, TEXT(", ")); }
+	SpeakOut(Controller, Callsign, Readback);
 	return Readback;
 }
 

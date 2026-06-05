@@ -78,6 +78,13 @@ public:
 	// to intercept (or declared too late) and a real target got through. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PenaltyViolationZoneBreached = 1000;
+	// Reward for landing or safely exiting an emergency-declaring aircraft. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PointsEmergencyHandled = 200;
+	// Catastrophic loss - fuel exhaustion, mid-air collision while in emergency,
+	// or any other crash. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyAircraftCrashed = 500;
 
 	// Difficulty: spawn interval (seconds) shrinks toward the minimum as more
 	// aircraft are handled successfully.

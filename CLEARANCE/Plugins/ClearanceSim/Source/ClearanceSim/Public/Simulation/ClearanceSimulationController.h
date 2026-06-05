@@ -159,6 +159,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
 	int32 ScrambleInterceptors(FName BanditCallsign);
 
+	// Launch a 3-ship to SHADOW a hijacked aircraft - same boundary spawn + intercept
+	// vector as Scramble, but the target is NOT classified hostile and the formation
+	// rejoin DOESN'T turn the target outward. Fighters tail the aircraft to the
+	// extent possible; success is the aircraft landing safely, failure is it
+	// reaching a violation zone. Only valid against an aircraft squawking 7500. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
+	int32 ShadowEscort(FName HijackCallsign);
+
 	// --- DIS interop --------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
@@ -248,6 +256,24 @@ public:
 	// solo dev sessions don't broadcast - enable per-level or per-deploy. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
 	bool bAutoStartDIS = false;
+
+	// Per-second probability that any normal civilian aircraft declares an
+	// emergency mid-flight. Spread across the four types in EmergencyTypeMix.
+	// 0 disables; ~0.001 = one emergency per ~1000 aircraft-seconds at 1x sim
+	// (much more frequent at 10x sim). - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Emergencies", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float EmergencyChancePerSecond = 0.001f;
+
+	// Starting fuel minutes when an aircraft declares a fuel emergency. Ticks
+	// down on REAL time so the sim time scale doesn't change the clock. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Emergencies")
+	float FuelEmergencyMinutes = 5.f;
+
+	// How long a Mayday (squawk 7700) aircraft has before the underlying situation
+	// runs out of time - hijack-the-cockpit scenario, smoke in the cabin, engine
+	// failure progressing to total loss. Same real-time clock as fuel. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Emergencies")
+	float MaydayTimeoutMinutes = 7.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
 	FString DISDefaultHost = TEXT("broadcast");
@@ -444,11 +470,30 @@ private:
 	// RegisterAircraft would collide with the first. - TripleA
 	int32 NextViperNumber = 1;
 
+	// Targets that are being SHADOWED (hijacks) rather than escorted-out. The
+	// TickGCIIntercepts join-up step skips the "turn outward" instruction for
+	// these so the aircraft continues under hijacker control. - TripleA
+	TSet<FName> ShadowTargets;
+
 	// (Zone name, aircraft callsign) pairs that have already triggered the
 	// catastrophic ViolationZoneBreached incident this session. One-shot per
 	// pair - prevents a hostile that's stuck inside a zone from spamming the
 	// penalty every tick. Cleared on session reset. - TripleA
 	TSet<FName> ViolatedPairs;
+
+	// Persistent crash markers. Drawn as smoking ground sites in the debug view
+	// until session reset. - TripleA
+	struct FCrashSite { FVector PositionNm; float SessionSeconds; FName Callsign; };
+	TArray<FCrashSite> CrashSites;
+
+	// Reasons for in-progress crashes so we can log them at impact. - TripleA
+	TMap<FName, FString> PendingCrashReasons;
+
+	// Begin a visible uncontrolled descent. Aircraft state goes bCrashing=true;
+	// CrashAircraft is called from the per-tick descent when it hits the ground.
+	void BeginCrash(const FAircraftState& S, const FString& Reason);
+	void TickCrashingAircraft(float DeltaTime);
+	void CrashAircraft(const FAircraftState& S, const FString& Reason);
 
 	void TickGCIIntercepts(float DeltaTime);
 

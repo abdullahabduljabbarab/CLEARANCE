@@ -43,13 +43,16 @@ void UClearanceConflictDetector::DetectConflicts()
 
 			// Engagement pairs - suppress the civilian safety net (sep alerts, TCAS,
 			// wake) so the operator isn't penalised for the intercept itself:
-			//   * Hostile-involved   - any viper closing on the bandit
-			//   * Both GCI-controlled - vipers flying tight formation on each other
-			// Mixed pairs (GCI-controlled fighter vs civilian) STAY alerted: keeping
-			// civilians clear of the engagement is the GCI controller's job. - TripleA
+			//   * Hostile-involved      - any viper closing on the bandit
+			//   * Both GCI-controlled    - vipers flying tight formation on each other
+			//   * GCI vs hijack          - shadow fighters tailing a 7500 aircraft
+			// Mixed pairs (GCI-controlled fighter vs ordinary civilian) STAY alerted:
+			// keeping civilians clear of the engagement is the GCI controller's job. - TripleA
 			const bool bHostileInvolved = (A.ThreatClass == EThreatClass::Hostile || B.ThreatClass == EThreatClass::Hostile);
 			const bool bBothUnderGCI    = (A.bUnderGCIControl && B.bUnderGCIControl);
-			if (bHostileInvolved || bBothUnderGCI)
+			const bool bShadowPair      = (A.bUnderGCIControl && B.ActiveEmergency == EEmergencyType::Hijack)
+			                           || (B.bUnderGCIControl && A.ActiveEmergency == EEmergencyType::Hijack);
+			if (bHostileInvolved || bBothUnderGCI || bShadowPair)
 			{
 				continue;
 			}

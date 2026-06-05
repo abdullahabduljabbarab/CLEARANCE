@@ -19,6 +19,7 @@ void UClearanceScoring::LogIncident(EIncidentType Type, FName AircraftA, FName A
 	{
 	case EIncidentType::SuccessfulLanding:    ++TotalLandings;   ++TotalHandled; break;
 	case EIncidentType::SuccessfulDeparture:  ++TotalDepartures; ++TotalHandled; break;
+	case EIncidentType::SuccessfulEmergencyHandling: ++TotalHandled; break;
 	case EIncidentType::GoAroundTriggered:    ++TotalGoArounds;  break;
 	case EIncidentType::SeparationLoss:       ++TotalSeparationLosses; ++TotalFailures; break;
 	case EIncidentType::UnresolvedExit:
@@ -26,7 +27,8 @@ void UClearanceScoring::LogIncident(EIncidentType Type, FName AircraftA, FName A
 	case EIncidentType::WakeEncounter:
 	case EIncidentType::TCASResolutionAdvisory:
 	case EIncidentType::MisidentifiedCivilian:
-	case EIncidentType::ViolationZoneBreached: ++TotalFailures;   break;
+	case EIncidentType::ViolationZoneBreached:
+	case EIncidentType::AircraftCrashed:       ++TotalFailures;   break;
 	default: break;
 	}
 
@@ -81,6 +83,8 @@ int32 UClearanceScoring::PointsForIncident(EIncidentType Type) const
 	case EIncidentType::TCASResolutionAdvisory:return -PenaltyTCASResolutionAdvisory;
 	case EIncidentType::MisidentifiedCivilian: return -PenaltyMisidentifiedCivilian;
 	case EIncidentType::ViolationZoneBreached: return -PenaltyViolationZoneBreached;
+	case EIncidentType::SuccessfulEmergencyHandling: return PointsEmergencyHandled;
+	case EIncidentType::AircraftCrashed:       return -PenaltyAircraftCrashed;
 	default:                                   return 0;
 	}
 }

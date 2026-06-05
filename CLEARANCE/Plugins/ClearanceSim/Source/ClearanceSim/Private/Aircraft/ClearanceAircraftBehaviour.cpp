@@ -98,6 +98,13 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 		return;
 	}
 
+	// Crashing aircraft are driven by the Controller (uncontrolled descent +
+	// spin); don't fight it from here. - TripleA
+	if (State.bCrashing)
+	{
+		return;
+	}
+
 	for (const FAircraftInstruction& Instruction : Pending)
 	{
 		ApplyInstruction(Instruction, State);

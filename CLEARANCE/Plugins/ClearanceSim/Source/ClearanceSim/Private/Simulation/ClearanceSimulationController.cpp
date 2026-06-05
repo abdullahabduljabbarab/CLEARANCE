@@ -212,6 +212,12 @@ void AClearanceSimulationController::StartSession()
 	bPaused = false;
 	bSessionActive = true;
 	NextViperNumber = 1;
+
+	// Background systems that should "just be on" for normal operator play. Each
+	// console toggle stays for dev use, but the player layer doesn't see them. - TripleA
+	if (bAutoStartRecording) { StartRecording(); }
+	if (bAutoStartRadar)     { SetRadarEnabled(true); }
+	if (bAutoStartDIS)       { StartDIS(DISDefaultHost, DISDefaultPort); }
 }
 
 void AClearanceSimulationController::PauseSession()
@@ -289,6 +295,25 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
 	SessionTime += SimDelta;
+
+	// GCI mode flips on the moment any non-cooperative or non-friendly aircraft
+	// is in the sector, off when only normal civilian traffic remains. Reflects
+	// real ops - there's no 'air defence mode' switch, the situation determines
+	// whether the operator is doing GCI or not. - TripleA
+	if (bAutoGCIMode && AirspaceManager)
+	{
+		bool bThreatPresent = false;
+		for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
+		{
+			if (!S.bIFFOperational || S.ThreatClass == EThreatClass::Hostile || S.ThreatClass == EThreatClass::Unknown)
+			{
+				bThreatPresent = true;
+				break;
+			}
+		}
+		if (bThreatPresent != bGCIMode) { SetGCIModeEnabled(bThreatPresent); }
+	}
+
 	StepSimulation(SimDelta);
 
 	// Capture the post-tick state into the recording timeline.

@@ -228,6 +228,33 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	bool bAutoStart = true;
 
+	// Always-on at session start: the session is recorded for AAR replay/debrief.
+	// Real ops are always under recording - no extra console step needed. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
+	bool bAutoStartRecording = true;
+
+	// Always-on at session start: the operator radar runs without a toggle, the
+	// same way it does in real ops. The console toggle stays as a dev backdoor. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
+	bool bAutoStartRadar = true;
+
+	// Auto-flip GCI mode (threat tags, IFF lockouts) the moment any aircraft with
+	// IFF off OR a non-friendly threat class enters the sector. When the sector
+	// returns to clean civilian traffic, flip it off. Off = leave it manual. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
+	bool bAutoGCIMode = true;
+
+	// Opt-in: publish the sector over DIS to a federation peer. Defaults off so
+	// solo dev sessions don't broadcast - enable per-level or per-deploy. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
+	bool bAutoStartDIS = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
+	FString DISDefaultHost = TEXT("broadcast");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
+	int32 DISDefaultPort = 3000;
+
 	// Time acceleration. Real ATC is slow to watch; 1 = real time, 10 = watchable.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	float SimulationTimeScale = 10.f;

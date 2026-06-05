@@ -153,6 +153,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
 	bool VectorIntercept(FName FighterCallsign, FName TargetCallsign);
 
+	// Launch a 3-ship intercept flight from the sector boundary onto the target,
+	// auto-classifying the target as Hostile if it wasn't already. Returns how many
+	// fighters made it out (3 unless the boundary spawn rejected one). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
+	int32 ScrambleInterceptors(FName BanditCallsign);
+
 	// --- DIS interop --------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
@@ -405,6 +411,11 @@ private:
 	// Joined fighters that have actually flown into their formation slot - from here
 	// they're glued to it; before, they fly themselves in via normal behaviour.
 	TSet<FName> SettledInFormation;
+
+	// Monotonic counter so each SCRAMBLE allocates fresh VIPER### callsigns - two
+	// scrambles in the same session need different IDs or the second one's
+	// RegisterAircraft would collide with the first. - TripleA
+	int32 NextViperNumber = 1;
 
 	void TickGCIIntercepts(float DeltaTime);
 

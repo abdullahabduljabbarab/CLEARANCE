@@ -211,6 +211,7 @@ void AClearanceSimulationController::StartSession()
 	SessionTime = 0.f;
 	bPaused = false;
 	bSessionActive = true;
+	NextViperNumber = 1;
 }
 
 void AClearanceSimulationController::PauseSession()
@@ -348,13 +349,27 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 			if (JoinedIntercepts.Contains(Fc)) { bWasJoined = true; break; }
 		}
 
-		// Distance-based join check on the unjoined ones.
+		// Distance-based join check on the unjoined ones. Refresh the lead-pursuit
+		// vector AND target altitude each tick before checking - a single VectorIntercept
+		// call from SCRAMBLE goes stale the moment the bandit drifts off its original
+		// course, and any vertical offset stops the join-up gate from firing. - TripleA
 		bool bAnyNewJoin = false;
 		for (const FName& Fc : Grp.Value)
 		{
 			if (JoinedIntercepts.Contains(Fc)) { continue; }
 			const FAircraftState FS = AirspaceManager->GetAircraftState(Fc);
 			if (!FS.bIsValid) { DeadFighters.Add(Fc); continue; }
+
+			// Re-compute lead pursuit each tick so the heading keeps tracking.
+			VectorIntercept(Fc, BanditCs);
+			// Match the bandit's altitude so vertical separation closes during the run.
+			FAircraftState FS2 = AirspaceManager->GetAircraftState(Fc);
+			if (FS2.bIsValid)
+			{
+				FS2.TargetAltitude = BanditS0.Altitude;
+				AirspaceManager->RequestStateUpdate(FS2);
+			}
+
 			const float Horiz = FVector2D::Distance(
 				FVector2D(FS.Position.X, FS.Position.Y),
 				FVector2D(BanditS0.Position.X, BanditS0.Position.Y));
@@ -503,6 +518,34 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	if (!AirspaceManager) { return; }
 	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
 	if (!S.bIsValid) { return; }
+
+	// CATASTROPHIC DOCTRINE FAILURE: declaring a confirmed civilian (IFF on AND
+	// non-military) as hostile. Vincennes / KAL-007 territory. Mark the incident,
+	// hit the score, lock further scrambles for the session. The classification
+	// still goes through - the player committed to it - but the consequences are
+	// permanent and unmistakable. - TripleA
+	if (NewClass == EThreatClass::Hostile && S.bIFFOperational && !S.bIsMilitary &&
+		S.ThreatClass != EThreatClass::Hostile)
+	{
+		if (Scoring)
+		{
+			Scoring->LogIncident(EIncidentType::MisidentifiedCivilian, Callsign, NAME_None,
+				FString::Printf(TEXT("Civilian %s with active IFF declared HOSTILE"), *Callsign.ToString()));
+		}
+		if (Recorder)
+		{
+			Recorder->LogEvent(SessionTime, FString::Printf(
+				TEXT("MISIDENTIFICATION - %s declared HOSTILE despite active IFF / civilian airframe"),
+				*Callsign.ToString()));
+		}
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(101, 30.f, FColor::Red,
+				FString::Printf(TEXT("*** MISIDENTIFICATION *** %s WAS CIVILIAN (-%d)"),
+					*Callsign.ToString(), Scoring ? Scoring->PenaltyMisidentifiedCivilian : 1000));
+		}
+	}
+
 	S.ThreatClass = NewClass;
 	// Hostile contacts lock out of civilian ATC immediately.
 	S.bUnderGCIControl = (NewClass == EThreatClass::Hostile);
@@ -605,15 +648,75 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 	F2.bUnderGCIControl = true;
 	AirspaceManager->RequestStateUpdate(F2);
 
+	// Only announce on the first call - this gets called every tick to refresh the
+	// vector for unjoined fighters, and the on-screen message would flood. - TripleA
+	const bool bFirstTime = !ActiveIntercepts.Contains(FighterCallsign);
 	ActiveIntercepts.Add(FighterCallsign, TargetCallsign);
 
-	if (GEngine)
+	if (bFirstTime && GEngine)
 	{
 		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan,
 			FString::Printf(TEXT("INTERCEPT %s -> %s  vector %03.0f  ETA %.0fs"),
 				*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept));
 	}
 	return true;
+}
+
+int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
+{
+	if (!AirspaceManager) { return 0; }
+	const FAircraftState Bandit = AirspaceManager->GetAircraftState(BanditCallsign);
+	if (!Bandit.bIsValid) { return 0; }
+
+	// SCRAMBLE requires a positively-identified hostile - the operator has to DECLARE
+	// the target hostile first. This is the doctrine guardrail that stops fighters
+	// being launched on civilian traffic; mis-classification has to be the operator's
+	// own call, not laundered away by the scramble step. - TripleA
+	if (Bandit.ThreatClass != EThreatClass::Hostile)
+	{
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red,
+				FString::Printf(TEXT("SCRAMBLE refused: %s not declared HOSTILE"), *BanditCallsign.ToString()));
+		}
+		return 0;
+	}
+
+	// Spawn all 3 from the stretch of boundary CLOSEST to the bandit, spread in a
+	// tight angular fan. Random angles around the whole ring put fighters on
+	// opposite sides of the sector - by the time #1 arrives, #2 and #3 are still
+	// crossing the whole map and the engagement breaks down. - TripleA
+	const float R = FMath::Max(10.f, ExitRadiusNm);
+	const float BanditBearingDeg = FMath::Fmod(
+		FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X, Bandit.Position.Y)) + 360.f, 360.f);
+	const float FanDeg = 8.f; // total angular spread across the 3-ship at the boundary
+	int32 Launched = 0;
+	for (int32 i = 0; i < 3; ++i)
+	{
+		const float ADeg = FMath::Fmod(BanditBearingDeg + (i - 1) * (FanDeg * 0.5f) + 360.f, 360.f);
+		const float ARad = FMath::DegreesToRadians(ADeg);
+		const FVector Pos(R * FMath::Sin(ARad), R * FMath::Cos(ARad), 0.f);
+
+		const float Inbound = FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X - Pos.X, Bandit.Position.Y - Pos.Y));
+		const float Hdg = FMath::Fmod(Inbound + 360.f, 360.f);
+
+		const int32 Num = NextViperNumber++;
+		FAircraftState V;
+		V.Callsign         = FName(*FString::Printf(TEXT("VIPER%02d"), Num));
+		V.Position         = Pos;
+		V.Altitude         = Bandit.Altitude; // match co-altitude on arrival so vertical join-up actually fires
+		V.Heading          = Hdg;
+		V.Speed            = 620.f;
+		V.WakeCategory     = EWakeCategory::Medium;
+		V.FlightPhase      = EFlightPhase::Enroute;
+		V.ThreatClass      = EThreatClass::Friendly;
+		V.SquawkCode       = 2200 + Num;
+		V.bIFFOperational  = true;
+		V.bIsMilitary      = true;
+		if (!AirspaceManager->RegisterAircraft(V)) { continue; }
+		if (VectorIntercept(V.Callsign, BanditCallsign)) { ++Launched; }
+	}
+	return Launched;
 }
 
 void AClearanceSimulationController::SetRadarEnabled(bool bInEnabled)
@@ -1189,7 +1292,7 @@ void AClearanceSimulationController::DrawDebugView()
 	// Scoring breakdown, tallied from the session log so we can see what's adding up.
 	if (Scoring)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0;
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0;
 		for (const FIncidentRecord& R : Scoring->GetSessionLog())
 		{
 			switch (R.Type)
@@ -1203,11 +1306,13 @@ void AClearanceSimulationController::DrawDebugView()
 			case EIncidentType::UnresolvedExit:       ++nExit; break;
 			case EIncidentType::WakeEncounter:        ++nWake; break;
 			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
+			case EIncidentType::MisidentifiedCivilian: ++nMisID; break;
 			default: break;
 			}
 		}
-		Readout += FString::Printf(TEXT("SCORING  +land %d  +dep %d  +resolved %d  +intercept %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d   |   next spawn %.0fs\n"),
-			nLand, nDep, nRes, nInt, nGA, nSep, nWake, nTCAS, nExit, Scoring->GetCurrentSpawnInterval());
+		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d   |   next spawn %.0fs\n"),
+			Scoring->GetCurrentScore(),
+			nLand, nDep, nRes, nInt, nGA, nSep, nWake, nTCAS, nExit, nMisID, Scoring->GetCurrentSpawnInterval());
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -1387,10 +1492,20 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 {
 	// Civilian ATC can't command anything under air defence control, and can't
 	// command external (federated) aircraft either - those belong to whichever
-	// peer sim is publishing them. - TripleA
+	// peer sim is publishing them. NORDO contacts (IFF off, not declared friendly)
+	// also reject silently - the non-response is the operator's clue. - TripleA
 	if (AirspaceManager)
 	{
 		const FAircraftState Target = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
+		if (Target.bIsValid && !Target.bIFFOperational && Target.ThreatClass != EThreatClass::Friendly)
+		{
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
+					FString::Printf(TEXT("%s, NO RESPONSE"), *Instruction.TargetCallsign.ToString()));
+			}
+			return EInstructionResult::Rejected_NoResponse;
+		}
 		if (Target.bIsValid && Target.bUnderGCIControl)
 		{
 			if (GEngine)
@@ -2221,6 +2336,30 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceGCITestCmd(
 		{
 			GEngine->AddOnScreenDebugMessage(-1, 7.f, FColor::Cyan,
 				TEXT("GCI TEST: BANDIT (hostile, IFF off) inbound. 3-ship VIPER flight ready. Try: clearance.gci on; clearance.iff BANDIT; clearance.intercept.flight BANDIT"));
+		}
+	}));
+
+// Scramble a fresh 3-ship from the sector boundary onto a bandit. The vipers
+// spawn from random points on the edge, get full military fit (IFF on, friendly,
+// F-35 mesh), and are auto-vectored on the target. Closes the natural gameplay
+// loop: bandit drops in -> player interrogates -> declares hostile -> SCRAMBLE.
+// The "from boundary not from runway" choice is deliberate; this fits the
+// cognitive model of fighters arriving on station from elsewhere. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScrambleCmd(
+	TEXT("clearance.scramble"),
+	TEXT("clearance.scramble <bandit> - launch a 3-ship intercept flight from the sector boundary onto a target"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C) { return; }
+		const FName BanditCs(*Args[0]);
+		const int32 N = C->ScrambleInterceptors(BanditCs);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 6.f, N > 0 ? FColor::Cyan : FColor::Red,
+				N > 0 ? FString::Printf(TEXT("SCRAMBLE: %d-ship VIPER flight inbound on %s"), N, *BanditCs.ToString())
+				      : FString::Printf(TEXT("SCRAMBLE: no such contact '%s'"), *Args[0]));
 		}
 	}));
 

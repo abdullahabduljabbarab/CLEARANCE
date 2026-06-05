@@ -37,18 +37,37 @@ bool AClearanceAircraftSpawner::SpawnAircraft()
 		return false;
 	}
 
-	const FAircraftSpawnData Data = GenerateSpawnData();
+	const bool bBandit = (BanditChance > 0.f) && (FMath::FRand() < BanditChance);
+
+	FAircraftSpawnData Data = GenerateSpawnData();
 
 	FAircraftState State;
-	State.Callsign = Data.Callsign;
 	State.Position = Data.EntryPosition;
 	State.Altitude = Data.EntryAltitude;
 	State.Speed = Data.EntrySpeed;
 	State.Heading = Data.EntryHeading;
 	State.FlightPhase = Data.InitialPhase;
 	State.WakeCategory = Data.WakeCategory;
-	// targets / performance limits are filled in when the Behaviour initialises
 
+	if (bBandit)
+	{
+		// Drop a hostile contact in alongside the civilian traffic. ThreatClass stays
+		// UNKNOWN until the operator interrogates and classifies - the player has to
+		// notice no IFF response and make the call. Squawk 7777 is the NATO hostile
+		// code; civilians never use it, so a sharp operator catches it on the scope
+		// too. - TripleA
+		State.Callsign         = GenerateBanditCallsign();
+		State.ThreatClass      = EThreatClass::Unknown;
+		State.SquawkCode       = 7777;
+		State.bIFFOperational  = false;
+		State.bIsMilitary      = true;
+	}
+	else
+	{
+		State.Callsign = Data.Callsign;
+	}
+
+	// targets / performance limits are filled in when the Behaviour initialises
 	return Manager->RegisterAircraft(State);
 }
 
@@ -92,6 +111,11 @@ FName AClearanceAircraftSpawner::GenerateCallsign()
 	static const TCHAR* Airlines[] = { TEXT("BAW"), TEXT("DLH"), TEXT("UAL"), TEXT("AAL"), TEXT("AFR"), TEXT("UAE") };
 	const TCHAR* Prefix = Airlines[FMath::RandRange(0, UE_ARRAY_COUNT(Airlines) - 1)];
 	return FName(*FString::Printf(TEXT("%s%d"), Prefix, 100 + (++CallsignCounter)));
+}
+
+FName AClearanceAircraftSpawner::GenerateBanditCallsign()
+{
+	return FName(*FString::Printf(TEXT("UNK%03d"), ++BanditCounter));
 }
 
 EWakeCategory AClearanceAircraftSpawner::RandomCategory() const

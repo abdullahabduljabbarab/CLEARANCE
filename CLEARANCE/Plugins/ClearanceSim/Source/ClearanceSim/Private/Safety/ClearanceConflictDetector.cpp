@@ -41,9 +41,15 @@ void UClearanceConflictDetector::DetectConflicts()
 			const FAircraftState& A = States[i];
 			const FAircraftState& B = States[j];
 
-			// Hostile-involved pairs are an engagement, not a civilian conflict: safety
-			// nets (conflict alerts, TCAS, wake) all suppressed. - TripleA
-			if (A.ThreatClass == EThreatClass::Hostile || B.ThreatClass == EThreatClass::Hostile)
+			// Engagement pairs - suppress the civilian safety net (sep alerts, TCAS,
+			// wake) so the operator isn't penalised for the intercept itself:
+			//   * Hostile-involved   - any viper closing on the bandit
+			//   * Both GCI-controlled - vipers flying tight formation on each other
+			// Mixed pairs (GCI-controlled fighter vs civilian) STAY alerted: keeping
+			// civilians clear of the engagement is the GCI controller's job. - TripleA
+			const bool bHostileInvolved = (A.ThreatClass == EThreatClass::Hostile || B.ThreatClass == EThreatClass::Hostile);
+			const bool bBothUnderGCI    = (A.bUnderGCIControl && B.bUnderGCIControl);
+			if (bHostileInvolved || bBothUnderGCI)
 			{
 				continue;
 			}

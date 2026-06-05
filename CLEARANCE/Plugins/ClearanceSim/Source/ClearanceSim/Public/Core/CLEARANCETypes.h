@@ -71,7 +71,12 @@ enum class EIncidentType : uint8
 	SuccessfulLanding		UMETA(DisplayName = "Successful Landing"),
 	SuccessfulDeparture		UMETA(DisplayName = "Successful Departure"),
 	SuccessfulResolution	UMETA(DisplayName = "Successful Resolution"),
-	SuccessfulIntercept		UMETA(DisplayName = "Successful Intercept")
+	SuccessfulIntercept		UMETA(DisplayName = "Successful Intercept"),
+	// Operator declared a confirmed civilian (IFF on, not military) as hostile.
+	// The single biggest failure in air defence doctrine - Vincennes / KAL-007 /
+	// PS752 territory. Catastrophic score penalty; further scrambles locked for
+	// the rest of the session. - TripleA
+	MisidentifiedCivilian	UMETA(DisplayName = "Misidentified Civilian")
 };
 
 /** Result of submitting an instruction through the Communication System. */
@@ -82,7 +87,12 @@ enum class EInstructionResult : uint8
 	Rejected_InvalidCallsign	UMETA(DisplayName = "Rejected - Invalid Callsign"),
 	Rejected_PhysicallyImpossible	UMETA(DisplayName = "Rejected - Physically Impossible"),
 	Rejected_AircraftExited		UMETA(DisplayName = "Rejected - Aircraft Exited"),
-	Rejected_ConflictAdvisory	UMETA(DisplayName = "Rejected - Conflict Advisory")
+	Rejected_ConflictAdvisory	UMETA(DisplayName = "Rejected - Conflict Advisory"),
+	// NORDO contact - target's IFF is off and we have no comms with it. The
+	// instruction is silently ignored on the aircraft side; the controller hears
+	// nothing back. This is the giveaway that lets a sharp operator spot a hostile
+	// posing as unknown traffic. - TripleA
+	Rejected_NoResponse			UMETA(DisplayName = "Rejected - No Response")
 };
 
 // Wake category drives the separation matrix later, so it has to be set per

@@ -59,7 +59,12 @@ namespace
 		static const TMap<FString, FString> Telephony = {
 			{TEXT("speedbird"),TEXT("BAW")},{TEXT("lufthansa"),TEXT("DLH")},
 			{TEXT("united"),TEXT("UAL")},{TEXT("american"),TEXT("AAL")},
-			{TEXT("emirates"),TEXT("UAE")},{TEXT("airfrance"),TEXT("AFR")}
+			{TEXT("emirates"),TEXT("UAE")},{TEXT("airfrance"),TEXT("AFR")},
+			// Unidentified contacts: spoken "unknown 001", "bogey 001", or "bandit 001"
+			// all resolve to the UNK### track. - TripleA
+			{TEXT("unknown"),TEXT("UNK")},{TEXT("bogey"),TEXT("UNK")},{TEXT("bandit"),TEXT("UNK")},
+			// Friendly fighter flight - spoken "viper 01" resolves to VIPER01. - TripleA
+			{TEXT("viper"),TEXT("VIPER")}
 		};
 
 		AClearanceAirspaceManager* AM = Controller->GetAirspaceManager();
@@ -150,6 +155,75 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	if (Tokens.Num() == 0)
 	{
 		return TEXT("(empty transmission)");
+	}
+
+	// NATO GCI brevity (military intercept doctrine, distinct from ICAO civil
+	// phraseology). These commands lead with the verb, not the callsign, and
+	// run through the GCI methods on the controller rather than the civilian
+	// instruction pipeline. - TripleA
+	//   INTERROGATE <callsign>            -> IFF interrogation
+	//   DECLARE <callsign> HOSTILE        -> classify hostile
+	//   DECLARE <callsign> FRIENDLY       -> classify friendly
+	//   SHOW <callsign> HOSTILE/FRIENDLY  -> alt spelling for DECLARE
+	//   SCRAMBLE BANDIT <callsign>        -> 3-ship boundary launch + auto-vector
+	//   ALERT FLIGHT SCRAMBLE BANDIT <cs> -> same
+	{
+		int32 GCI = 0;
+		// Eat optional leading filler ("alpha flight ...", "alert flight ...", "alert five ...")
+		while (GCI < Tokens.Num() && (Tokens[GCI] == TEXT("alpha") || Tokens[GCI] == TEXT("alert") ||
+		       Tokens[GCI] == TEXT("flight") || Tokens[GCI] == TEXT("five") || Tokens[GCI] == TEXT("the")))
+		{
+			++GCI;
+		}
+		if (GCI < Tokens.Num())
+		{
+			const FString Verb = Tokens[GCI];
+			int32 After = GCI + 1;
+
+			if (Verb == TEXT("interrogate"))
+			{
+				const FName Cs = ResolveCallsign(Controller, Tokens, After);
+				if (Cs.IsNone()) { return TEXT("INTERROGATE - say again target"); }
+				EThreatClass C; int32 Sq;
+				const bool bOk = Controller->InterrogateIFF(Cs, C, Sq);
+				if (!bOk) { return FString::Printf(TEXT("%s, NO RESPONSE"), *Cs.ToString()); }
+				const TCHAR* CL = (C == EThreatClass::Friendly) ? TEXT("FRIENDLY") :
+				                  (C == EThreatClass::Hostile)  ? TEXT("HOSTILE")  :
+				                  (C == EThreatClass::Neutral)  ? TEXT("NEUTRAL")  : TEXT("UNKNOWN");
+				return FString::Printf(TEXT("%s, %s, SQUAWK %04d"), *Cs.ToString(), CL, Sq);
+			}
+			if (Verb == TEXT("declare") || Verb == TEXT("show"))
+			{
+				const FName Cs = ResolveCallsign(Controller, Tokens, After);
+				if (Cs.IsNone()) { return FString::Printf(TEXT("%s - say again target"), *Verb.ToUpper()); }
+				EThreatClass NewC = EThreatClass::Unknown;
+				if (After < Tokens.Num())
+				{
+					const FString& Cls = Tokens[After];
+					if      (Cls == TEXT("hostile"))  { NewC = EThreatClass::Hostile;  }
+					else if (Cls == TEXT("friendly")) { NewC = EThreatClass::Friendly; }
+					else if (Cls == TEXT("neutral"))  { NewC = EThreatClass::Neutral;  }
+					else if (Cls == TEXT("unknown"))  { NewC = EThreatClass::Unknown;  }
+					else { return FString::Printf(TEXT("%s - say again classification"), *Cs.ToString()); }
+				}
+				else { return FString::Printf(TEXT("%s - say again classification"), *Cs.ToString()); }
+				Controller->ClassifyAircraft(Cs, NewC);
+				const TCHAR* CL = (NewC == EThreatClass::Friendly) ? TEXT("FRIENDLY") :
+				                  (NewC == EThreatClass::Hostile)  ? TEXT("HOSTILE")  :
+				                  (NewC == EThreatClass::Neutral)  ? TEXT("NEUTRAL")  : TEXT("UNKNOWN");
+				return FString::Printf(TEXT("%s SHOWING %s"), *Cs.ToString(), CL);
+			}
+			if (Verb == TEXT("scramble"))
+			{
+				// "scramble bandit <cs>" or "scramble <cs>"
+				if (After < Tokens.Num() && (Tokens[After] == TEXT("bandit") || Tokens[After] == TEXT("bogey"))) { ++After; }
+				const FName Cs = ResolveCallsign(Controller, Tokens, After);
+				if (Cs.IsNone()) { return TEXT("SCRAMBLE - say again bandit"); }
+				const int32 N = Controller->ScrambleInterceptors(Cs);
+				if (N <= 0) { return FString::Printf(TEXT("SCRAMBLE %s - unable"), *Cs.ToString()); }
+				return FString::Printf(TEXT("ALPHA FLIGHT SCRAMBLED, %d-SHIP INBOUND %s"), N, *Cs.ToString());
+			}
+		}
 	}
 
 	int32 Idx = 0;
@@ -278,11 +352,18 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		Accepted.Add(TEXT("going around"));
 	}
 
+	bool bNoResponse = false;
 	for (const FParsed& P : Parsed)
 	{
 		const EInstructionResult Result = Controller->PlayerIssueInstruction(P.Instruction);
 		if (Result == EInstructionResult::Accepted) { Accepted.Add(P.Readback); }
+		else if (Result == EInstructionResult::Rejected_NoResponse) { bNoResponse = true; }
 		else { Unable.Add(P.Readback); }
+	}
+
+	if (bNoResponse && Accepted.Num() == 0 && Unable.Num() == 0)
+	{
+		return FString::Printf(TEXT("%s, NO RESPONSE"), *Callsign.ToString());
 	}
 
 	FString Readback = Callsign.ToString();

@@ -24,7 +24,8 @@ void UClearanceScoring::LogIncident(EIncidentType Type, FName AircraftA, FName A
 	case EIncidentType::UnresolvedExit:
 	case EIncidentType::MissedHandoff:
 	case EIncidentType::WakeEncounter:
-	case EIncidentType::TCASResolutionAdvisory: ++TotalFailures;   break;
+	case EIncidentType::TCASResolutionAdvisory:
+	case EIncidentType::MisidentifiedCivilian: ++TotalFailures;   break;
 	default: break;
 	}
 
@@ -77,6 +78,7 @@ int32 UClearanceScoring::PointsForIncident(EIncidentType Type) const
 	case EIncidentType::LateInstruction:       return -PenaltyLateInstruction;
 	case EIncidentType::WakeEncounter:         return -PenaltyWakeEncounter;
 	case EIncidentType::TCASResolutionAdvisory:return -PenaltyTCASResolutionAdvisory;
+	case EIncidentType::MisidentifiedCivilian: return -PenaltyMisidentifiedCivilian;
 	default:                                   return 0;
 	}
 }

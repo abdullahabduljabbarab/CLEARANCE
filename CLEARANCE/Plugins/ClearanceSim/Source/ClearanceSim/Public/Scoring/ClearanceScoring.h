@@ -68,6 +68,11 @@ public:
 	int32 PenaltyWakeEncounter = 75;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PenaltyTCASResolutionAdvisory = 100;
+	// Catastrophic doctrine failure - declaring a confirmed civilian (IFF on,
+	// not military) as hostile. The penalty has to dwarf everything else in the
+	// scoring table or the cognitive-fidelity lesson is lost. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyMisidentifiedCivilian = 1000;
 
 	// Difficulty: spawn interval (seconds) shrinks toward the minimum as more
 	// aircraft are handled successfully.

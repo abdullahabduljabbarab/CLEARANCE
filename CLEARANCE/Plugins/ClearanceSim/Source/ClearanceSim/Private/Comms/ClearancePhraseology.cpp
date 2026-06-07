@@ -340,6 +340,7 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	bool bGoAround = false;
 	bool bApproachIssued = false;   // "cleared ILS approach" has two keywords, only count once
 	bool bTakeoffIssued  = false;
+	FString HoldReadback;            // injected into Accepted after the parse loop
 	bool bExitIssued     = false;
 
 	auto Make = [&](EInstructionType Type, float TargetValue, const FString& Readback, int32 TurnDir, bool bExp)
@@ -439,7 +440,17 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		else if (T == TEXT("speed"))
 		{
 			++Idx;
-			if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::SpeedChange, (float)Value, FString::Printf(TEXT("speed %d"), Value), 0, false); }
+			if (ParseNumberRun(Tokens, Idx, Value))
+			{
+				// Pilot readback uses "reducing to" / "increasing to" / "maintaining"
+				// based on whether the new speed is lower / higher / matches. - TripleA
+				float CurSpd = 0.f;
+				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { CurSpd = AM->GetAircraftState(Callsign).Speed; }
+				const float Target = (float)Value;
+				const TCHAR* Verb = (CurSpd > Target + 5.f) ? TEXT("reducing to") :
+				                    (CurSpd < Target - 5.f) ? TEXT("increasing to") : TEXT("maintaining");
+				Make(EInstructionType::SpeedChange, Target, FString::Printf(TEXT("%s speed %d"), Verb, Value), 0, false);
+			}
 		}
 		else if (T == TEXT("descend") || T == TEXT("climb"))
 		{
@@ -485,13 +496,44 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			}
 			break; // the rest is the facility/frequency - don't parse it as commands
 		}
+		else if (T == TEXT("hold"))
+		{
+			// "hold", "hold left", "hold right" - enter a racetrack at the current
+			// altitude and heading. Player issues a heading / approach / etc. to
+			// exit. Bypasses the normal instruction pipeline because hold isn't a
+			// per-axis target - it's a flight mode. - TripleA
+			++Idx;
+			bool bRightTurns = true;
+			if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("left"))  { bRightTurns = false; ++Idx; }
+			else if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("right")) { bRightTurns = true; ++Idx; }
+			// Eat "turns" / "pattern" filler
+			while (Idx < Tokens.Num() && (Tokens[Idx] == TEXT("turns") || Tokens[Idx] == TEXT("pattern")
+				|| Tokens[Idx] == TEXT("present") || Tokens[Idx] == TEXT("position"))) { ++Idx; }
+
+			if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager())
+			{
+				FAircraftState S = AM->GetAircraftState(Callsign);
+				if (S.bIsValid)
+				{
+					S.bInHold = true;
+					S.bHoldRightTurns = bRightTurns;
+					S.HoldInboundHeading = S.Heading;
+					S.HoldLegStartSeconds = 0.f;
+					AM->RequestStateUpdate(S);
+				}
+			}
+			// State is already in hold from the direct RequestStateUpdate above -
+			// inject the readback into Accepted after the parse loop completes.
+			HoldReadback = FString::Printf(TEXT("holding present position, %s turns"),
+				bRightTurns ? TEXT("right") : TEXT("left"));
+		}
 		else
 		{
 			++Idx; // flavour word: reduce / increase / maintain / fly / cleared / for / the...
 		}
 	}
 
-	if (Parsed.Num() == 0 && !bGoAround)
+	if (Parsed.Num() == 0 && !bGoAround && HoldReadback.IsEmpty())
 	{
 		const FString R = FString::Printf(TEXT("%s, say again"), *Callsign.ToString());
 		SpeakOut(Controller, Callsign, R);
@@ -506,6 +548,11 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	{
 		if (UClearanceCommsRouter* Router = Controller->GetCommsRouter()) { Router->RouteGoAround(Callsign); }
 		Accepted.Add(TEXT("going around"));
+	}
+
+	if (!HoldReadback.IsEmpty())
+	{
+		Accepted.Add(HoldReadback);
 	}
 
 	bool bNoResponse = false;

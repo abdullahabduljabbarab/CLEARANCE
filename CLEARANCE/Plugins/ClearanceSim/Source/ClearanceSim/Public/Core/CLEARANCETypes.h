@@ -101,7 +101,12 @@ enum class EIncidentType : uint8
 	SuccessfulEmergencyHandling UMETA(DisplayName = "Successful Emergency Handling"),
 	// Aircraft destroyed - fuel exhaustion in an unhandled fuel emergency, or
 	// any other catastrophic loss. - TripleA
-	AircraftCrashed			UMETA(DisplayName = "Aircraft Crashed")
+	AircraftCrashed			UMETA(DisplayName = "Aircraft Crashed"),
+	// Civilian aircraft entered a restricted area (military training zone, P-area,
+	// nuclear site, etc.). Different from a ViolationZoneBreached - this is a
+	// civilian screw-up the controller should have prevented, not a hostile reaching
+	// a critical target. Smaller penalty. - TripleA
+	RestrictedAirspaceBust	UMETA(DisplayName = "Restricted Airspace Bust")
 };
 
 /** Result of submitting an instruction through the Communication System. */
@@ -267,6 +272,28 @@ struct CLEARANCESIM_API FAircraftState
 	// slow controlled descent (medical emergency). - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emergency")
 	FString EmergencyDetail;
+
+	// Aircraft is flying a racetrack holding pattern. Behaviour drives the
+	// turn-and-leg pattern from these fields. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hold")
+	bool bInHold = false;
+
+	// True = right-hand pattern (standard ICAO), false = non-standard left turns.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hold")
+	bool bHoldRightTurns = true;
+
+	// SessionTime when the current hold leg started, used to time the racetrack.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hold")
+	float HoldLegStartSeconds = 0.f;
+
+	// 0 = flying the outbound leg, 1 = first turn, 2 = inbound leg, 3 = second turn.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hold")
+	int32 HoldLegPhase = 0;
+
+	// The heading the aircraft was on when it entered the hold - the inbound leg
+	// flies this heading, the outbound is the reciprocal.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hold")
+	float HoldInboundHeading = 0.f;
 };
 
 /** A single instruction targeted at one aircraft. */

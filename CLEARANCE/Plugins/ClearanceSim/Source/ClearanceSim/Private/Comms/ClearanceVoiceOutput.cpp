@@ -213,15 +213,20 @@ namespace
 
 		if (Thousands > 0)
 		{
-			// ATC convention for the thousands part:
-			//   1-9   -> single digit ("five thousand")
-			//   10-19 -> English word ("ten thousand", "twelve thousand")
-			//   20+   -> digit-by-digit ("two five thousand" for 25000)
+			// Natural English for the thousands part:
+			//   1-9   -> "five thousand"
+			//   10-19 -> "ten thousand", "twelve thousand"
+			//   20-99 -> "twenty thousand", "twenty-five thousand"
+			//   100+  -> digit-by-digit fallback (rare)
 			// - TripleA
 			static const TCHAR* Teens[] = {
 				TEXT("ten"), TEXT("eleven"), TEXT("twelve"), TEXT("thirteen"),
 				TEXT("fourteen"), TEXT("fifteen"), TEXT("sixteen"), TEXT("seventeen"),
 				TEXT("eighteen"), TEXT("nineteen")
+			};
+			static const TCHAR* TensWord[] = {
+				TEXT(""), TEXT(""), TEXT("twenty"), TEXT("thirty"), TEXT("forty"),
+				TEXT("fifty"), TEXT("sixty"), TEXT("seventy"), TEXT("eighty"), TEXT("ninety")
 			};
 			if (Thousands < 10)
 			{
@@ -230,6 +235,17 @@ namespace
 			else if (Thousands < 20)
 			{
 				Out += Teens[Thousands - 10];
+			}
+			else if (Thousands < 100)
+			{
+				const int32 T = Thousands / 10;
+				const int32 O = Thousands % 10;
+				Out += TensWord[T];
+				if (O > 0)
+				{
+					Out.AppendChar(TEXT(' '));
+					Out += DigitName(TEXT('0') + O);
+				}
 			}
 			else
 			{
@@ -550,6 +566,27 @@ void AClearanceVoiceOutput::PlayStatic(float DurationSeconds)
 	EnqueueSpeech(NAME_None, FString(), FString(), /*bPanic*/ false, /*bStatic*/ true, DurationSeconds);
 }
 
+void AClearanceVoiceOutput::StopGPWS(FName Callsign)
+{
+	if (TWeakObjectPtr<UAudioComponent>* Found = GPWSComponents.Find(Callsign))
+	{
+		if (UAudioComponent* Comp = Found->Get())
+		{
+			Comp->Stop();
+		}
+		GPWSComponents.Remove(Callsign);
+	}
+}
+
+void AClearanceVoiceOutput::PlayGPWS(FName Callsign)
+{
+	// Routes through the half-duplex queue the same way pilot lines do, so the
+	// alarm doesn't step on other aircraft's transmissions. It takes its slot in
+	// the queue and plays after whatever came before, in the GPWS voice. - TripleA
+	if (GPWSText.IsEmpty()) { return; }
+	EnqueueSpeech(Callsign, GPWSText, GPWSVoiceTag, /*bPanic*/ false, /*bStatic*/ false, 0.f);
+}
+
 void AClearanceVoiceOutput::PlayStaticImmediate(float DurationSeconds)
 {
 	if (DurationSeconds <= 0.f) { return; }
@@ -577,22 +614,42 @@ void AClearanceVoiceOutput::PlayStaticImmediate(float DurationSeconds)
 
 namespace
 {
-	// Panic chain: amplitude tremolo (breathy stress), harder saturation (the pilot
-	// is yelling into the mic), boosted gain. Pitch-shift up + speed-up happens by
-	// playing the PCM at a higher claimed sample rate, so it's not done here. - TripleA
+	// Panic chain: deep tremolo (shaky breathing), micro-dropouts (voice catching
+	// on sobs), hard saturation (yelling into mic), boosted gain. - TripleA
 	void ApplyPanicFX(TArray<uint8>& PCM, int32 SampleRate)
 	{
 		if (PCM.Num() < 4 || SampleRate <= 0) { return; }
 		int16* S = reinterpret_cast<int16*>(PCM.GetData());
 		const int32 N = PCM.Num() / 2;
-		const float TremoloHz = 6.5f;  // shaky breathing
-		const float TremoloDepth = 0.35f;
+
+		const float TremoloHz       = 8.5f;   // faster shaking
+		const float TremoloDepth    = 0.55f;  // deeper modulation
+		const float BreakIntervalS  = 1.7f;   // catch/sob every ~1.7 sec
+		const float BreakDurationS  = 0.08f;  // 80ms catch
+		const float SubVibratoHz    = 4.f;    // slow pitch-feel wobble via gain
+		const float SubVibratoDepth = 0.12f;
+
 		for (int32 i = 0; i < N; ++i)
 		{
 			const float T = static_cast<float>(i) / static_cast<float>(SampleRate);
-			const float TremoloEnv = 1.f - TremoloDepth * (0.5f + 0.5f * FMath::Sin(2.f * PI * TremoloHz * T));
-			float X = (S[i] / 32768.f) * 1.8f * TremoloEnv;     // gain + tremolo
-			X = FMath::Atan(X * 3.0f) / (PI * 0.5f);             // hard saturation
+
+			// Main shake.
+			const float Tremolo  = 1.f - TremoloDepth    * (0.5f + 0.5f * FMath::Sin(2.f * PI * TremoloHz * T));
+			// Slow secondary wobble layered on top.
+			const float Vibrato  = 1.f - SubVibratoDepth * (0.5f + 0.5f * FMath::Sin(2.f * PI * SubVibratoHz * T + 1.3f));
+
+			// Voice catch / micro-dropout - fades the signal nearly to zero for a
+			// brief moment, like the pilot's breath snags. - TripleA
+			const float BreakPhase = FMath::Fmod(T, BreakIntervalS);
+			float BreakEnv = 1.f;
+			if (BreakPhase < BreakDurationS)
+			{
+				const float U = BreakPhase / BreakDurationS;     // 0..1
+				BreakEnv = 0.15f + 0.85f * FMath::Abs(U - 0.5f) * 2.f; // V-shape - quiet at the catch
+			}
+
+			float X = (S[i] / 32768.f) * 2.1f * Tremolo * Vibrato * BreakEnv;
+			X = FMath::Atan(X * 3.6f) / (PI * 0.5f);       // harder saturation
 			X = FMath::Clamp(X, -1.f, 1.f);
 			S[i] = static_cast<int16>(X * 32767.f);
 		}
@@ -603,9 +660,10 @@ void AClearanceVoiceOutput::PlayPCM(FName Callsign, const FString& Text, int32 S
 {
 	if (bPanic)
 	{
+		// Tremolo + saturation + boosted gain do the panic work. No pitch shift -
+		// Edge voices already have natural emotional range, and the old +15%
+		// sample-rate trick made the pilot sound like a chipmunk. - TripleA
 		ApplyPanicFX(PCM, SampleRate);
-		// Play ~15% faster + higher pitched by lying about the sample rate.
-		SampleRate = static_cast<int32>(SampleRate * 1.15f);
 	}
 	if (bRadioFX)
 	{

@@ -2,6 +2,7 @@
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Airspace/ClearanceRunway.h"
 #include "Airspace/ClearanceViolationZone.h"
+#include "Airspace/ClearanceRestrictedArea.h"
 #include "Aircraft/ClearanceAircraftSpawner.h"
 #include "Aircraft/ClearanceAircraftBehaviour.h"
 #include "Aircraft/ClearanceAircraftVisualInterface.h"
@@ -215,6 +216,7 @@ void AClearanceSimulationController::StartSession()
 	bSessionActive = true;
 	NextViperNumber = 1;
 	ViolatedPairs.Reset();
+	BustedPairs.Reset();
 	CrashSites.Reset();
 
 	// Background systems that should "just be on" for normal operator play. Each
@@ -347,6 +349,57 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 							FString::Printf(TEXT("*** VIOLATION *** HOSTILE %s REACHED %s (-%d)"),
 								*S.Callsign.ToString(), *Z->ZoneName.ToString(),
 								Scoring ? Scoring->PenaltyViolationZoneBreached : 1000));
+					}
+				}
+			}
+		}
+	}
+
+	// Restricted airspace check: civilian aircraft entering a restricted area
+	// (military training zone, P-area, nuclear site) logs a RestrictedAirspaceBust.
+	// One-shot per (area, aircraft) pair. NOT a doctrine failure (no -1000) - just
+	// a controller screw-up the operator should have prevented by vectoring around
+	// it. - TripleA
+	if (AirspaceManager && GetWorld())
+	{
+		TArray<AClearanceRestrictedArea*> Areas;
+		for (TActorIterator<AClearanceRestrictedArea> AIt(GetWorld()); AIt; ++AIt) { Areas.Add(*AIt); }
+		if (Areas.Num() > 0)
+		{
+			const FVector OriginW = GetActorLocation();
+			const float W = FMath::Max(1.f, WorldUnitsPerNm);
+			for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
+			{
+				// Only civilian friendly traffic - military, hostiles, hijacks etc
+				// are handled by other paths (or are LEGITIMATELY in the area).
+				if (S.bIsMilitary || S.bIsExternal || S.ThreatClass != EThreatClass::Friendly) { continue; }
+				if (S.ActiveEmergency != EEmergencyType::None) { continue; }
+				for (AClearanceRestrictedArea* A : Areas)
+				{
+					if (!A) { continue; }
+					const FVector AW = A->GetActorLocation();
+					const FVector2D ANm((AW.X - OriginW.X) / W, (AW.Y - OriginW.Y) / W);
+					const float DistNm = FVector2D::Distance(FVector2D(S.Position.X, S.Position.Y), ANm);
+					if (DistNm > A->RadiusNm) { continue; }
+					const FName PairKey = FName(*(S.Callsign.ToString() + TEXT("|") + A->AreaName.ToString()));
+					if (BustedPairs.Contains(PairKey)) { continue; }
+					BustedPairs.Add(PairKey);
+					if (Scoring)
+					{
+						Scoring->LogIncident(EIncidentType::RestrictedAirspaceBust, S.Callsign, A->AreaName,
+							FString::Printf(TEXT("Civilian %s busted %s"), *S.Callsign.ToString(), *A->AreaName.ToString()));
+					}
+					if (Recorder)
+					{
+						Recorder->LogEvent(SessionTime, FString::Printf(
+							TEXT("AIRSPACE BUST - %s entered %s"), *S.Callsign.ToString(), *A->AreaName.ToString()));
+					}
+					if (GEngine)
+					{
+						GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor(255, 140, 0),
+							FString::Printf(TEXT("AIRSPACE BUST: %s entered %s (-%d)"),
+								*S.Callsign.ToString(), *A->AreaName.ToString(),
+								Scoring ? Scoring->PenaltyRestrictedAirspaceBust : 150));
 					}
 				}
 			}
@@ -525,6 +578,53 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 				else
 				{
 					AirspaceManager->RequestStateUpdate(S);
+
+					// Escalating urgency calls as the countdown burns through.
+					// Threshold bits: 1=66%, 2=33%, 4=10% remaining. Each fires
+					// once per aircraft. - TripleA
+					const float Total = (S.ActiveEmergency == EEmergencyType::FuelLow)
+						? FuelEmergencyMinutes : MaydayTimeoutMinutes;
+					if (Total > 0.f)
+					{
+						const float Pct = S.FuelRemainingMinutes / Total;
+						int32& Mask = UrgencyThresholdsHit.FindOrAdd(S.Callsign);
+						const FName Cs = S.Callsign;
+						const bool bFuel = (S.ActiveEmergency == EEmergencyType::FuelLow);
+
+						FString Line;
+						int32 NewBit = 0;
+						if (Pct < 0.10f && !(Mask & 4))
+						{
+							NewBit = 4;
+							Line = bFuel
+								? FString::Printf(TEXT("%s, fuel exhausted any moment, we need runway now"), *Cs.ToString())
+								: FString::Printf(TEXT("%s, we can't hold her, we're going down"), *Cs.ToString());
+						}
+						else if (Pct < 0.33f && !(Mask & 2))
+						{
+							NewBit = 2;
+							Line = bFuel
+								? FString::Printf(TEXT("%s, fuel state critical, request immediate vectors"), *Cs.ToString())
+								: FString::Printf(TEXT("%s, situation worsening fast, we need a runway now"), *Cs.ToString());
+						}
+						else if (Pct < 0.66f && !(Mask & 1))
+						{
+							NewBit = 1;
+							Line = bFuel
+								? FString::Printf(TEXT("%s, fuel low, request priority handling"), *Cs.ToString())
+								: FString::Printf(TEXT("%s, situation deteriorating, request priority"), *Cs.ToString());
+						}
+
+						if (NewBit != 0 && GetWorld())
+						{
+							Mask |= NewBit;
+							for (TActorIterator<AClearanceVoiceOutput> VoIt(GetWorld()); VoIt; ++VoIt)
+							{
+								if (*VoIt) { VoIt->Speak(Cs, Line, FString()); }
+								break;
+							}
+						}
+					}
 				}
 			}
 		}
@@ -932,22 +1032,60 @@ void AClearanceSimulationController::BeginCrash(const FAircraftState& InState, c
 	AirspaceManager->RequestStateUpdate(S);
 	PendingCrashReasons.Add(S.Callsign, Reason);
 
-	// Pilot panic line out of the cockpit (panic FX chain) at the moment things
-	// go physically irrecoverable. The deadpan "Lost contact" comes later, from
-	// CrashAircraft, after the wreck actually hits the ground. - TripleA
+	// Cockpit panic from the pilot's voice. Real CVRs go through three arcs:
+	// initial alarm ("we're losing it"), denial/fighting ("pull up, climb"),
+	// then acceptance / last words ("tell them I love them"). We fire an
+	// initial line now and schedule a final/acceptance line ~15s real later -
+	// the half-duplex queue handles spacing. Same voice for both so it sounds
+	// like one pilot, not two. - TripleA
 	if (UWorld* W = GetWorld())
 	{
 		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
 		{
 			if (!*VoIt) { break; }
+
 			static const TCHAR* PanicLines[] = {
-				TEXT("Oh God, oh God, oh God. We're going down. We're going down. I'm sorry. I'm sorry."),
-				TEXT("Oh shit, oh shit, oh shit. We're out of control. We're out of control. This is it. This is it."),
+				TEXT("Oh God, oh God, oh God. We're going down. We're losing her. We're losing her."),
+				TEXT("Oh shit, oh shit, oh shit. We're out of control. I can't hold it. I can't hold it."),
 				TEXT("Mayday, mayday, mayday. We're going down. Pull up. Pull up. Oh God."),
 				TEXT("She's not responding. She's not responding. We're going in. We're going in."),
+				TEXT("Climb! Why won't she climb! We're going to die. We're going to die."),
+				TEXT("I have control. I have control. No, I can't. I can't hold her."),
+				TEXT("Terrain. Terrain. Pull up. Pull up. Oh no no no."),
+				TEXT("Captain. Captain. We're going to crash. We're going to crash."),
 			};
-			const int32 Pick = FMath::RandRange(0, UE_ARRAY_COUNT(PanicLines) - 1);
-			VoIt->SpeakPanic(S.Callsign, PanicLines[Pick], FString());
+			// Lock the voice for both lines so it's clearly the same pilot.
+			const FString Voice = VoIt->PickVoiceForCallsign(S.Callsign);
+			const int32 P = FMath::RandRange(0, UE_ARRAY_COUNT(PanicLines) - 1);
+			VoIt->SpeakPanic(S.Callsign, PanicLines[P], Voice);
+
+			// GPWS cockpit alarm runs UNDER the pilot's voice, in parallel - bypasses
+			// the half-duplex queue. Mirrors a real CVR where you hear the airframe
+			// shouting "TERRAIN, PULL UP" while the crew panics. Tracked by callsign
+			// so we can stop it on impact. - TripleA
+			VoIt->PlayGPWS(S.Callsign);
+
+			TWeakObjectPtr<AClearanceVoiceOutput> WeakVO(*VoIt);
+			const FName Cs = S.Callsign;
+			FTimerHandle& Handle = PendingPanicTimers.FindOrAdd(Cs);
+			W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
+				[WeakVO, Cs, Voice]()
+				{
+					if (!WeakVO.IsValid()) { return; }
+					static const TCHAR* FinalLines[] = {
+						TEXT("Goodbye. Goodbye. I love you. I love you all."),
+						TEXT("I love you. Tell my family I love them. Tell them I love them."),
+						TEXT("I'm sorry. I'm sorry. I tried. I tried."),
+						TEXT("Mama. Mama. I'm sorry. I love you, mama."),
+						TEXT("Honey. Honey, I love you. Tell the kids I love them."),
+						TEXT("God forgive me. God forgive us all."),
+						TEXT("It's over. It's over. I love you."),
+						TEXT("Brace. Brace. Brace for impact."),
+					};
+					const int32 Fi = FMath::RandRange(0, UE_ARRAY_COUNT(FinalLines) - 1);
+					WeakVO->SpeakPanic(Cs, FinalLines[Fi], Voice);
+				}), 14.f, false);
+
 			break;
 		}
 	}
@@ -1015,6 +1153,22 @@ void AClearanceSimulationController::TickCrashingAircraft(float DeltaTime)
 
 void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, const FString& Reason)
 {
+	// Cut the cockpit alarm and any pending pilot lines - the wreck is silent
+	// from this moment forward. - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		if (FTimerHandle* Pending = PendingPanicTimers.Find(S.Callsign))
+		{
+			W->GetTimerManager().ClearTimer(*Pending);
+			PendingPanicTimers.Remove(S.Callsign);
+		}
+		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
+		{
+			if (*VoIt) { VoIt->StopGPWS(S.Callsign); }
+			break;
+		}
+	}
+
 	if (Scoring)
 	{
 		Scoring->LogIncident(EIncidentType::AircraftCrashed, S.Callsign, NAME_None, Reason);
@@ -1434,6 +1588,22 @@ void AClearanceSimulationController::DrawDebugView()
 		}
 	}
 
+	// Restricted airspace - amber/blue rings (don't pulse - this is just
+	// an obstacle the controller has to vector around, not a critical threat). - TripleA
+	{
+		const FColor AreaCol(70, 130, 200);
+		const FColor AreaLabel(140, 180, 230);
+		for (TActorIterator<AClearanceRestrictedArea> AIt(World); AIt; ++AIt)
+		{
+			if (!*AIt) { continue; }
+			const FVector C(AIt->GetActorLocation().X, AIt->GetActorLocation().Y, GroundWorldZ);
+			DrawDebugCircle(World, C, AIt->RadiusNm * S, 48, AreaCol, false, -1.f, 0, 80.f, FVector(1,0,0), FVector(0,1,0), false);
+			DrawDebugCircle(World, C, AIt->RadiusNm * S * 0.95f, 48, AreaCol, false, -1.f, 0, 40.f, FVector(1,0,0), FVector(0,1,0), false);
+			DrawDebugString(World, C + FVector(0, 0, 1.2f * S),
+				FString::Printf(TEXT("[%s]"), *AIt->AreaName.ToString()), nullptr, AreaLabel, 0.f, true, 1.2f);
+		}
+	}
+
 	// Compass rose: a tick + heading number every 30deg around the boundary, cardinals
 	// called out, so headings are readable in the world. "Vector 090" = send it toward
 	// the 090 mark. Heading 0=North, 90=East (X=East, Y=North). - TripleA
@@ -1786,7 +1956,7 @@ void AClearanceSimulationController::DrawDebugView()
 	// Scoring breakdown, tallied from the session log so we can see what's adding up.
 	if (Scoring)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0;
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0, nBust = 0;
 		for (const FIncidentRecord& R : Scoring->GetSessionLog())
 		{
 			switch (R.Type)
@@ -1804,12 +1974,13 @@ void AClearanceSimulationController::DrawDebugView()
 			case EIncidentType::ViolationZoneBreached: ++nViol; break;
 			case EIncidentType::SuccessfulEmergencyHandling: ++nEmer; break;
 			case EIncidentType::AircraftCrashed:       ++nCrash; break;
+			case EIncidentType::RestrictedAirspaceBust: ++nBust; break;
 			default: break;
 			}
 		}
-		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d   |   next spawn %.0fs\n"),
+		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
 			Scoring->GetCurrentScore(),
-			nLand, nDep, nRes, nInt, nEmer, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, nCrash, Scoring->GetCurrentSpawnInterval());
+			nLand, nDep, nRes, nInt, nEmer, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, nCrash, nBust, Scoring->GetCurrentSpawnInterval());
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -2540,6 +2711,7 @@ void AClearanceSimulationController::HandleAircraftDeregistered(FName Callsign)
 		}
 	}
 	ShadowTargets.Remove(Callsign);
+	UrgencyThresholdsHit.Remove(Callsign);
 
 	// Drop any TCAS pair entries involving this aircraft so the set doesn't leak.
 	const FString CallStr = Callsign.ToString();

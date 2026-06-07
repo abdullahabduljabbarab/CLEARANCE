@@ -50,6 +50,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Voice")
 	void PlayStatic(float DurationSeconds);
 
+	// Fire a GPWS-style cockpit warning ("Sink rate / Terrain / Pull up") that
+	// bypasses the half-duplex channel and plays under the pilot's voice. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Voice")
+	void PlayGPWS(FName Callsign);
+
+	// Cut the GPWS playing for a specific aircraft (called on ground impact so
+	// the alarm doesn't keep nagging after the wreck stops). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Voice")
+	void StopGPWS(FName Callsign);
+
 	UPROPERTY(BlueprintAssignable, Category = "Voice")
 	FOnPilotSpoke OnPilotSpoke;
 
@@ -95,6 +105,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice|Radio FX")
 	float RadioLowpassHz = 3000.f;
 
+	// GPWS cockpit alarm volume (sits behind the pilot's voice). - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice|Cockpit Alarms")
+	float GPWSVolume = 1.1f;
+
+	// Apply radio FX (bandpass + noise) so the GPWS sits on the same channel as
+	// the pilot's voice. Off = clean studio voice. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice|Cockpit Alarms")
+	bool bGPWSRadioFX = true;
+
+	// Voice tag used for cockpit alarms (deadpan, no emotion). - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice|Cockpit Alarms")
+	FString GPWSVoiceTag = TEXT("en-US-EricNeural");
+
+	// Text the GPWS speaks. Short and urgent - real GPWS alarms are 3-4
+	// syllables, not paragraphs.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice|Cockpit Alarms")
+	FString GPWSText = TEXT("Terrain. Terrain. Pull up. Pull up.");
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -127,6 +155,10 @@ private:
 
 	void EnqueueSpeech(FName Callsign, const FString& Text, const FString& VoiceTag, bool bPanic, bool bStatic, float StaticDuration);
 	void DrainQueue();
+
+	// Active GPWS audio component per aircraft so we can kill it on impact. - TripleA
+	UPROPERTY()
+	TMap<FName, TWeakObjectPtr<UAudioComponent>> GPWSComponents;
 
 	void TryLaunchServer();
 	bool IsServerResponding() const;

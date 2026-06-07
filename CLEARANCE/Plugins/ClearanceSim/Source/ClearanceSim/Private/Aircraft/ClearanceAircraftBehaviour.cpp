@@ -107,9 +107,32 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 
 	for (const FAircraftInstruction& Instruction : Pending)
 	{
+		// Any new heading / altitude / approach command exits the hold - the
+		// controller has called the aircraft out. - TripleA
+		if (Instruction.Type == EInstructionType::HeadingChange
+			|| Instruction.Type == EInstructionType::AltitudeChange
+			|| Instruction.Type == EInstructionType::ApproachClearance
+			|| Instruction.Type == EInstructionType::ExitSector)
+		{
+			State.bInHold = false;
+		}
 		ApplyInstruction(Instruction, State);
 	}
 	Pending.Reset();
+
+	// Holding pattern: 5-min racetrack. Outbound leg for 150s of the cycle,
+	// inbound leg for the other 150s. Bank rate / turn rate already in StepHeading
+	// handles the actual 180deg turns at standard rate. Altitude/speed are not
+	// touched - whatever was last commanded stays. - TripleA
+	if (State.bInHold)
+	{
+		State.HoldLegStartSeconds += DeltaTime;
+		const float Cycle = 300.f;
+		const float Half  = Cycle * 0.5f;
+		const float Elapsed = FMath::Fmod(State.HoldLegStartSeconds, Cycle);
+		const float OutboundHdg = FMath::Fmod(State.HoldInboundHeading + 180.f + 360.f, 360.f);
+		State.TargetHeading = (Elapsed < Half) ? OutboundHdg : State.HoldInboundHeading;
+	}
 
 	const FSectorEnvironment Env = Manager->GetCurrentEnvironment();
 

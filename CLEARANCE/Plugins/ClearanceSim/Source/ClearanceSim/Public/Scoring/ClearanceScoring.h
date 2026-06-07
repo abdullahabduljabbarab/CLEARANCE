@@ -85,6 +85,10 @@ public:
 	// or any other crash. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PenaltyAircraftCrashed = 500;
+	// Civilian aircraft entered a restricted area - the controller should have
+	// vectored them around it. Bad mistake, not catastrophic. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
+	int32 PenaltyRestrictedAirspaceBust = 150;
 
 	// Difficulty: spawn interval (seconds) shrinks toward the minimum as more
 	// aircraft are handled successfully.

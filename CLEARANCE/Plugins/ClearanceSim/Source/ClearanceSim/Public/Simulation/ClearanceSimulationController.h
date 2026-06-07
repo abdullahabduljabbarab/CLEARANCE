@@ -481,6 +481,14 @@ private:
 	// penalty every tick. Cleared on session reset. - TripleA
 	TSet<FName> ViolatedPairs;
 
+	// Same one-shot semantics for civilian RestrictedAirspaceBust events. - TripleA
+	TSet<FName> BustedPairs;
+
+	// Bitmask of urgency thresholds already vocalised per emergency aircraft -
+	// bit 0 = 66% remaining, bit 1 = 33% remaining, bit 2 = 10% remaining. So
+	// each escalation call only fires once. Cleared on deregister. - TripleA
+	TMap<FName, int32> UrgencyThresholdsHit;
+
 	// Persistent crash markers. Drawn as smoking ground sites in the debug view
 	// until session reset. - TripleA
 	struct FCrashSite { FVector PositionNm; float SessionSeconds; FName Callsign; };
@@ -488,6 +496,10 @@ private:
 
 	// Reasons for in-progress crashes so we can log them at impact. - TripleA
 	TMap<FName, FString> PendingCrashReasons;
+
+	// Pending second panic line timer per crashing aircraft - cancelled at
+	// impact so the dead pilot doesn't say his final words after the wreck. - TripleA
+	TMap<FName, FTimerHandle> PendingPanicTimers;
 
 	// Begin a visible uncontrolled descent. Aircraft state goes bCrashing=true;
 	// CrashAircraft is called from the per-tick descent when it hits the ground.

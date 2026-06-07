@@ -100,7 +100,17 @@ void AClearanceSimulationController::InitialiseSystems()
 	DISEmitter = NewObject<UClearanceDISEmitter>(this);
 	DISReceiver = NewObject<UClearanceDISReceiver>(this);
 	Radar = NewObject<UClearanceRadar>(this);
-	if (Radar) { Radar->SetReferences(AirspaceManager); }
+	if (Radar)
+	{
+		Radar->SetReferences(AirspaceManager);
+		Radar->RangeNm               = CentralRadarRangeNm;
+		Radar->SweepRpm              = CentralRadarSweepRpm;
+		Radar->SecondaryReturnChance = CentralRadarSecondaryReturnChance;
+		Radar->PositionJitterNm      = CentralRadarPositionJitterNm;
+		Radar->TrackFadeSeconds      = CentralRadarTrackFadeSeconds;
+		Radar->SitePositionNm        = FVector2D::ZeroVector; // sector origin
+		Radar->SiteName              = CentralRadarSiteName;
+	}
 
 	if (AirspaceManager)
 	{
@@ -2010,14 +2020,28 @@ void AClearanceSimulationController::DrawDebugView()
 	// operator picture" - track quality scales with how many sensors agree. - TripleA
 	{
 		TArray<UClearanceRadar*> Radars;
+		int32 PlacedSiteCount = 0;
+		int32 PlacedSiteEnabled = 0;
 		if (Radar && Radar->IsEnabled()) { Radars.Add(Radar); }
 		if (UWorld* W = GetWorld())
 		{
 			for (TActorIterator<AClearanceRadarSite> SIt(W); SIt; ++SIt)
 			{
-				if (*SIt && SIt->Radar && SIt->Radar->IsEnabled()) { Radars.Add(SIt->Radar); }
+				if (!*SIt) { continue; }
+				++PlacedSiteCount;
+				if (SIt->Radar && SIt->Radar->IsEnabled())
+				{
+					++PlacedSiteEnabled;
+					Radars.Add(SIt->Radar);
+				}
 			}
 		}
+
+		// Always surface the fleet status so it's obvious whether placed sites
+		// are even being seen by the controller. - TripleA
+		Readout += FString::Printf(TEXT("RDR fleet  centre:%s  placed:%d (enabled %d)  active:%d\n"),
+			(Radar && Radar->IsEnabled()) ? TEXT("ON") : TEXT("off"),
+			PlacedSiteCount, PlacedSiteEnabled, Radars.Num());
 
 		if (Radars.Num() > 0)
 		{

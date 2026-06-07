@@ -17,16 +17,22 @@ AClearanceRadarSite::AClearanceRadarSite()
 void AClearanceRadarSite::BeginPlay()
 {
 	Super::BeginPlay();
-	if (!Radar) { return; }
+	TryWireUp(); // first attempt - may fail if Controller hasn't BeginPlay'd yet
+}
 
-	// Find the Controller to get the airspace manager + sector origin so we can
-	// translate this actor's world location into sim-nm coordinates. - TripleA
+bool AClearanceRadarSite::TryWireUp()
+{
+	if (!Radar || Radar->IsEnabled()) { return Radar && Radar->IsEnabled(); }
+
+	// Actor BeginPlay order is non-deterministic. If a site BeginPlays before the
+	// Controller has spun up its airspace manager, GetAirspaceManager() is null
+	// and we can't wire up yet - retry from Tick until both are alive. - TripleA
 	AClearanceSimulationController* Controller = nullptr;
 	for (TActorIterator<AClearanceSimulationController> It(GetWorld()); It; ++It) { Controller = *It; break; }
-	if (!Controller) { return; }
+	if (!Controller) { return false; }
 
 	AClearanceAirspaceManager* Manager = Controller->GetAirspaceManager();
-	if (!Manager) { return; }
+	if (!Manager) { return false; }
 
 	const FVector OriginW = Controller->GetActorLocation();
 	const float W = FMath::Max(1.f, Controller->WorldUnitsPerNm);
@@ -42,13 +48,13 @@ void AClearanceRadarSite::BeginPlay()
 	Radar->SitePositionNm = SiteNm;
 	Radar->SiteName = SiteName;
 	Radar->SetEnabled(true);
+	return true;
 }
 
 void AClearanceRadarSite::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	if (Radar && Radar->IsEnabled())
-	{
-		Radar->Tick(DeltaSeconds);
-	}
+	if (!Radar) { return; }
+	if (!Radar->IsEnabled()) { TryWireUp(); return; }
+	Radar->Tick(DeltaSeconds);
 }

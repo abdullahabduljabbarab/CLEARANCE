@@ -241,10 +241,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
 	bool bAutoStartRecording = true;
 
-	// Always-on at session start: the operator radar runs without a toggle, the
-	// same way it does in real ops. The console toggle stays as a dev backdoor. - TripleA
+	// Off by default - real air defence picture is fused from distributed sites, no
+	// magic sensor at sector origin. Drop AClearanceRadarSite actors instead. Flip on
+	// (or `clearance.radar on`) for a quick single-sensor god view during dev. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
-	bool bAutoStartRadar = true;
+	bool bAutoStartRadar = false;
 
 	// Auto-flip GCI mode (threat tags, IFF lockouts) the moment any aircraft with
 	// IFF off OR a non-friendly threat class enters the sector. When the sector
@@ -335,6 +336,27 @@ public:
 	// Throwaway debug radar so the sim can be watched before a real UI exists.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Debug")
 	bool bDrawDebug = true;
+
+	// Central radar tuning - the one toggled by `clearance.radar on/off`. Sits at the
+	// Controller's location, acts as the "centre" sensor in fusion. Placed RadarSite
+	// actors carry their own tuning and stack on top. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Radar (Central)")
+	float CentralRadarRangeNm = 80.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Radar (Central)")
+	float CentralRadarSweepRpm = 12.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Radar (Central)")
+	float CentralRadarSecondaryReturnChance = 0.95f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Radar (Central)")
+	float CentralRadarPositionJitterNm = 0.1f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Radar (Central)")
+	float CentralRadarTrackFadeSeconds = 8.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Radar (Central)")
+	FName CentralRadarSiteName = TEXT("CENTRE");
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Debug")
 	float WorldUnitsPerNm = 1000.f;

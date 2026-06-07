@@ -49,14 +49,17 @@ void UClearanceRadar::Tick(float RealDeltaSeconds)
 	const float DegPerSec = SweepRpm * 6.f; // 1 rpm = 6 deg/sec
 	SweepAngleDeg = FMath::Fmod(SweepAngleDeg + DegPerSec * RealDeltaSeconds, 360.f);
 
-	// Paint anything inside range that the beam just crossed. - TripleA
+	// Paint anything inside range that the beam just crossed. Range + bearing are
+	// computed RELATIVE to the radar's site position so multiple sites at different
+	// locations cover different airspace patches. - TripleA
 	const TArray<FAircraftState> Truth = Manager->GetAllAircraftStates();
 	for (const FAircraftState& T : Truth)
 	{
-		const float DistNm = FVector2D(T.Position.X, T.Position.Y).Size();
+		const FVector2D Rel = FVector2D(T.Position.X, T.Position.Y) - SitePositionNm;
+		const float DistNm = Rel.Size();
 		if (DistNm > RangeNm) { continue; }
 
-		const float Bearing = BearingDeg(T.Position);
+		const float Bearing = BearingDeg(FVector(Rel.X, Rel.Y, 0.f));
 		if (!SweepCrossed(SweepPrevDeg, SweepAngleDeg, Bearing)) { continue; }
 
 		// Beam hit it - update (or initialise) the track.

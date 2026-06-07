@@ -10,6 +10,7 @@
 #include "Comms/ClearanceCommsRouter.h"
 #include "Comms/ClearanceVoiceOutput.h"
 #include "Safety/ClearanceConflictDetector.h"
+#include "Safety/ClearanceRadarSite.h"
 #include "Safety/ClearanceRadar.h"
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
@@ -1604,6 +1605,19 @@ void AClearanceSimulationController::DrawDebugView()
 		}
 	}
 
+	// Radar coverage rings - one circle per placed RadarSite, sized by its
+	// configured RangeNm. Per-site colour so the operator can tell which sensor
+	// covers which patch. Centred on the actor's world location. - TripleA
+	for (TActorIterator<AClearanceRadarSite> SIt(World); SIt; ++SIt)
+	{
+		if (!*SIt || !SIt->Radar) { continue; }
+		const FVector C(SIt->GetActorLocation().X, SIt->GetActorLocation().Y, GroundWorldZ);
+		const float Rad = SIt->Radar->RangeNm * S;
+		DrawDebugCircle(World, C, Rad, 64, SIt->CoverageColour, false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
+		DrawDebugString(World, C + FVector(0, 0, 1.f * S),
+			FString::Printf(TEXT("RDR %s"), *SIt->SiteName.ToString()), nullptr, SIt->CoverageColour, 0.f, true, 1.1f);
+	}
+
 	// Compass rose: a tick + heading number every 30deg around the boundary, cardinals
 	// called out, so headings are readable in the world. "Vector 090" = send it toward
 	// the 090 mark. Heading 0=North, 90=East (X=East, Y=North). - TripleA
@@ -1989,16 +2003,52 @@ void AClearanceSimulationController::DrawDebugView()
 	// view belongs on the operator's scope - the future 2D UI on the player's display.
 	// For dev visibility, what the radar "knows" is still surfaced as text in the
 	// readout below. - TripleA
-	const bool bRadarOn = Radar && Radar->IsEnabled();
-	if (bRadarOn)
+	// Sensor fusion: gather every UClearanceRadar (the Controller's own + every
+	// placed RadarSite actor), build one merged track per callsign by picking the
+	// most-recently-painted return, count how many sites currently see each
+	// contact, surface as [N/M] confidence in the readout. This is the "combined
+	// operator picture" - track quality scales with how many sensors agree. - TripleA
 	{
-		for (const FRadarTrack& Trk : Radar->GetTracks())
+		TArray<UClearanceRadar*> Radars;
+		if (Radar && Radar->IsEnabled()) { Radars.Add(Radar); }
+		if (UWorld* W = GetWorld())
 		{
-			const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(Trk.TruthCallsign) : EAlertLevel::None;
-			const FString IdLabel = Trk.bHasSecondary ? Trk.DisplayCallsign.ToString() : FString(TEXT("PRI"));
-			Readout += FString::Printf(TEXT("RDR %s  hdg %3.0f  alt %5.0f  spd %3.0f  conf %.0f%%%s\n"),
-				*IdLabel, Trk.Heading, Trk.Altitude, Trk.Speed,
-				Trk.Confidence * 100.f, Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""));
+			for (TActorIterator<AClearanceRadarSite> SIt(W); SIt; ++SIt)
+			{
+				if (*SIt && SIt->Radar && SIt->Radar->IsEnabled()) { Radars.Add(SIt->Radar); }
+			}
+		}
+
+		if (Radars.Num() > 0)
+		{
+			TMap<FName, FRadarTrack> Fused;
+			TMap<FName, int32> Sightings;
+			for (UClearanceRadar* R : Radars)
+			{
+				for (const FRadarTrack& T : R->GetTracks())
+				{
+					Sightings.FindOrAdd(T.TruthCallsign) += 1;
+					if (FRadarTrack* Existing = Fused.Find(T.TruthCallsign))
+					{
+						if (T.LastPaintTime > Existing->LastPaintTime) { *Existing = T; }
+					}
+					else
+					{
+						Fused.Add(T.TruthCallsign, T);
+					}
+				}
+			}
+
+			for (const TPair<FName, FRadarTrack>& Pair : Fused)
+			{
+				const FRadarTrack& Trk = Pair.Value;
+				const int32 Seen = Sightings[Pair.Key];
+				const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(Trk.TruthCallsign) : EAlertLevel::None;
+				const FString IdLabel = Trk.bHasSecondary ? Trk.DisplayCallsign.ToString() : FString(TEXT("PRI"));
+				Readout += FString::Printf(TEXT("RDR %s [%d/%d]  hdg %3.0f  alt %5.0f  spd %3.0f  conf %.0f%%%s\n"),
+					*IdLabel, Seen, Radars.Num(), Trk.Heading, Trk.Altitude, Trk.Speed,
+					Trk.Confidence * 100.f, Alert != EAlertLevel::None ? TEXT(" <CONF>") : TEXT(""));
+			}
 		}
 	}
 

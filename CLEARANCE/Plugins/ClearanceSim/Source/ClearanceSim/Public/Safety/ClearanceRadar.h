@@ -65,6 +65,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Tuning")
 	float TrackFadeSeconds = 8.f;
 
+	// Where this radar sits in sim coordinates (nm). Default (0,0) = sector centre,
+	// which matches the original single-radar behaviour. Multiple radars at
+	// different sites can set this independently. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Tuning")
+	FVector2D SitePositionNm = FVector2D::ZeroVector;
+
+	// Human-readable name for the radar site (shown in fused track tags).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Tuning")
+	FName SiteName = TEXT("CENTRE");
+
 private:
 	UPROPERTY()
 	TObjectPtr<AClearanceAirspaceManager> Manager;

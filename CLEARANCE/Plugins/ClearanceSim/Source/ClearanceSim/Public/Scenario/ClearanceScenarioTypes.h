@@ -178,6 +178,13 @@ struct CLEARANCESIM_API FScenarioMetadata
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario")
 	FString Difficulty;
+
+	// If true, the runner leaves the level's placed RestrictedArea + ViolationZone
+	// actors active during the scenario. Hijack-style scenarios depend on the
+	// hostile-vs-zone catastrophe path; pure intercept scenarios suspend zones
+	// so unrelated level geometry doesn't pollute the run. Default false. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario")
+	bool bKeepLevelZones = false;
 };
 
 // Top-level container - one JSON file maps to one of these. - TripleA

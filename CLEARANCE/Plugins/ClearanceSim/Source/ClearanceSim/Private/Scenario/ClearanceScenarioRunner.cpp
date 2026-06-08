@@ -169,6 +169,7 @@ bool UClearanceScenarioRunner::LoadFromFile(const FString& AbsolutePath, FString
 		Scenario.Metadata.Location   = GetStr(*MetaObj, TEXT("location"));
 		Scenario.Metadata.ROE        = GetStr(*MetaObj, TEXT("roe"));
 		Scenario.Metadata.Difficulty = GetStr(*MetaObj, TEXT("difficulty"));
+		Scenario.Metadata.bKeepLevelZones = GetBool(*MetaObj, TEXT("keepLevelZones"), false);
 	}
 
 	// environment
@@ -293,7 +294,7 @@ void UClearanceScenarioRunner::Start()
 	{
 		bPrevAutoSpawn = Controller->bAutoSpawn;
 		Controller->SetAutoSpawn(false);
-		Controller->bZoneChecksSuspended = true;
+		Controller->bZoneChecksSuspended = !Scenario.Metadata.bKeepLevelZones;
 	}
 
 	ApplyEnvironment();

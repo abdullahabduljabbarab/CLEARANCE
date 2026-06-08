@@ -487,7 +487,7 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 				bTakeoffIssued = true;
 			}
 		}
-		else if (T == TEXT("contact") || T == TEXT("leave"))
+		else if (T == TEXT("contact") || T == TEXT("leave") || T == TEXT("exit") || T == TEXT("divert"))
 		{
 			if (!bExitIssued)
 			{

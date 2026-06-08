@@ -1,0 +1,114 @@
+{
+  "metadata": {
+    "id": "baltic_intercept",
+    "name": "Baltic Intercept",
+    "brief": "Scandinavian Airlines flight SK238 westbound through the Baltic corridor at FL330. Unknown contact closing from the east at low altitude with IFF off, vectoring toward the airliner. Identify, classify, scramble alert flight. ROE: VID before declaring hostile; civilian aircraft has active IFF.",
+    "location": "Baltic Sea, Latvia FIR",
+    "roe": "Type 1 unknown intercept. VID before declaring hostile. Avoid mis-identification at all costs.",
+    "difficulty": "Medium"
+  },
+
+  "environment": {
+    "windDirectionDeg": 260,
+    "windSpeedKts": 18,
+    "activeRunwayHeadingDeg": 270
+  },
+
+  "initialSpawns": [
+    {
+      "callsign": "SK238",
+      "type": "MEDIUM",
+      "positionNm": { "x": 75, "y": 0 },
+      "headingDeg": 270,
+      "speedKts": 280,
+      "altitudeFt": 33000,
+      "squawk": 1234,
+      "threat": "Friendly",
+      "iff": true
+    }
+  ],
+
+  "timedEvents": [
+    {
+      "atSec": 25,
+      "action": {
+        "type": "injectMessage",
+        "params": {
+          "callsign": "AWACS",
+          "voice": "en-US-EricNeural",
+          "text": "Magic, new contact, east of the sector, in trail of Scandinavian, low altitude, no IFF, closing from behind."
+        }
+      }
+    },
+    {
+      "atSec": 30,
+      "action": {
+        "type": "spawn",
+        "params": {
+          "callsign": "UNKNOWN01",
+          "type": "FIGHTER",
+          "x": 110,
+          "y": 8,
+          "headingDeg": 270,
+          "speedKts": 300,
+          "altitudeFt": 8000,
+          "squawk": 0,
+          "threat": "Unknown",
+          "iff": false
+        }
+      }
+    },
+    {
+      "atSec": 32,
+      "action": {
+        "type": "pursue",
+        "params": { "hunter": "UNKNOWN01", "target": "SK238" }
+      }
+    }
+  ],
+
+  "triggers": [
+    {
+      "id": "warn_inside_25nm",
+      "once": true,
+      "when": {
+        "type": "distanceBetween",
+        "params": { "a": "SK238", "b": "UNKNOWN01", "lessThanNm": 25 }
+      },
+      "then": {
+        "type": "injectMessage",
+        "params": {
+          "callsign": "AWACS",
+          "voice": "en-US-EricNeural",
+          "text": "Magic, unknown closing on Scandinavian inside twenty five miles. Recommend immediate intercept."
+        }
+      }
+    },
+    {
+      "id": "engagement_window_failed",
+      "once": true,
+      "when": {
+        "type": "distanceBetween",
+        "params": { "a": "SK238", "b": "UNKNOWN01", "lessThanNm": 5 }
+      },
+      "then": {
+        "type": "logIncident",
+        "params": {
+          "note": "UNKNOWN01 closed inside 5nm of civilian airliner SK238 before intercept established. Critical doctrine failure."
+        }
+      }
+    },
+    {
+      "id": "scenario_complete_on_exit",
+      "once": true,
+      "when": {
+        "type": "aircraftCount",
+        "params": { "op": "eq", "count": 0 }
+      },
+      "then": {
+        "type": "finishScenario",
+        "params": {}
+      }
+    }
+  ]
+}

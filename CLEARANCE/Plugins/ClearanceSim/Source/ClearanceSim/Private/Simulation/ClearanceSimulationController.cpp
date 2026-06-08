@@ -11,6 +11,7 @@
 #include "Comms/ClearanceVoiceOutput.h"
 #include "Safety/ClearanceConflictDetector.h"
 #include "Safety/ClearanceRadarSite.h"
+#include "Scenario/ClearanceScenarioRunner.h"
 #include "Safety/ClearanceRadar.h"
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
@@ -111,6 +112,9 @@ void AClearanceSimulationController::InitialiseSystems()
 		Radar->SitePositionNm        = FVector2D::ZeroVector; // sector origin
 		Radar->SiteName              = CentralRadarSiteName;
 	}
+
+	ScenarioRunner = NewObject<UClearanceScenarioRunner>(this);
+	if (ScenarioRunner) { ScenarioRunner->SetReferences(this, AirspaceManager); }
 
 	if (AirspaceManager)
 	{
@@ -313,10 +317,14 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
 	SessionTime += SimDelta;
 
+	// Scenario runner advances on sim time so a 10x time-scaled session reaches
+	// scripted moments 10x faster - matches authoring intuition. - TripleA
+	if (ScenarioRunner && ScenarioRunner->IsRunning()) { ScenarioRunner->Tick(SimDelta); }
+
 	// Violation zone check: any declared-hostile aircraft inside a protected zone
 	// fires a catastrophic ViolationZoneBreached incident (mirror of mis-ID). One-
 	// shot per (zone, aircraft) pair so a stuck hostile doesn't spam the score. - TripleA
-	if (AirspaceManager && GetWorld())
+	if (AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 	{
 		TArray<AClearanceViolationZone*> Zones;
 		for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
@@ -371,7 +379,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	// One-shot per (area, aircraft) pair. NOT a doctrine failure (no -1000) - just
 	// a controller screw-up the operator should have prevented by vectoring around
 	// it. - TripleA
-	if (AirspaceManager && GetWorld())
+	if (AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 	{
 		TArray<AClearanceRestrictedArea*> Areas;
 		for (TActorIterator<AClearanceRestrictedArea> AIt(GetWorld()); AIt; ++AIt) { Areas.Add(*AIt); }
@@ -933,6 +941,69 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	}
 }
 
+bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergencyType Kind)
+{
+	if (!AirspaceManager || Kind == EEmergencyType::None) { return false; }
+	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+	if (!S.bIsValid) { return false; }
+	if (S.ActiveEmergency != EEmergencyType::None) { return false; } // already emergency
+
+	int32 NewSquawk = S.SquawkCode;
+	switch (Kind)
+	{
+	case EEmergencyType::GeneralMayday:
+		S.ActiveEmergency = EEmergencyType::GeneralMayday;
+		NewSquawk = 7700;
+		S.EmergencyDetail = TEXT("scripted mayday");
+		break;
+	case EEmergencyType::CommsFailure:
+		S.ActiveEmergency = EEmergencyType::CommsFailure;
+		NewSquawk = 7600;
+		break;
+	case EEmergencyType::Hijack:
+		S.ActiveEmergency = EEmergencyType::Hijack;
+		NewSquawk = 7500;
+		break;
+	case EEmergencyType::FuelLow:
+		S.ActiveEmergency = EEmergencyType::FuelLow;
+		S.FuelRemainingMinutes = FuelEmergencyMinutes;
+		break;
+	default:
+		return false;
+	}
+	S.SquawkCode = NewSquawk;
+	S.EmergencyDeclaredAtSeconds = SessionTime;
+
+	// 7600 follows the same lost-comms auto-procedure as the randomly-injected path:
+	// turn for the active runway, descend to pattern altitude, FlightPhase=Approach. - TripleA
+	if (S.ActiveEmergency == EEmergencyType::CommsFailure)
+	{
+		const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+		if (Env.ActiveRunwayHeading >= 0.f)
+		{
+			const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+			const FVector2D Here(S.Position.X, S.Position.Y);
+			const float HRad = FMath::DegreesToRadians(Env.ActiveRunwayHeading);
+			const FVector2D Loc(FMath::Sin(HRad), FMath::Cos(HRad));
+			const FVector2D Gate = Threshold - Loc * 10.f;
+			const FVector2D Toward = (Gate - Here).GetSafeNormal();
+			S.TargetHeading = FMath::RadiansToDegrees(FMath::Atan2(Toward.X, Toward.Y));
+			if (S.TargetHeading < 0.f) { S.TargetHeading += 360.f; }
+			S.TargetAltitude = 3000.f;
+			S.FlightPhase = EFlightPhase::Approach;
+		}
+	}
+
+	AirspaceManager->RequestStateUpdate(S);
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(
+			TEXT("EMERGENCY (scripted) - %s declared %d squawk %d"),
+			*Callsign.ToString(), (int32)Kind, NewSquawk));
+	}
+	return true;
+}
+
 bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass& OutClass, int32& OutSquawk)
 {
 	OutClass = EThreatClass::Unknown;
@@ -946,6 +1017,15 @@ bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass
 	{
 		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red,
 			FString::Printf(TEXT("IFF %s: NO RESPONSE"), *Callsign.ToString())); }
+		// Audible "dead air" cue - short static burst so the operator hears the silence,
+		// not just reads it. Routes through any placed VoiceOutput. - TripleA
+		if (GetWorld())
+		{
+			for (TActorIterator<AClearanceVoiceOutput> VIt(GetWorld()); VIt; ++VIt)
+			{
+				if (*VIt) { VIt->PlayStatic(0.8f); break; }
+			}
+		}
 		return false;
 	}
 	OutClass = S.ThreatClass;
@@ -1306,16 +1386,20 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 	// tight angular fan. Random angles around the whole ring put fighters on
 	// opposite sides of the sector - by the time #1 arrives, #2 and #3 are still
 	// crossing the whole map and the engagement breaks down. - TripleA
-	const float R = FMath::Max(10.f, ExitRadiusNm);
+	// Spawn the 3-ship at the sector boundary on the same bearing from origin as
+	// the bandit - the edge closest to the contact, reading as "the alert flight
+	// just crossed into our airspace." Head-on closure with the inbound bandit
+	// closes any meaningful gap at fighter speeds. - TripleA
+	const float SpawnR = FMath::Max(10.f, ExitRadiusNm);
 	const float BanditBearingDeg = FMath::Fmod(
 		FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X, Bandit.Position.Y)) + 360.f, 360.f);
-	const float FanDeg = 8.f; // total angular spread across the 3-ship at the boundary
+	const float FanDeg = 8.f;
 	int32 Launched = 0;
 	for (int32 i = 0; i < 3; ++i)
 	{
 		const float ADeg = FMath::Fmod(BanditBearingDeg + (i - 1) * (FanDeg * 0.5f) + 360.f, 360.f);
 		const float ARad = FMath::DegreesToRadians(ADeg);
-		const FVector Pos(R * FMath::Sin(ARad), R * FMath::Cos(ARad), 0.f);
+		const FVector Pos(SpawnR * FMath::Sin(ARad), SpawnR * FMath::Cos(ARad), 0.f);
 
 		const float Inbound = FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X - Pos.X, Bandit.Position.Y - Pos.Y));
 		const float Hdg = FMath::Fmod(Inbound + 360.f, 360.f);
@@ -1324,7 +1408,7 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 		FAircraftState V;
 		V.Callsign         = FName(*FString::Printf(TEXT("VIPER%02d"), Num));
 		V.Position         = Pos;
-		V.Altitude         = Bandit.Altitude; // match co-altitude on arrival so vertical join-up actually fires
+		V.Altitude         = Bandit.Altitude;
 		V.Heading          = Hdg;
 		V.Speed            = 620.f;
 		V.WakeCategory     = EWakeCategory::Medium;
@@ -1333,6 +1417,7 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 		V.SquawkCode       = 2200 + Num;
 		V.bIFFOperational  = true;
 		V.bIsMilitary      = true;
+		V.bUnderGCIControl = true; // skip the civilian safety net for the formation + the engagement
 		if (!AirspaceManager->RegisterAircraft(V)) { continue; }
 		if (VectorIntercept(V.Callsign, BanditCallsign)) { ++Launched; }
 	}
@@ -2005,6 +2090,16 @@ void AClearanceSimulationController::DrawDebugView()
 		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
 			Scoring->GetCurrentScore(),
 			nLand, nDep, nRes, nInt, nEmer, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, nCrash, nBust, Scoring->GetCurrentSpawnInterval());
+	}
+
+	if (ScenarioRunner && ScenarioRunner->IsRunning())
+	{
+		Readout += FString::Printf(TEXT("SCENARIO  %s  |  T+%02d:%02d  |  events %d/%d  triggers %d/%d\n"),
+			*ScenarioRunner->GetLoadedName(),
+			FMath::FloorToInt(ScenarioRunner->GetElapsedSeconds() / 60.f),
+			FMath::FloorToInt(ScenarioRunner->GetElapsedSeconds()) % 60,
+			ScenarioRunner->GetFiredEventCount(),  ScenarioRunner->GetTotalEventCount(),
+			ScenarioRunner->GetFiredTriggerCount(), ScenarioRunner->GetTotalTriggerCount());
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -2693,7 +2788,7 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 		// friendly), redirect it AT a random violation zone instead of leaving it
 		// pointed at sector centre. A real intruder has an objective - that's what
 		// makes the operator's intercept call meaningful. - TripleA
-		if (AirspaceManager && GetWorld())
+		if (AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 		{
 			const FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
 			if (S.bIsValid && !S.bIFFOperational && S.ThreatClass != EThreatClass::Friendly)
@@ -3269,6 +3364,62 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceRadarCmd(
 		{
 			const bool bOn = (Args.Num() < 1) ? true : (Args[0].ToLower() != TEXT("off") && Args[0] != TEXT("0"));
 			C->SetRadarEnabled(bOn);
+		}
+	}));
+
+// Resolved at runtime so dev-builds + packaged builds find the same Scenarios folder. - TripleA
+static FString ClearanceScenarioDir()
+{
+	return FPaths::ProjectPluginsDir() / TEXT("ClearanceSim/Scenarios");
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioListCmd(
+	TEXT("clearance.scenario.list"),
+	TEXT("clearance.scenario.list - list scenario .json files in Plugins/ClearanceSim/Scenarios"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* /*World*/)
+	{
+		const FString Dir = ClearanceScenarioDir();
+		TArray<FString> Found;
+		IFileManager::Get().FindFiles(Found, *(Dir / TEXT("*.json")), true, false);
+		if (Found.Num() == 0)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[Scenario] no .json files in %s"), *Dir);
+			return;
+		}
+		UE_LOG(LogTemp, Display, TEXT("[Scenario] %d scenario(s) in %s:"), Found.Num(), *Dir);
+		for (const FString& F : Found) { UE_LOG(LogTemp, Display, TEXT("  - %s"), *F); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioLoadCmd(
+	TEXT("clearance.scenario.load"),
+	TEXT("clearance.scenario.load <name> - load + start a scenario (name without .json)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.scenario.load <name>")); return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetScenarioRunner()) { UE_LOG(LogTemp, Warning, TEXT("[Scenario] controller / runner missing")); return; }
+
+		const FString Name = Args[0].EndsWith(TEXT(".json")) ? Args[0] : Args[0] + TEXT(".json");
+		const FString Path = ClearanceScenarioDir() / Name;
+		FString Err;
+		if (!C->GetScenarioRunner()->LoadFromFile(Path, Err))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[Scenario] load failed: %s"), *Err);
+			return;
+		}
+		C->ClearTraffic();
+		C->GetScenarioRunner()->Start();
+		UE_LOG(LogTemp, Display, TEXT("[Scenario] running: %s"), *C->GetScenarioRunner()->GetLoadedName());
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioStopCmd(
+	TEXT("clearance.scenario.stop"),
+	TEXT("clearance.scenario.stop - stop the running scenario"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			if (C->GetScenarioRunner()) { C->GetScenarioRunner()->Stop(); }
 		}
 	}));
 

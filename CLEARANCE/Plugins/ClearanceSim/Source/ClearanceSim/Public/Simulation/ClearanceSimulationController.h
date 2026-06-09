@@ -142,22 +142,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
 	void ClassifyAircraft(FName Callsign, EThreatClass NewClass);
 
-	// Inject an emergency on a named aircraft - used by the scenario runner to script
-	// scheduled emergencies. Mirrors the random-injection path: sets emergency type,
-	// squawk code, timestamp, and (for fuel) starting fuel. Comms-failure aircraft
-	// auto-fly the published lost-comms procedure on next tick. - TripleA
-	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
-	bool DeclareEmergencyOn(FName Callsign, EEmergencyType Kind);
-
-	UFUNCTION(BlueprintCallable, Category = "Simulation|Scenario")
-	class UClearanceScenarioRunner* GetScenarioRunner() const { return ScenarioRunner; }
-
-	// Scenario sets this true on Start() to disable all placed RestrictedArea +
-	// ViolationZone checks for the duration of the scripted run. Stops level-
-	// placed zones from polluting a scenario that didn't author them. - TripleA
-	UPROPERTY(BlueprintReadWrite, Category = "Simulation|Scenario")
-	bool bZoneChecksSuspended = false;
-
 	// IFF interrogation - returns the contact's true class + squawk if its IFF is on.
 	// Returns Unknown / 0 / false otherwise.
 	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
@@ -453,9 +437,6 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceRadar> Radar;
-
-	UPROPERTY()
-	TObjectPtr<class UClearanceScenarioRunner> ScenarioRunner;
 
 	bool bReplayMode = false;
 	bool bReplayPaused = false;

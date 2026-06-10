@@ -18,8 +18,7 @@ public class CLEARANCE : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate",
-			"ClearanceSim"
+			"Slate"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

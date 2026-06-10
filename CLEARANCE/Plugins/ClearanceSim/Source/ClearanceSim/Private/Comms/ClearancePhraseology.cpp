@@ -7,14 +7,19 @@
 
 namespace
 {
-	// Push a line to every peer's VoiceOutput so the pilot/aircraft (or alert
-	// flight, for GCI) actually speaks the readback on each client, not just on
-	// whichever machine the server's iterator happened to land on. Routes through
-	// the Controller's NetMulticast so all participants hear the same exchange. - TripleA
+	// Push a line to the first VoiceOutput actor in the level so the pilot/aircraft
+	// (or alert flight, for GCI) actually speaks the readback. Silent no-op if no
+	// VoiceOutput actor is placed. - TripleA
 	void SpeakOut(AClearanceSimulationController* Controller, FName Callsign, const FString& Text)
 	{
 		if (!Controller || Text.IsEmpty()) { return; }
-		Controller->Multicast_PlayTTS(Callsign, Text, FString(), /*bPanic*/ false);
+		UWorld* World = Controller->GetWorld();
+		if (!World) { return; }
+		for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+		{
+			if (*It) { It->Speak(Callsign, Text, FString()); }
+			break;
+		}
 	}
 
 	// System / controller voice for messages that aren't tied to a specific
@@ -24,7 +29,13 @@ namespace
 	void SpeakAsController(AClearanceSimulationController* Controller, const FString& Text)
 	{
 		if (!Controller || Text.IsEmpty()) { return; }
-		Controller->Multicast_PlayTTS(NAME_None, Text, TEXT("en-US-EricNeural"), /*bPanic*/ false);
+		UWorld* World = Controller->GetWorld();
+		if (!World) { return; }
+		for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+		{
+			if (*It) { It->Speak(NAME_None, Text, TEXT("en-US-EricNeural")); }
+			break;
+		}
 	}
 
 	bool IsAllDigits(const FString& S)
@@ -476,7 +487,7 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 				bTakeoffIssued = true;
 			}
 		}
-		else if (T == TEXT("contact") || T == TEXT("leave") || T == TEXT("exit") || T == TEXT("divert"))
+		else if (T == TEXT("contact") || T == TEXT("leave"))
 		{
 			if (!bExitIssued)
 			{

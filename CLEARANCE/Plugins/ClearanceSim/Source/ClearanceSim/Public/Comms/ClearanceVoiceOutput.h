@@ -86,11 +86,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice")
 	float Volume = 1.f;
 
-	// Local mute switch - per-world, so in PIE you can silence the server window
-	// and just listen to the client (handy for verifying replication paths). - TripleA
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice")
-	bool bMuted = false;
-
 	// Apply a radio-comms colour to the synthesised voice: bandpass to phone band
 	// (~300Hz - 3kHz), light noise floor, soft saturation. Makes the clean TTS
 	// sound like it's coming through the operator's headset rather than a studio

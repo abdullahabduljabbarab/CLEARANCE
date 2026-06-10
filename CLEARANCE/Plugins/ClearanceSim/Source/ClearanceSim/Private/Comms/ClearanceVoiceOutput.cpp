@@ -279,17 +279,10 @@ namespace
 	FString TTSize(FString In)
 	{
 		static const TMap<FString, FString> Reverse = {
-			{TEXT("BAW"),     TEXT("speedbird")},
-			{TEXT("DLH"),     TEXT("lufthansa")},
-			{TEXT("UAL"),     TEXT("united")},
-			{TEXT("AAL"),     TEXT("american")},
-			{TEXT("UAE"),     TEXT("emirates")},
-			{TEXT("AFR"),     TEXT("air france")},
-			{TEXT("VIPER"),   TEXT("viper")},
-			{TEXT("UNKNOWN"), TEXT("unknown")}
-			// Don't add a "UNK" entry - the substitution loop runs ReplaceInline
-			// without word boundaries, so "UNK" matches inside "unknown" produced
-			// by the line above and corrupts it to "unknownnown". - TripleA
+			{TEXT("BAW"), TEXT("speedbird")}, {TEXT("DLH"), TEXT("lufthansa")},
+			{TEXT("UAL"), TEXT("united")},    {TEXT("AAL"), TEXT("american")},
+			{TEXT("UAE"), TEXT("emirates")},  {TEXT("AFR"), TEXT("air france")},
+			{TEXT("VIPER"), TEXT("viper")},   {TEXT("UNK"), TEXT("unknown")}
 		};
 		// Longest-key-first so "VIPER" beats a "V" prefix match.
 		TArray<FString> Keys;
@@ -371,7 +364,6 @@ void AClearanceVoiceOutput::Speak(FName Callsign, const FString& Text, const FSt
 
 void AClearanceVoiceOutput::EnqueueSpeech(FName Callsign, const FString& Text, const FString& VoiceTag, bool bPanic, bool bStatic, float StaticDuration)
 {
-	if (bMuted) { return; }
 	if (!bStatic && Text.TrimStartAndEnd().IsEmpty()) { return; }
 	if ( bStatic && StaticDuration <= 0.f) { return; }
 	FPendingSpeak P;

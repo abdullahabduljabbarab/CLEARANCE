@@ -294,13 +294,6 @@ struct CLEARANCESIM_API FAircraftState
 	// flies this heading, the outbound is the reciprocal.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hold")
 	float HoldInboundHeading = 0.f;
-
-	// Highest conflict alert this aircraft is involved in. Computed server-side
-	// by UClearanceConflictDetector and stamped into the state each tick so it
-	// rides the replication stream out to clients. The client doesn't run a
-	// detector of its own - it just colours the debug overlay from this. - TripleA
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Conflict")
-	EAlertLevel CurrentAlertLevel = EAlertLevel::None;
 };
 
 /** A single instruction targeted at one aircraft. */

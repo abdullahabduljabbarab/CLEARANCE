@@ -91,12 +91,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Airspace|Settings")
 	float MinSafeSpeed = 0.f;
 
-	// Global cap covering civilian + military envelopes. Per-category clamps in
-	// the Behaviour layer keep airliners at their own MaxOperatingSpeed; this is
-	// only the airspace-wide sanity bound. Military Vmax is 1050kts so 1100
-	// leaves headroom for transonic overshoot during accel. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Airspace|Settings")
-	float MaxSafeSpeed = 1100.f;
+	float MaxSafeSpeed = 600.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Airspace|Environment")
 	float DefaultWindDirection = 0.f;
@@ -109,37 +105,18 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
-	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
-	// Authoritative server-side store - fast O(1) lookup by callsign. Clients
-	// don't see this; they read ReplicatedAircraft via OnRep. - TripleA
 	UPROPERTY()
 	TMap<FName, FAircraftState> AircraftStates;
 
-	// Flat replication mirror. Every server-side write to AircraftStates writes
-	// here too; clients receive this and rebuild their local TMap in OnRep so
-	// non-rendering systems that read it (visual layer, scope) keep working. - TripleA
-	UPROPERTY(ReplicatedUsing = OnRep_ReplicatedAircraft)
-	TArray<FAircraftState> ReplicatedAircraft;
-
-	UFUNCTION()
-	void OnRep_ReplicatedAircraft();
-
-	UPROPERTY(Replicated)
+	UPROPERTY()
 	FSectorEnvironment SectorEnvironment;
 
-	// Replicated so the client's debug draw (sector boundary, glideslope, runway
-	// markings) lines up with where the server placed the strips. - TripleA
-	UPROPERTY(Replicated)
 	TArray<FRunwayInfo> Runways;
 
 	bool ValidateState(const FAircraftState& State) const;
 	void ClampStateValues(FAircraftState& State) const;
-
-	// Keeps ReplicatedAircraft in lockstep with AircraftStates. Called after every
-	// server-side mutation. - TripleA
-	void RebuildReplicatedArray();
 
 	// Picks the runway with the least crosswind for the current wind, with a
 	// dead-band so a wind hovering near a boundary doesn't flip the runway every

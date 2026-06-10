@@ -35,11 +35,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Spawner")
 	void SetAutoSpawn(bool bEnabled);
 
-	// Scenarios call this to halt the spawner for the duration of a scripted run
-	// without affecting the user's bAutoSpawn preference. - TripleA
-	UFUNCTION(BlueprintCallable, Category = "Spawner")
-	void SetScenarioLocked(bool bLocked);
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spawner|Settings")
 	int32 MaxConcurrentAircraft = 10;
 
@@ -64,10 +59,6 @@ private:
 	TObjectPtr<AClearanceAirspaceManager> Manager;
 
 	bool bAutoSpawn = true;
-	// Independent of bAutoSpawn - scenarios set this to halt the spawner without
-	// touching the user's free-play preference. Spawner spawns only when BOTH
-	// bAutoSpawn=true AND bScenarioLocked=false. - TripleA
-	bool bScenarioLocked = false;
 	float CurrentSpawnIntervalSeconds = 30.f;
 	float SpawnTimer = 0.f;
 	int32 CallsignCounter = 0;

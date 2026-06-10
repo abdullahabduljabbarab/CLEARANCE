@@ -71,6 +71,19 @@ struct FSpawnedAircraftVisual
 	float YawOffsetDeg = 0.f;
 };
 
+// One entry in the player-facing notification ring. Server pushes, replicates
+// down, client HUD draws the recent ones with a fade based on age. - TripleA
+USTRUCT(BlueprintType)
+struct FClearanceNotification
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Text;
+	UPROPERTY(BlueprintReadOnly) float ServerTimeAdded = 0.f;
+	UPROPERTY(BlueprintReadOnly) FColor Colour = FColor::White;
+	UPROPERTY(BlueprintReadOnly) float LifetimeSec = 6.f;
+};
+
 // The conductor. Creates and owns every system, binds them together with
 // delegates, owns the per-aircraft Behaviour objects, and runs the authoritative
 // tick order each frame. This is the one Actor you drop in a level to run the sim.
@@ -141,6 +154,67 @@ public:
 	// Operator manually classifies a contact (e.g. after IFF interrogation or VID).
 	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
 	void ClassifyAircraft(FName Callsign, EThreatClass NewClass);
+
+	// Inject an emergency on a named aircraft - used by the scenario runner to script
+	// scheduled emergencies. Mirrors the random-injection path: sets emergency type,
+	// squawk code, timestamp, and (for fuel) starting fuel. Comms-failure aircraft
+	// auto-fly the published lost-comms procedure on next tick. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
+	bool DeclareEmergencyOn(FName Callsign, EEmergencyType Kind);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Scenario")
+	class UClearanceScenarioRunner* GetScenarioRunner() const { return ScenarioRunner; }
+
+	// ----- Replicated voice / cockpit audio (Phase 6) -------------------------
+	// Server hits these to push pilot readbacks, mayday calls, GPWS alarms, and
+	// radio-static cues out to every peer. Each client has its own placed
+	// AClearanceVoiceOutput actor (with its own local Piper TTS server), so the
+	// payload is just the line + voice tag - each peer synthesises its own audio
+	// locally. Far cheaper than shipping PCM blobs and keeps every machine in
+	// sync with what the server "hears". - TripleA
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_PlayTTS(FName Callsign, const FString& Text, const FString& VoiceTag, bool bPanic);
+
+	// Cockpit cues that aren't synthesised lines - 0 = radio static (Duration =
+	// seconds), 1 = GPWS terrain alarm for the named callsign. - TripleA
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_PlayCockpitCue(FName Callsign, uint8 Kind, float Duration);
+
+	// ----- Instructor station server RPCs ------------------------------------
+	// Clients (instructor station) call these to mutate the authoritative sim.
+	// All inject paths route through here so the server stays the only writer. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectEmergency(FName Callsign, EEmergencyType Kind);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectClassify(FName Callsign, EThreatClass NewClass);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectScramble(FName BanditCallsign);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectSetWind(float DirectionDeg, float SpeedKts);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectSpawn();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectClearTraffic();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectLoadScenario(const FString& ScenarioName);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectStopScenario();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectSetPaused(bool bNewPaused);
+
+	// Scenario sets this true on Start() to disable all placed RestrictedArea +
+	// ViolationZone checks for the duration of the scripted run. Stops level-
+	// placed zones from polluting a scenario that didn't author them. - TripleA
+	UPROPERTY(BlueprintReadWrite, Category = "Simulation|Scenario")
+	bool bZoneChecksSuspended = false;
 
 	// IFF interrogation - returns the contact's true class + squawk if its IFF is on.
 	// Returns Unknown / 0 / false otherwise.
@@ -232,6 +306,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceConflictDetector* GetConflictDetector() const { return ConflictDetector; }
 
+	// HUD pulls the latest readout/diagnostic text from these each frame. We stop
+	// writing to GEngine's on-screen-debug queue because PIE multi-window renders
+	// it inconsistently per viewport. - TripleA
+	UPROPERTY(BlueprintReadOnly, Category = "Simulation|HUD")
+	FString CurrentReadout;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Simulation|HUD")
+	FString CurrentDiagLine;
+
 	// Start automatically on BeginPlay (handy for testing - just press Play).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	bool bAutoStart = true;
@@ -286,9 +369,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	float SimulationTimeScale = 10.f;
 
-	// Spawning controls. For testing one aircraft, set MaxConcurrentAircraft = 1
-	// (no new plane spawns until the current one leaves) or untick bAutoSpawn and
-	// use the clearance.spawn console command.
+	// On by default for free-play sessions. Scenarios independently lock the
+	// spawner via bSpawnerScenarioLocked so this stays a clean user preference. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Spawning")
 	bool bAutoSpawn = true;
 
@@ -299,8 +381,105 @@ public:
 	int32 MaxConcurrentAircraft = 10;
 
 	// Optional: assign placed actors in the level; otherwise they're spawned.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Refs")
+	// Replicated so the client's controller can find the (also replicated) Manager
+	// without doing its own TActorIterator. Server sets it on spawn, clients OnRep. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_AirspaceManager, Category = "Simulation|Refs")
 	TObjectPtr<AClearanceAirspaceManager> AirspaceManager;
+
+	UFUNCTION()
+	void OnRep_AirspaceManager();
+
+	// ----- Replicated scenario state (Phase 3) ---------------------------------
+	// Server mirrors ScenarioRunner state into these every tick so the client's
+	// DrawDebugView can show the SCENARIO line without having a ScenarioRunner
+	// instance (it's server-only). - TripleA
+
+	UPROPERTY(Replicated)
+	bool bRepScenarioRunning = false;
+
+	UPROPERTY(Replicated)
+	FString RepScenarioName;
+
+	UPROPERTY(Replicated)
+	float RepScenarioElapsedSec = 0.f;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioFiredEvents = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioTotalEvents = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioFiredTriggers = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioTotalTriggers = 0;
+
+	// ----- Replicated notification ring buffer (Phase 5) -----------------------
+	// Player-facing alerts (conflicts, scenario events, score deltas). The HUD
+	// reads this and draws the most recent N entries with fade-out. Server pushes
+	// via PushNotification, clients receive via replication. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FClearanceNotification> RepNotifications;
+
+	// Push a player-facing alert into the ring buffer. Server-only; replicates
+	// down. Trims oldest if buffer exceeds 12 entries. - TripleA
+	void PushNotification(const FString& Text, FColor Colour = FColor::White, float LifetimeSec = 6.f);
+
+	// ----- Replicated score state (Phase 4) ------------------------------------
+	// Mirror of UClearanceScoring counters so the client's SCORING line +
+	// main CLEARANCE line (score, eff) show server truth instead of zeroes. - TripleA
+
+	UPROPERTY(Replicated)
+	int32 RepScoreTotal = 0;
+
+	UPROPERTY(Replicated)
+	float RepScoreEfficiencyPct = 100.f;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreLandings = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreDepartures = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreResolved = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreIntercepts = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreEmergencies = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreGoArounds = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreSepLoss = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreWake = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreTCAS = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreStrayed = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreMisID = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreViolated = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreCrashed = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreBusted = 0;
+
+	UPROPERTY(Replicated)
+	float RepScoreNextSpawnSec = 0.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Refs")
 	TObjectPtr<AClearanceAircraftSpawner> Spawner;
@@ -326,6 +505,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Spawning")
 	void SetAutoSpawn(bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Spawning")
+	void SetSpawnerScenarioLocked(bool bLocked);
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Spawning")
 	bool SpawnOne();
@@ -412,6 +594,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
 	UPROPERTY()
@@ -437,6 +620,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceRadar> Radar;
+
+	UPROPERTY()
+	TObjectPtr<class UClearanceScenarioRunner> ScenarioRunner;
 
 	bool bReplayMode = false;
 	bool bReplayPaused = false;
@@ -486,6 +672,11 @@ private:
 	// Joined fighters that have actually flown into their formation slot - from here
 	// they're glued to it; before, they fly themselves in via normal behaviour.
 	TSet<FName> SettledInFormation;
+
+	// Aircraft that have actually been inside the sector at least once. CheckExits
+	// only deregisters "stray" aircraft that LEFT - aircraft that spawned outside
+	// (scenario incoming traffic) get a free pass until they've actually entered. - TripleA
+	TSet<FName> EverEnteredSector;
 
 	// Monotonic counter so each SCRAMBLE allocates fresh VIPER### callsigns - two
 	// scrambles in the same session need different IDs or the second one's

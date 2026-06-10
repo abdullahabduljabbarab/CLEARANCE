@@ -1,14 +1,108 @@
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Core/ClearanceConstants.h"
+#include "Net/UnrealNetwork.h"
 
 AClearanceAirspaceManager::AClearanceAirspaceManager()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	bReplicates = true;
+	bAlwaysRelevant = true; // shared state for every connected operator - no relevance culling
+}
+
+void AClearanceAirspaceManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AClearanceAirspaceManager, ReplicatedAircraft);
+	DOREPLIFETIME(AClearanceAirspaceManager, SectorEnvironment);
+	DOREPLIFETIME(AClearanceAirspaceManager, Runways);
+}
+
+void AClearanceAirspaceManager::OnRep_ReplicatedAircraft()
+{
+	// Server is the authority - OnRep should never run server-side, but UE
+	// sometimes fires it on the listen-server host in PIE multi-process setups.
+	// Bail out so we don't mutate server-side AircraftStates from a stale view
+	// of ReplicatedAircraft (which is what's making DLH101 re-appear after the
+	// scenario clears it). - TripleA
+	if (HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AirspaceMgr] OnRep fired on AUTHORITY - skipping (would have overwritten server state)"));
+		return;
+	}
+
+	// SNAPSHOT the replicated array first - delegates fired below can re-enter
+	// (HandleAircraftRegistered spawns actors which can trigger more replication
+	// callbacks), and a ranged-for over ReplicatedAircraft would crash with
+	// "Array has changed during ranged-for iteration!". - TripleA
+	const TArray<FAircraftState> Snapshot = ReplicatedAircraft;
+
+	FString Dbg;
+	for (const FAircraftState& S : Snapshot)
+	{
+		Dbg += FString::Printf(TEXT(" %s"), *S.Callsign.ToString());
+	}
+	UE_LOG(LogTemp, Display, TEXT("[NET RepAircraft] count=%d%s"), Snapshot.Num(), *Dbg);
+
+	TSet<FName> SeenNow;
+	for (const FAircraftState& S : Snapshot)
+	{
+		if (S.Callsign == NAME_None) { continue; }
+		SeenNow.Add(S.Callsign);
+		const bool bWasPresent = AircraftStates.Contains(S.Callsign);
+		AircraftStates.Add(S.Callsign, S);
+		if (bWasPresent)
+		{
+			OnAircraftStateUpdated.Broadcast(S.Callsign);
+		}
+		else
+		{
+			OnAircraftRegistered.Broadcast(S.Callsign);
+		}
+	}
+
+	TArray<FName> Gone;
+	for (const TPair<FName, FAircraftState>& Pair : AircraftStates)
+	{
+		if (!SeenNow.Contains(Pair.Key)) { Gone.Add(Pair.Key); }
+	}
+	for (const FName& K : Gone)
+	{
+		AircraftStates.Remove(K);
+		OnAircraftDeregistered.Broadcast(K);
+	}
+}
+
+void AClearanceAirspaceManager::RebuildReplicatedArray()
+{
+	ReplicatedAircraft.Reset(AircraftStates.Num());
+	for (const TPair<FName, FAircraftState>& Pair : AircraftStates)
+	{
+		ReplicatedAircraft.Add(Pair.Value);
+	}
+	// Trace with world NetMode so we can finally tell which actor (server vs
+	// client local) is rebuilding. Two PIE windows have actors with the SAME
+	// name in DIFFERENT worlds. - TripleA
+	const TCHAR* RoleStr = TEXT("?");
+	if (UWorld* W = GetWorld())
+	{
+		RoleStr = W->GetNetMode() == NM_Client ? TEXT("CLIENT-WORLD")
+		        : W->GetNetMode() == NM_ListenServer ? TEXT("SERVER-WORLD")
+		        : W->GetNetMode() == NM_DedicatedServer ? TEXT("DEDSRV")
+		        : TEXT("STANDALONE");
+	}
+	FString Dump;
+	for (const FAircraftState& S : ReplicatedAircraft) { Dump += FString::Printf(TEXT(" %s"), *S.Callsign.ToString()); }
+	UE_LOG(LogTemp, Warning, TEXT("[REBUILD %s] %s[ac=%d]%s"), RoleStr, *GetName(), ReplicatedAircraft.Num(), *Dump);
 }
 
 void AClearanceAirspaceManager::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Server initialises the environment; clients receive it via replication.
+	// Without this gate the client would overwrite the replicated wind/runway
+	// with its defaults (0/0) on join and pick the wrong active strip. - TripleA
+	if (!HasAuthority()) { return; }
 
 	SectorEnvironment.WindDirection = DefaultWindDirection;
 	SectorEnvironment.WindSpeed = DefaultWindSpeed;
@@ -19,6 +113,15 @@ void AClearanceAirspaceManager::BeginPlay()
 
 bool AClearanceAirspaceManager::RegisterAircraft(const FAircraftState& NewAircraft)
 {
+	// Authoritative mutation - clients only ever receive state via OnRep_ReplicatedAircraft.
+	// If something on the client tries to call in here (rogue console, replicated delegate,
+	// behaviour spawned client-side), we want to know about it AND refuse to mutate. - TripleA
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AirspaceMgr] BLOCKED RegisterAircraft on CLIENT for callsign %s"), *NewAircraft.Callsign.ToString());
+		return false;
+	}
+
 	if (!ValidateState(NewAircraft))
 	{
 		return false;
@@ -40,14 +143,24 @@ bool AClearanceAirspaceManager::RegisterAircraft(const FAircraftState& NewAircra
 	State.TimeEnteredSector = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
 
 	AircraftStates.Add(State.Callsign, State);
+	RebuildReplicatedArray();
+	UE_LOG(LogTemp, Warning, TEXT("[REGISTER] %s (count now %d)"), *State.Callsign.ToString(), AircraftStates.Num());
 	OnAircraftRegistered.Broadcast(State.Callsign);
 	return true;
 }
 
 bool AClearanceAirspaceManager::DeregisterAircraft(FName Callsign)
 {
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AirspaceMgr] BLOCKED DeregisterAircraft on CLIENT for callsign %s"), *Callsign.ToString());
+		return false;
+	}
+
 	if (AircraftStates.Remove(Callsign) > 0)
 	{
+		RebuildReplicatedArray();
+		UE_LOG(LogTemp, Warning, TEXT("[DEREGISTER] %s (count now %d)"), *Callsign.ToString(), AircraftStates.Num());
 		OnAircraftDeregistered.Broadcast(Callsign);
 		return true;
 	}
@@ -56,6 +169,12 @@ bool AClearanceAirspaceManager::DeregisterAircraft(FName Callsign)
 
 bool AClearanceAirspaceManager::RequestStateUpdate(const FAircraftState& UpdatedState)
 {
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AirspaceMgr] BLOCKED RequestStateUpdate on CLIENT for callsign %s"), *UpdatedState.Callsign.ToString());
+		return false;
+	}
+
 	FAircraftState* Existing = AircraftStates.Find(UpdatedState.Callsign);
 	if (!Existing)
 	{
@@ -73,6 +192,7 @@ bool AClearanceAirspaceManager::RequestStateUpdate(const FAircraftState& Updated
 	State.TimeEnteredSector = Existing->TimeEnteredSector; // registration-time fact, not the Behaviour's to change
 
 	*Existing = State;
+	RebuildReplicatedArray();
 	OnAircraftStateUpdated.Broadcast(State.Callsign);
 	return true;
 }
@@ -105,10 +225,17 @@ bool AClearanceAirspaceManager::IsCallsignRegistered(FName Callsign) const
 
 void AClearanceAirspaceManager::ClearAllAircraft()
 {
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AirspaceMgr] BLOCKED ClearAllAircraft on CLIENT"));
+		return;
+	}
+
 	TArray<FName> Callsigns;
 	AircraftStates.GenerateKeyArray(Callsigns);
 
 	AircraftStates.Empty();
+	RebuildReplicatedArray();
 
 	for (const FName& Callsign : Callsigns)
 	{

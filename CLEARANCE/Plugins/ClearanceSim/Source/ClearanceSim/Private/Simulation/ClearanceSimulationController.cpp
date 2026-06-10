@@ -11,6 +11,10 @@
 #include "Comms/ClearanceVoiceOutput.h"
 #include "Safety/ClearanceConflictDetector.h"
 #include "Safety/ClearanceRadarSite.h"
+#include "Scenario/ClearanceScenarioRunner.h"
+#include "Simulation/ClearanceOperatorPC.h"
+#include "Net/UnrealNetwork.h"
+#include "Components/LineBatchComponent.h"
 #include "Safety/ClearanceRadar.h"
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
@@ -58,11 +62,20 @@ AClearanceSimulationController::AClearanceSimulationController()
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("SectorRoot"));
 	RootComponent = Root;
 	Root->SetMobility(EComponentMobility::Movable);
+
+	// Networked instructor station: the controller exists on clients as a stub so
+	// they can find it via TActorIterator and call replicated functions on it.
+	// All simulation work still happens server-side; clients just render. - TripleA
+	bReplicates = true;
+	bAlwaysRelevant = true;
 }
 
 void AClearanceSimulationController::BeginPlay()
 {
 	Super::BeginPlay();
+	// Server-only: the simulation lives here. Clients receive the world via the
+	// replicated AirspaceManager + Controller state and only render. - TripleA
+	if (!HasAuthority()) { return; }
 	InitialiseSystems();
 	if (bAutoStart)
 	{
@@ -111,6 +124,9 @@ void AClearanceSimulationController::InitialiseSystems()
 		Radar->SitePositionNm        = FVector2D::ZeroVector; // sector origin
 		Radar->SiteName              = CentralRadarSiteName;
 	}
+
+	ScenarioRunner = NewObject<UClearanceScenarioRunner>(this);
+	if (ScenarioRunner) { ScenarioRunner->SetReferences(this, AirspaceManager); }
 
 	if (AirspaceManager)
 	{
@@ -264,9 +280,126 @@ void AClearanceSimulationController::EndSession()
 	VisualActors.Empty();
 }
 
+void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AClearanceSimulationController, AirspaceManager);
+	DOREPLIFETIME(AClearanceSimulationController, bRepScenarioRunning);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioName);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioElapsedSec);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioFiredEvents);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioTotalEvents);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioFiredTriggers);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioTotalTriggers);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreTotal);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreEfficiencyPct);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreLandings);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreDepartures);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreResolved);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreIntercepts);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreEmergencies);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreGoArounds);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreSepLoss);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreWake);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreTCAS);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreStrayed);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreMisID);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreViolated);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreCrashed);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreBusted);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreNextSpawnSec);
+	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
+}
+
+void AClearanceSimulationController::PushNotification(const FString& Text, FColor Colour, float LifetimeSec)
+{
+	// Server is the sole writer; clients receive via replication. Trim oldest to
+	// keep the buffer bounded - the HUD only draws the recent dozen anyway. - TripleA
+	if (!HasAuthority()) { return; }
+
+	FClearanceNotification N;
+	N.Text = Text;
+	N.ServerTimeAdded = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	N.Colour = Colour;
+	N.LifetimeSec = LifetimeSec;
+	RepNotifications.Add(N);
+
+	while (RepNotifications.Num() > 12)
+	{
+		RepNotifications.RemoveAt(0);
+	}
+}
+
+// Multicast: pilot voice + mayday lines. Fires on the server and every
+// connected client. Each peer finds its own placed VoiceOutput actor (which
+// owns a local TTS server) and synthesises the line locally - no PCM ships
+// over the wire. Silent no-op on a peer that has no VoiceOutput placed. - TripleA
+void AClearanceSimulationController::Multicast_PlayTTS_Implementation(FName Callsign, const FString& Text, const FString& VoiceTag, bool bPanic)
+{
+	UWorld* World = GetWorld();
+	if (!World || Text.IsEmpty()) { return; }
+	for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+	{
+		if (!*It) { break; }
+		if (bPanic) { It->SpeakPanic(Callsign, Text, VoiceTag); }
+		else        { It->Speak(Callsign, Text, VoiceTag); }
+		break;
+	}
+}
+
+// Multicast: non-spoken cockpit cues - radio static (Kind=0), GPWS terrain
+// alarm start (Kind=1), GPWS stop on impact (Kind=2). Same lookup pattern as
+// Multicast_PlayTTS. - TripleA
+void AClearanceSimulationController::Multicast_PlayCockpitCue_Implementation(FName Callsign, uint8 Kind, float Duration)
+{
+	UWorld* World = GetWorld();
+	if (!World) { return; }
+	for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+	{
+		if (!*It) { break; }
+		switch (Kind)
+		{
+		case 0: It->PlayStatic(Duration > 0.f ? Duration : 1.f); break;
+		case 1: It->PlayGPWS(Callsign);                          break;
+		case 2: It->StopGPWS(Callsign);                          break;
+		default: break;
+		}
+		break;
+	}
+}
+
+void AClearanceSimulationController::OnRep_AirspaceManager()
+{
+	// Client-only: as soon as the replicated Manager ref arrives, bind the
+	// visual-spawning delegates so meshes appear when aircraft replicate in. - TripleA
+	if (HasAuthority() || !AirspaceManager) { return; }
+	AirspaceManager->OnAircraftRegistered.AddDynamic(this, &AClearanceSimulationController::HandleAircraftRegistered);
+	AirspaceManager->OnAircraftDeregistered.AddDynamic(this, &AClearanceSimulationController::HandleAircraftDeregistered);
+
+	// Any aircraft already replicated before this OnRep fired never sent us a
+	// register event - call the handler for each so meshes spawn retroactively. - TripleA
+	for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
+	{
+		HandleAircraftRegistered(S.Callsign);
+	}
+}
+
 void AClearanceSimulationController::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// Client-side render path: just paint the world from the replicated state.
+	// No sim mutations; the server is the only writer. - TripleA
+	if (!HasAuthority())
+	{
+		if (AirspaceManager) // replicated ref may take a tick or two to arrive
+		{
+			UpdateVisuals();
+			UpdateFollowCamera();
+			DrawDebugView();
+		}
+		return;
+	}
 
 	if (!bSessionActive || bPaused)
 	{
@@ -313,10 +446,79 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
 	SessionTime += SimDelta;
 
+	// Scenario runner advances on sim time so a 10x time-scaled session reaches
+	// scripted moments 10x faster - matches authoring intuition. - TripleA
+	if (ScenarioRunner && ScenarioRunner->IsRunning()) { ScenarioRunner->Tick(SimDelta); }
+
+	// Phase 3: mirror ScenarioRunner state to replicated UPROPERTYs so clients
+	// see the SCENARIO readout line without needing a ScenarioRunner instance. - TripleA
+	if (ScenarioRunner)
+	{
+		bRepScenarioRunning      = ScenarioRunner->IsRunning();
+		RepScenarioName          = ScenarioRunner->GetLoadedName();
+		RepScenarioElapsedSec    = ScenarioRunner->GetElapsedSeconds();
+		RepScenarioFiredEvents   = ScenarioRunner->GetFiredEventCount();
+		RepScenarioTotalEvents   = ScenarioRunner->GetTotalEventCount();
+		RepScenarioFiredTriggers = ScenarioRunner->GetFiredTriggerCount();
+		RepScenarioTotalTriggers = ScenarioRunner->GetTotalTriggerCount();
+	}
+	else
+	{
+		bRepScenarioRunning = false;
+	}
+
+	// Phase 4: mirror Scoring state to replicated UPROPERTYs so clients see
+	// the SCORING line + main CLEARANCE score/eff with server truth. Per-incident
+	// counters aren't exposed as getters - tally them from the session log here
+	// (same loop the readout used to do client-side) and ship the totals. - TripleA
+	if (Scoring)
+	{
+		RepScoreTotal         = Scoring->GetCurrentScore();
+		RepScoreEfficiencyPct = Scoring->GetEfficiency() * 100.f;
+		RepScoreNextSpawnSec  = Scoring->GetCurrentSpawnInterval();
+
+		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0, nBust = 0;
+		for (const FIncidentRecord& R : Scoring->GetSessionLog())
+		{
+			switch (R.Type)
+			{
+			case EIncidentType::SuccessfulLanding:    ++nLand; break;
+			case EIncidentType::SuccessfulDeparture:  ++nDep;  break;
+			case EIncidentType::SuccessfulResolution: ++nRes;  break;
+			case EIncidentType::SuccessfulIntercept:  ++nInt;  break;
+			case EIncidentType::GoAroundTriggered:    ++nGA;   break;
+			case EIncidentType::SeparationLoss:       ++nSep;  break;
+			case EIncidentType::UnresolvedExit:       ++nExit; break;
+			case EIncidentType::WakeEncounter:        ++nWake; break;
+			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
+			case EIncidentType::MisidentifiedCivilian: ++nMisID; break;
+			case EIncidentType::ViolationZoneBreached: ++nViol; break;
+			case EIncidentType::SuccessfulEmergencyHandling: ++nEmer; break;
+			case EIncidentType::AircraftCrashed:       ++nCrash; break;
+			case EIncidentType::RestrictedAirspaceBust: ++nBust; break;
+			default: break;
+			}
+		}
+		RepScoreLandings    = nLand;
+		RepScoreDepartures  = nDep;
+		RepScoreResolved    = nRes;
+		RepScoreIntercepts  = nInt;
+		RepScoreEmergencies = nEmer;
+		RepScoreGoArounds   = nGA;
+		RepScoreSepLoss     = nSep;
+		RepScoreWake        = nWake;
+		RepScoreTCAS        = nTCAS;
+		RepScoreStrayed     = nExit;
+		RepScoreMisID       = nMisID;
+		RepScoreViolated    = nViol;
+		RepScoreCrashed     = nCrash;
+		RepScoreBusted      = nBust;
+	}
+
 	// Violation zone check: any declared-hostile aircraft inside a protected zone
 	// fires a catastrophic ViolationZoneBreached incident (mirror of mis-ID). One-
 	// shot per (zone, aircraft) pair so a stuck hostile doesn't spam the score. - TripleA
-	if (AirspaceManager && GetWorld())
+	if (AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 	{
 		TArray<AClearanceViolationZone*> Zones;
 		for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
@@ -354,12 +556,15 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						Recorder->LogEvent(SessionTime, FString::Printf(
 							TEXT("VIOLATION - hostile %s breached %s"), *S.Callsign.ToString(), *Z->ZoneName.ToString()));
 					}
-					if (GEngine)
 					{
-						GEngine->AddOnScreenDebugMessage(102, 30.f, FColor::Red,
-							FString::Printf(TEXT("*** VIOLATION *** HOSTILE %s REACHED %s (-%d)"),
-								*S.Callsign.ToString(), *Z->ZoneName.ToString(),
-								Scoring ? Scoring->PenaltyViolationZoneBreached : 1000));
+						const FString NMsg = FString::Printf(TEXT("*** VIOLATION *** HOSTILE %s REACHED %s (-%d)"),
+							*S.Callsign.ToString(), *Z->ZoneName.ToString(),
+							Scoring ? Scoring->PenaltyViolationZoneBreached : 1000);
+						PushNotification(NMsg, FColor::Red, 30.f);
+						if (GEngine)
+						{
+							GEngine->AddOnScreenDebugMessage(102, 30.f, FColor::Red, NMsg);
+						}
 					}
 				}
 			}
@@ -371,7 +576,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	// One-shot per (area, aircraft) pair. NOT a doctrine failure (no -1000) - just
 	// a controller screw-up the operator should have prevented by vectoring around
 	// it. - TripleA
-	if (AirspaceManager && GetWorld())
+	if (AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 	{
 		TArray<AClearanceRestrictedArea*> Areas;
 		for (TActorIterator<AClearanceRestrictedArea> AIt(GetWorld()); AIt; ++AIt) { Areas.Add(*AIt); }
@@ -405,12 +610,15 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						Recorder->LogEvent(SessionTime, FString::Printf(
 							TEXT("AIRSPACE BUST - %s entered %s"), *S.Callsign.ToString(), *A->AreaName.ToString()));
 					}
-					if (GEngine)
 					{
-						GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor(255, 140, 0),
-							FString::Printf(TEXT("AIRSPACE BUST: %s entered %s (-%d)"),
-								*S.Callsign.ToString(), *A->AreaName.ToString(),
-								Scoring ? Scoring->PenaltyRestrictedAirspaceBust : 150));
+						const FString NMsg = FString::Printf(TEXT("AIRSPACE BUST: %s entered %s (-%d)"),
+							*S.Callsign.ToString(), *A->AreaName.ToString(),
+							Scoring ? Scoring->PenaltyRestrictedAirspaceBust : 150);
+						PushNotification(NMsg, FColor(255, 140, 0), 6.f);
+						if (GEngine)
+						{
+							GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor(255, 140, 0), NMsg);
+						}
 					}
 				}
 			}
@@ -524,12 +732,15 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						Recorder->LogEvent(SessionTime, FString::Printf(TEXT("EMERGENCY - %s declared %s (sq %d)"),
 							*S.Callsign.ToString(), *UEnum::GetValueAsString(S.ActiveEmergency), NewSquawk));
 					}
-					if (GEngine)
 					{
 						const FColor Col = (S.ActiveEmergency == EEmergencyType::Hijack) ? FColor::Red : FColor::Yellow;
-						GEngine->AddOnScreenDebugMessage(-1, 8.f, Col,
-							FString::Printf(TEXT("EMERGENCY: %s SQUAWK %d (%s)"),
-								*S.Callsign.ToString(), NewSquawk, *UEnum::GetValueAsString(S.ActiveEmergency)));
+						const FString NMsg = FString::Printf(TEXT("EMERGENCY: %s SQUAWK %d (%s)"),
+							*S.Callsign.ToString(), NewSquawk, *UEnum::GetValueAsString(S.ActiveEmergency));
+						PushNotification(NMsg, Col, 8.f);
+						if (GEngine)
+						{
+							GEngine->AddOnScreenDebugMessage(-1, 8.f, Col, NMsg);
+						}
 					}
 
 					// Audio cue via any placed VoiceOutput:
@@ -538,36 +749,30 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 					//   Hijack           -> very brief static (pilot keyed mic and was cut off)
 					// The static cue for hijack is a small concession to gameplay over
 					// strict doctrine; pure silence is more authentic but leaves the
-					// player wondering if anything happened. - TripleA
-					if (GetWorld())
+					// player wondering if anything happened. Routed through the
+					// multicast so every peer hears the declaration, not just whichever
+					// machine the server-side iterator happened to land on. - TripleA
+					switch (S.ActiveEmergency)
 					{
-						for (TActorIterator<AClearanceVoiceOutput> VoIt(GetWorld()); VoIt; ++VoIt)
-						{
-							if (!*VoIt) { break; }
-							switch (S.ActiveEmergency)
-							{
-							case EEmergencyType::GeneralMayday:
-								VoIt->Speak(S.Callsign,
-									S.EmergencyDetail.IsEmpty()
-										? FString::Printf(TEXT("Mayday, mayday, mayday, %s, declaring emergency, request immediate landing"), *S.Callsign.ToString())
-										: FString::Printf(TEXT("Mayday, mayday, mayday, %s, %s, request immediate landing"), *S.Callsign.ToString(), *S.EmergencyDetail),
-									FString());
-								break;
-							case EEmergencyType::FuelLow:
-								VoIt->Speak(S.Callsign,
-									FString::Printf(TEXT("Mayday, mayday, mayday, %s, fuel emergency, request immediate landing"), *S.Callsign.ToString()),
-									FString());
-								break;
-							case EEmergencyType::CommsFailure:
-								VoIt->PlayStatic(2.0f);
-								break;
-							case EEmergencyType::Hijack:
-								VoIt->PlayStatic(0.6f);
-								break;
-							default: break;
-							}
-							break;
-						}
+					case EEmergencyType::GeneralMayday:
+						Multicast_PlayTTS(S.Callsign,
+							S.EmergencyDetail.IsEmpty()
+								? FString::Printf(TEXT("Mayday, mayday, mayday, %s, declaring emergency, request immediate landing"), *S.Callsign.ToString())
+								: FString::Printf(TEXT("Mayday, mayday, mayday, %s, %s, request immediate landing"), *S.Callsign.ToString(), *S.EmergencyDetail),
+							FString(), false);
+						break;
+					case EEmergencyType::FuelLow:
+						Multicast_PlayTTS(S.Callsign,
+							FString::Printf(TEXT("Mayday, mayday, mayday, %s, fuel emergency, request immediate landing"), *S.Callsign.ToString()),
+							FString(), false);
+						break;
+					case EEmergencyType::CommsFailure:
+						Multicast_PlayCockpitCue(S.Callsign, 0, 2.0f);
+						break;
+					case EEmergencyType::Hijack:
+						Multicast_PlayCockpitCue(S.Callsign, 0, 0.6f);
+						break;
+					default: break;
 					}
 					continue;
 				}
@@ -629,11 +834,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						if (NewBit != 0 && GetWorld())
 						{
 							Mask |= NewBit;
-							for (TActorIterator<AClearanceVoiceOutput> VoIt(GetWorld()); VoIt; ++VoIt)
-							{
-								if (*VoIt) { VoIt->Speak(Cs, Line, FString()); }
-								break;
-							}
+							Multicast_PlayTTS(Cs, Line, FString(), false);
 						}
 					}
 				}
@@ -853,7 +1054,10 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 					const float MergeT   = FMath::Clamp((DistNm - 0.3f) / 0.9f, 0.f, 1.f);
 					const float AltOff   = SlotRejoinAltFt[SlotIdx] * MergeT;
 					const float SlowT    = FMath::Clamp((DistNm - 0.3f) / 0.3f, 0.f, 1.f);
-					const float PursueKt = 640.f;
+					// Stays in supersonic-dash territory all the way to the slot - the lerp
+					// only bleeds it off inside the last 0.6nm. Matches the spawn-speed
+					// bump to 900 kts so wingmen don't fall behind. - TripleA
+					const float PursueKt = 900.f;
 					const float SlotKt   = FMath::Max(B.Speed, 200.f);
 
 					FS.TargetHeading  = HeadingToSlot;
@@ -933,6 +1137,155 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	}
 }
 
+bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergencyType Kind)
+{
+	if (!AirspaceManager || Kind == EEmergencyType::None) { return false; }
+	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+	if (!S.bIsValid) { return false; }
+	if (S.ActiveEmergency != EEmergencyType::None) { return false; } // already emergency
+
+	int32 NewSquawk = S.SquawkCode;
+	switch (Kind)
+	{
+	case EEmergencyType::GeneralMayday:
+		S.ActiveEmergency = EEmergencyType::GeneralMayday;
+		NewSquawk = 7700;
+		S.EmergencyDetail = TEXT("scripted mayday");
+		break;
+	case EEmergencyType::CommsFailure:
+		S.ActiveEmergency = EEmergencyType::CommsFailure;
+		NewSquawk = 7600;
+		break;
+	case EEmergencyType::Hijack:
+		S.ActiveEmergency = EEmergencyType::Hijack;
+		NewSquawk = 7500;
+		break;
+	case EEmergencyType::FuelLow:
+		S.ActiveEmergency = EEmergencyType::FuelLow;
+		S.FuelRemainingMinutes = FuelEmergencyMinutes;
+		break;
+	default:
+		return false;
+	}
+	S.SquawkCode = NewSquawk;
+	S.EmergencyDeclaredAtSeconds = SessionTime;
+
+	// 7600 follows the same lost-comms auto-procedure as the randomly-injected path:
+	// turn for the active runway, descend to pattern altitude, FlightPhase=Approach. - TripleA
+	if (S.ActiveEmergency == EEmergencyType::CommsFailure)
+	{
+		const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+		if (Env.ActiveRunwayHeading >= 0.f)
+		{
+			const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+			const FVector2D Here(S.Position.X, S.Position.Y);
+			const float HRad = FMath::DegreesToRadians(Env.ActiveRunwayHeading);
+			const FVector2D Loc(FMath::Sin(HRad), FMath::Cos(HRad));
+			const FVector2D Gate = Threshold - Loc * 10.f;
+			const FVector2D Toward = (Gate - Here).GetSafeNormal();
+			S.TargetHeading = FMath::RadiansToDegrees(FMath::Atan2(Toward.X, Toward.Y));
+			if (S.TargetHeading < 0.f) { S.TargetHeading += 360.f; }
+			S.TargetAltitude = 3000.f;
+			S.FlightPhase = EFlightPhase::Approach;
+		}
+	}
+
+	AirspaceManager->RequestStateUpdate(S);
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(
+			TEXT("EMERGENCY (scripted) - %s declared %d squawk %d"),
+			*Callsign.ToString(), (int32)Kind, NewSquawk));
+	}
+	return true;
+}
+
+// ============================================================================
+// Instructor station - server-side RPCs called by client console / UMG. Each is
+// a thin wrapper around the existing single-machine API; all sim writes stay
+// authoritative server-side. - TripleA
+// ============================================================================
+
+bool AClearanceSimulationController::Server_InjectEmergency_Validate(FName Callsign, EEmergencyType Kind)
+{
+	return Callsign != NAME_None;
+}
+void AClearanceSimulationController::Server_InjectEmergency_Implementation(FName Callsign, EEmergencyType Kind)
+{
+	DeclareEmergencyOn(Callsign, Kind);
+}
+
+bool AClearanceSimulationController::Server_InjectClassify_Validate(FName Callsign, EThreatClass NewClass)
+{
+	return Callsign != NAME_None;
+}
+void AClearanceSimulationController::Server_InjectClassify_Implementation(FName Callsign, EThreatClass NewClass)
+{
+	ClassifyAircraft(Callsign, NewClass);
+}
+
+bool AClearanceSimulationController::Server_InjectScramble_Validate(FName BanditCallsign)
+{
+	return BanditCallsign != NAME_None;
+}
+void AClearanceSimulationController::Server_InjectScramble_Implementation(FName BanditCallsign)
+{
+	ScrambleInterceptors(BanditCallsign);
+}
+
+bool AClearanceSimulationController::Server_InjectSetWind_Validate(float DirectionDeg, float SpeedKts)
+{
+	return SpeedKts >= 0.f && SpeedKts <= 200.f;
+}
+void AClearanceSimulationController::Server_InjectSetWind_Implementation(float DirectionDeg, float SpeedKts)
+{
+	SetWind(DirectionDeg, SpeedKts);
+}
+
+bool AClearanceSimulationController::Server_InjectSpawn_Validate() { return true; }
+void AClearanceSimulationController::Server_InjectSpawn_Implementation()
+{
+	SpawnOne();
+}
+
+bool AClearanceSimulationController::Server_InjectClearTraffic_Validate() { return true; }
+void AClearanceSimulationController::Server_InjectClearTraffic_Implementation()
+{
+	ClearTraffic();
+}
+
+bool AClearanceSimulationController::Server_InjectLoadScenario_Validate(const FString& ScenarioName)
+{
+	return !ScenarioName.IsEmpty();
+}
+void AClearanceSimulationController::Server_InjectLoadScenario_Implementation(const FString& ScenarioName)
+{
+	if (!ScenarioRunner) { return; }
+	const FString Name = ScenarioName.EndsWith(TEXT(".json")) ? ScenarioName : ScenarioName + TEXT(".json");
+	const FString Path = FPaths::ProjectPluginsDir() / TEXT("ClearanceSim/Scenarios") / Name;
+	FString Err;
+	if (!ScenarioRunner->LoadFromFile(Path, Err))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Instructor] scenario load failed: %s"), *Err);
+		return;
+	}
+	SetSpawnerScenarioLocked(true); // pre-clear safety - matches the console path
+	ClearTraffic();
+	ScenarioRunner->Start();
+}
+
+bool AClearanceSimulationController::Server_InjectStopScenario_Validate() { return true; }
+void AClearanceSimulationController::Server_InjectStopScenario_Implementation()
+{
+	if (ScenarioRunner) { ScenarioRunner->Stop(); }
+}
+
+bool AClearanceSimulationController::Server_InjectSetPaused_Validate(bool bNewPaused) { return true; }
+void AClearanceSimulationController::Server_InjectSetPaused_Implementation(bool bNewPaused)
+{
+	bPaused = bNewPaused;
+}
+
 bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass& OutClass, int32& OutSquawk)
 {
 	OutClass = EThreatClass::Unknown;
@@ -944,19 +1297,34 @@ bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass
 	// A hostile contact may have its IFF off; interrogation returns nothing. - TripleA
 	if (!S.bIFFOperational)
 	{
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red,
-			FString::Printf(TEXT("IFF %s: NO RESPONSE"), *Callsign.ToString())); }
+		{
+			const FString NMsg = FString::Printf(TEXT("IFF %s: NO RESPONSE"), *Callsign.ToString());
+			PushNotification(NMsg, FColor::Red, 4.f);
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red, NMsg); }
+		}
+		// Audible "dead air" cue - short static burst so the operator hears the silence,
+		// not just reads it. Routes through any placed VoiceOutput. - TripleA
+		if (GetWorld())
+		{
+			for (TActorIterator<AClearanceVoiceOutput> VIt(GetWorld()); VIt; ++VIt)
+			{
+				if (*VIt) { VIt->PlayStatic(0.8f); break; }
+			}
+		}
 		return false;
 	}
 	OutClass = S.ThreatClass;
 	OutSquawk = S.SquawkCode;
-	if (GEngine)
 	{
 		const TCHAR* L = OutClass == EThreatClass::Friendly ? TEXT("FRIENDLY")
 			: OutClass == EThreatClass::Hostile ? TEXT("HOSTILE")
 			: OutClass == EThreatClass::Neutral ? TEXT("NEUTRAL") : TEXT("UNKNOWN");
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green,
-			FString::Printf(TEXT("IFF %s: squawk %04d  %s"), *Callsign.ToString(), OutSquawk, L));
+		const FString NMsg = FString::Printf(TEXT("IFF %s: squawk %04d  %s"), *Callsign.ToString(), OutSquawk, L);
+		PushNotification(NMsg, FColor::Green, 4.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, NMsg);
+		}
 	}
 	return true;
 }
@@ -1000,9 +1368,10 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 	}
 	if (TimeToIntercept <= 0.f)
 	{
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red,
-			FString::Printf(TEXT("INTERCEPT %s -> %s: no solution (too slow)"),
-				*FighterCallsign.ToString(), *TargetCallsign.ToString())); }
+		const FString NMsg = FString::Printf(TEXT("INTERCEPT %s -> %s: no solution (too slow)"),
+			*FighterCallsign.ToString(), *TargetCallsign.ToString());
+		PushNotification(NMsg, FColor::Red, 4.f);
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red, NMsg); }
 		return false;
 	}
 
@@ -1026,11 +1395,15 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 	const bool bFirstTime = !ActiveIntercepts.Contains(FighterCallsign);
 	ActiveIntercepts.Add(FighterCallsign, TargetCallsign);
 
-	if (bFirstTime && GEngine)
+	if (bFirstTime)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan,
-			FString::Printf(TEXT("INTERCEPT %s -> %s  vector %03.0f  ETA %.0fs"),
-				*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept));
+		const FString NMsg = FString::Printf(TEXT("INTERCEPT %s -> %s  vector %03.0f  ETA %.0fs"),
+			*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept);
+		PushNotification(NMsg, FColor::Cyan, 5.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, NMsg);
+		}
 	}
 	return true;
 }
@@ -1048,57 +1421,59 @@ void AClearanceSimulationController::BeginCrash(const FAircraftState& InState, c
 	// then acceptance / last words ("tell them I love them"). We fire an
 	// initial line now and schedule a final/acceptance line ~15s real later -
 	// the half-duplex queue handles spacing. Same voice for both so it sounds
-	// like one pilot, not two. - TripleA
+	// like one pilot, not two. Voice tag is chosen on the server then passed
+	// through the multicast so every peer renders the same pilot. - TripleA
 	if (UWorld* W = GetWorld())
 	{
+		static const TCHAR* PanicLines[] = {
+			TEXT("Oh God, oh God, oh God. We're going down. We're losing her. We're losing her."),
+			TEXT("Oh shit, oh shit, oh shit. We're out of control. I can't hold it. I can't hold it."),
+			TEXT("Mayday, mayday, mayday. We're going down. Pull up. Pull up. Oh God."),
+			TEXT("She's not responding. She's not responding. We're going in. We're going in."),
+			TEXT("Climb! Why won't she climb! We're going to die. We're going to die."),
+			TEXT("I have control. I have control. No, I can't. I can't hold her."),
+			TEXT("Terrain. Terrain. Pull up. Pull up. Oh no no no."),
+			TEXT("Captain. Captain. We're going to crash. We're going to crash."),
+		};
+
+		// Lock the voice tag on the server's VoiceOutput; the tag string is the
+		// only thing the multicast needs to keep every peer in sync. - TripleA
+		FString Voice;
 		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
 		{
-			if (!*VoIt) { break; }
-
-			static const TCHAR* PanicLines[] = {
-				TEXT("Oh God, oh God, oh God. We're going down. We're losing her. We're losing her."),
-				TEXT("Oh shit, oh shit, oh shit. We're out of control. I can't hold it. I can't hold it."),
-				TEXT("Mayday, mayday, mayday. We're going down. Pull up. Pull up. Oh God."),
-				TEXT("She's not responding. She's not responding. We're going in. We're going in."),
-				TEXT("Climb! Why won't she climb! We're going to die. We're going to die."),
-				TEXT("I have control. I have control. No, I can't. I can't hold her."),
-				TEXT("Terrain. Terrain. Pull up. Pull up. Oh no no no."),
-				TEXT("Captain. Captain. We're going to crash. We're going to crash."),
-			};
-			// Lock the voice for both lines so it's clearly the same pilot.
-			const FString Voice = VoIt->PickVoiceForCallsign(S.Callsign);
-			const int32 P = FMath::RandRange(0, UE_ARRAY_COUNT(PanicLines) - 1);
-			VoIt->SpeakPanic(S.Callsign, PanicLines[P], Voice);
-
-			// GPWS cockpit alarm runs UNDER the pilot's voice, in parallel - bypasses
-			// the half-duplex queue. Mirrors a real CVR where you hear the airframe
-			// shouting "TERRAIN, PULL UP" while the crew panics. Tracked by callsign
-			// so we can stop it on impact. - TripleA
-			VoIt->PlayGPWS(S.Callsign);
-
-			TWeakObjectPtr<AClearanceVoiceOutput> WeakVO(*VoIt);
-			const FName Cs = S.Callsign;
-			FTimerHandle& Handle = PendingPanicTimers.FindOrAdd(Cs);
-			W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
-				[WeakVO, Cs, Voice]()
-				{
-					if (!WeakVO.IsValid()) { return; }
-					static const TCHAR* FinalLines[] = {
-						TEXT("Goodbye. Goodbye. I love you. I love you all."),
-						TEXT("I love you. Tell my family I love them. Tell them I love them."),
-						TEXT("I'm sorry. I'm sorry. I tried. I tried."),
-						TEXT("Mama. Mama. I'm sorry. I love you, mama."),
-						TEXT("Honey. Honey, I love you. Tell the kids I love them."),
-						TEXT("God forgive me. God forgive us all."),
-						TEXT("It's over. It's over. I love you."),
-						TEXT("Brace. Brace. Brace for impact."),
-					};
-					const int32 Fi = FMath::RandRange(0, UE_ARRAY_COUNT(FinalLines) - 1);
-					WeakVO->SpeakPanic(Cs, FinalLines[Fi], Voice);
-				}), 14.f, false);
-
+			if (*VoIt) { Voice = VoIt->PickVoiceForCallsign(S.Callsign); }
 			break;
 		}
+
+		const int32 P = FMath::RandRange(0, UE_ARRAY_COUNT(PanicLines) - 1);
+		Multicast_PlayTTS(S.Callsign, PanicLines[P], Voice, /*bPanic*/ true);
+
+		// GPWS cockpit alarm runs UNDER the pilot's voice, in parallel - bypasses
+		// the half-duplex queue. Mirrors a real CVR where you hear the airframe
+		// shouting "TERRAIN, PULL UP" while the crew panics. Tracked by callsign
+		// so we can stop it on impact. - TripleA
+		Multicast_PlayCockpitCue(S.Callsign, 1, 0.f);
+
+		const FName Cs = S.Callsign;
+		TWeakObjectPtr<AClearanceSimulationController> WeakSelf(this);
+		FTimerHandle& Handle = PendingPanicTimers.FindOrAdd(Cs);
+		W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
+			[WeakSelf, Cs, Voice]()
+			{
+				if (!WeakSelf.IsValid()) { return; }
+				static const TCHAR* FinalLines[] = {
+					TEXT("Goodbye. Goodbye. I love you. I love you all."),
+					TEXT("I love you. Tell my family I love them. Tell them I love them."),
+					TEXT("I'm sorry. I'm sorry. I tried. I tried."),
+					TEXT("Mama. Mama. I'm sorry. I love you, mama."),
+					TEXT("Honey. Honey, I love you. Tell the kids I love them."),
+					TEXT("God forgive me. God forgive us all."),
+					TEXT("It's over. It's over. I love you."),
+					TEXT("Brace. Brace. Brace for impact."),
+				};
+				const int32 Fi = FMath::RandRange(0, UE_ARRAY_COUNT(FinalLines) - 1);
+				WeakSelf->Multicast_PlayTTS(Cs, FinalLines[Fi], Voice, /*bPanic*/ true);
+			}), 14.f, false);
 	}
 }
 
@@ -1173,11 +1548,8 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 			W->GetTimerManager().ClearTimer(*Pending);
 			PendingPanicTimers.Remove(S.Callsign);
 		}
-		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
-		{
-			if (*VoIt) { VoIt->StopGPWS(S.Callsign); }
-			break;
-		}
+		// Mirror the GPWS start: every peer started it, every peer needs to stop. - TripleA
+		Multicast_PlayCockpitCue(S.Callsign, 2, 0.f);
 	}
 
 	if (Scoring)
@@ -1193,36 +1565,36 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 	Site.SessionSeconds = SessionTime;
 	Site.Callsign = S.Callsign;
 	CrashSites.Add(Site);
-	if (GEngine)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red,
-			FString::Printf(TEXT("*** CRASH *** %s - %s (-%d)"),
-				*S.Callsign.ToString(), *Reason,
-				Scoring ? Scoring->PenaltyAircraftCrashed : 500));
+		const FString NMsg = FString::Printf(TEXT("*** CRASH *** %s - %s (-%d)"),
+			*S.Callsign.ToString(), *Reason,
+			Scoring ? Scoring->PenaltyAircraftCrashed : 500);
+		PushNotification(NMsg, FColor::Red, 30.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red, NMsg);
+		}
 	}
 
 	// Controller's deadpan "Lost contact" on the en_US voice, ~1.5s after impact
-	// so the listener hears the silence first. - TripleA
+	// so the listener hears the silence first. Multicast so every peer hears the
+	// same call instead of only whichever machine the server happens to be. - TripleA
 	if (UWorld* W = GetWorld())
 	{
-		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
-		{
-			if (!*VoIt) { break; }
-			const FName Cs = S.Callsign;
-			TWeakObjectPtr<AClearanceVoiceOutput> WeakVO(*VoIt);
-			FTimerHandle Handle;
-			W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
-				[WeakVO, Cs]()
+		const FName Cs = S.Callsign;
+		TWeakObjectPtr<AClearanceSimulationController> WeakSelf(this);
+		FTimerHandle Handle;
+		W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
+			[WeakSelf, Cs]()
+			{
+				if (WeakSelf.IsValid())
 				{
-					if (WeakVO.IsValid())
-					{
-						WeakVO->Speak(NAME_None,
-							FString::Printf(TEXT("Lost contact, %s"), *Cs.ToString()),
-							TEXT("en-US-EricNeural"));  // deadpan controller voice
-					}
-				}), 1.5f, false);
-			break;
-		}
+					WeakSelf->Multicast_PlayTTS(NAME_None,
+						FString::Printf(TEXT("Lost contact, %s"), *Cs.ToString()),
+						TEXT("en-US-EricNeural"),  // deadpan controller voice
+						/*bPanic*/ false);
+				}
+			}), 1.5f, false);
 	}
 
 	if (AirspaceManager) { AirspaceManager->DeregisterAircraft(S.Callsign); }
@@ -1306,16 +1678,20 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 	// tight angular fan. Random angles around the whole ring put fighters on
 	// opposite sides of the sector - by the time #1 arrives, #2 and #3 are still
 	// crossing the whole map and the engagement breaks down. - TripleA
-	const float R = FMath::Max(10.f, ExitRadiusNm);
+	// Spawn the 3-ship at the sector boundary on the same bearing from origin as
+	// the bandit - the edge closest to the contact, reading as "the alert flight
+	// just crossed into our airspace." Head-on closure with the inbound bandit
+	// closes any meaningful gap at fighter speeds. - TripleA
+	const float SpawnR = FMath::Max(10.f, ExitRadiusNm);
 	const float BanditBearingDeg = FMath::Fmod(
 		FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X, Bandit.Position.Y)) + 360.f, 360.f);
-	const float FanDeg = 8.f; // total angular spread across the 3-ship at the boundary
+	const float FanDeg = 8.f;
 	int32 Launched = 0;
 	for (int32 i = 0; i < 3; ++i)
 	{
 		const float ADeg = FMath::Fmod(BanditBearingDeg + (i - 1) * (FanDeg * 0.5f) + 360.f, 360.f);
 		const float ARad = FMath::DegreesToRadians(ADeg);
-		const FVector Pos(R * FMath::Sin(ARad), R * FMath::Cos(ARad), 0.f);
+		const FVector Pos(SpawnR * FMath::Sin(ARad), SpawnR * FMath::Cos(ARad), 0.f);
 
 		const float Inbound = FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X - Pos.X, Bandit.Position.Y - Pos.Y));
 		const float Hdg = FMath::Fmod(Inbound + 360.f, 360.f);
@@ -1324,15 +1700,20 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 		FAircraftState V;
 		V.Callsign         = FName(*FString::Printf(TEXT("VIPER%02d"), Num));
 		V.Position         = Pos;
-		V.Altitude         = Bandit.Altitude; // match co-altitude on arrival so vertical join-up actually fires
+		V.Altitude         = Bandit.Altitude;
 		V.Heading          = Hdg;
-		V.Speed            = 620.f;
+		// Supersonic intercept dash - real alert-flight doctrine. F-22/F-35 dash at
+		// ~M1.3 (~900 kts true) on scramble; F-16 closer to M1.1. The 620 default
+		// was subsonic cruise and made every intercept feel anaemic. - TripleA
+		V.Speed            = 900.f;
+		V.TargetSpeed      = 900.f;
 		V.WakeCategory     = EWakeCategory::Medium;
 		V.FlightPhase      = EFlightPhase::Enroute;
 		V.ThreatClass      = EThreatClass::Friendly;
 		V.SquawkCode       = 2200 + Num;
 		V.bIFFOperational  = true;
 		V.bIsMilitary      = true;
+		V.bUnderGCIControl = true; // skip the civilian safety net for the formation + the engagement
 		if (!AirspaceManager->RegisterAircraft(V)) { continue; }
 		if (VectorIntercept(V.Callsign, BanditCallsign)) { ++Launched; }
 	}
@@ -1354,7 +1735,11 @@ void AClearanceSimulationController::SetRadarEnabled(bool bInEnabled)
 void AClearanceSimulationController::StepSimulation(float DeltaTime)
 {
 	// The authoritative tick order from the architecture doc.
-	if (Spawner) { Spawner->TickSpawning(DeltaTime); }            // 1. entry
+	// Skip the spawner entirely while a scenario is running so it physically
+	// cannot inject random traffic - no flag-juggling, no races. Resume the
+	// instant the scenario stops. - TripleA
+	const bool bScenarioRunning = ScenarioRunner && ScenarioRunner->IsRunning();
+	if (Spawner && !bScenarioRunning) { Spawner->TickSpawning(DeltaTime); } // 1. entry
 
 	for (const TPair<FName, TObjectPtr<UClearanceAircraftBehaviour>>& Pair : BehaviourMap)
 	{
@@ -1362,6 +1747,23 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 	}
 
 	if (ConflictDetector) { ConflictDetector->DetectConflicts(); } // 5. monitor (6-8 fire via delegates)
+
+	// 5b. Stamp the highest current alert level onto each aircraft's state so
+	// the replication stream carries it down to clients. They have no detector
+	// of their own and were drawing every aircraft in safe-green. - TripleA
+	if (AirspaceManager && ConflictDetector)
+	{
+		for (const FAircraftState& A : AirspaceManager->GetAllAircraftStates())
+		{
+			const EAlertLevel L = ConflictDetector->GetAlertLevelFor(A.Callsign);
+			if (A.CurrentAlertLevel != L)
+			{
+				FAircraftState Updated = A;
+				Updated.CurrentAlertLevel = L;
+				AirspaceManager->RequestStateUpdate(Updated);
+			}
+		}
+	}
 
 	TickGCIIntercepts(DeltaTime);                                  // join-up + escort
 	TickCrashingAircraft(DeltaTime);                               // drop falling aircraft to the ground
@@ -1563,6 +1965,13 @@ void AClearanceSimulationController::DrawDebugView()
 		return;
 	}
 
+	// Wipe persistent debug strings + lines at the top of every frame. UE's
+	// DrawDebugString stores text on the PlayerController's HUD via AddDebugText
+	// with broken duration semantics. FlushDebugStrings iterates PCs and calls
+	// RemoveAllDebugStrings on each HUD - that's the supported clear path. - TripleA
+	FlushDebugStrings(World);
+	FlushPersistentDebugLines(World);
+
 	const FVector Origin = GetActorLocation();
 	const float S = WorldUnitsPerNm;
 
@@ -1577,7 +1986,7 @@ void AClearanceSimulationController::DrawDebugView()
 		DrawDebugCircle(World, CrW, 0.5f * S, 32, FColor(200, 30, 30), false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
 		DrawDebugCircle(World, CrW, 0.25f * S, 24, FColor(120, 20, 20), false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
 		DrawDebugString(World, CrW + FVector(0, 0, 0.8f * S),
-			FString::Printf(TEXT("WRECK %s"), *Cr.Callsign.ToString()), nullptr, FColor(220, 60, 60), 0.f, true, 1.0f);
+			FString::Printf(TEXT("WRECK %s"), *Cr.Callsign.ToString()), nullptr, FColor(220, 60, 60), 0.05f, true, 1.0f);
 	}
 
 	// Protected violation zones - pulsing red circles on the ground. Stand out
@@ -1595,7 +2004,7 @@ void AClearanceSimulationController::DrawDebugView()
 			const FVector C(ZIt->GetActorLocation().X, ZIt->GetActorLocation().Y, GroundWorldZ);
 			DrawDebugCircle(World, C, ZIt->RadiusNm * S, 48, ZoneCol, false, -1.f, 0, 120.f, FVector(1,0,0), FVector(0,1,0), false);
 			DrawDebugString(World, C + FVector(0, 0, 1.5f * S),
-				FString::Printf(TEXT("[%s]"), *ZIt->ZoneName.ToString()), nullptr, ZoneCol, 0.f, true, 1.3f);
+				FString::Printf(TEXT("[%s]"), *ZIt->ZoneName.ToString()), nullptr, ZoneCol, 0.05f, true, 1.3f);
 		}
 	}
 
@@ -1611,7 +2020,7 @@ void AClearanceSimulationController::DrawDebugView()
 			DrawDebugCircle(World, C, AIt->RadiusNm * S, 48, AreaCol, false, -1.f, 0, 80.f, FVector(1,0,0), FVector(0,1,0), false);
 			DrawDebugCircle(World, C, AIt->RadiusNm * S * 0.95f, 48, AreaCol, false, -1.f, 0, 40.f, FVector(1,0,0), FVector(0,1,0), false);
 			DrawDebugString(World, C + FVector(0, 0, 1.2f * S),
-				FString::Printf(TEXT("[%s]"), *AIt->AreaName.ToString()), nullptr, AreaLabel, 0.f, true, 1.2f);
+				FString::Printf(TEXT("[%s]"), *AIt->AreaName.ToString()), nullptr, AreaLabel, 0.05f, true, 1.2f);
 		}
 	}
 
@@ -1625,7 +2034,7 @@ void AClearanceSimulationController::DrawDebugView()
 		const float Rad = SIt->Radar->RangeNm * S;
 		DrawDebugCircle(World, C, Rad, 64, SIt->CoverageColour, false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
 		DrawDebugString(World, C + FVector(0, 0, 1.f * S),
-			FString::Printf(TEXT("RDR %s"), *SIt->SiteName.ToString()), nullptr, SIt->CoverageColour, 0.f, true, 1.1f);
+			FString::Printf(TEXT("RDR %s"), *SIt->SiteName.ToString()), nullptr, SIt->CoverageColour, 0.05f, true, 1.1f);
 	}
 
 	// Compass rose: a tick + heading number every 30deg around the boundary, cardinals
@@ -1647,11 +2056,24 @@ void AClearanceSimulationController::DrawDebugView()
 		case 270: Label = TEXT("W 270"); break;
 		default:  Label = FString::Printf(TEXT("%03d"), Deg); break;
 		}
-		DrawDebugString(World, Edge + FVector(0, 0, 2.f * S), Label, nullptr, FColor::Cyan, 0.f, true, 1.3f);
+		DrawDebugString(World, Edge + FVector(0, 0, 2.f * S), Label, nullptr, FColor::Cyan, 0.05f, true, 1.3f);
 	}
 
 	const TArray<FAircraftState> States = AirspaceManager->GetAllAircraftStates();
 	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+
+	// One-off draw-pass diagnostic so I can confirm both server and client worlds
+	// are reaching DrawDebugView. Distinct keys per role so the calls don't
+	// overwrite each other in the shared GEngine queue. - TripleA
+	{
+		FString AllCallsigns;
+		for (const FAircraftState& A : States) { AllCallsigns += FString::Printf(TEXT(" %s"), *A.Callsign.ToString()); }
+		const FString DiagLine = FString::Printf(TEXT("[Draw %s] States.Num=%d %s"),
+			HasAuthority() ? TEXT("SRV") : TEXT("CLI"),
+			AirspaceManager ? AirspaceManager->GetAircraftCount() : -1,
+			*AllCallsigns);
+		CurrentDiagLine = DiagLine;
+	}
 
 	// Approach corridor + glidepath for EVERY runway threshold the manager knows
 	// about, not just the wind-active one. The active runway draws white; the others
@@ -1749,7 +2171,7 @@ void AClearanceSimulationController::DrawDebugView()
 				const float TickHalf = FMath::Max(WMin * 0.25f, 200.f);
 				DrawDebugLine(World, Pt + RightDir * TickHalf, Pt - RightDir * TickHalf, LineCol, false, -1.f, 0, LineThick);
 				DrawDebugString(World, Pt + FVector(0, 0, 0.6f * S),
-					FString::Printf(TEXT("%.0fnm"), D), nullptr, LineCol, 0.f, true, 0.9f);
+					FString::Printf(TEXT("%.0fnm"), D), nullptr, LineCol, 0.05f, true, 0.9f);
 			}
 		}
 
@@ -1931,13 +2353,13 @@ void AClearanceSimulationController::DrawDebugView()
 		// parallel runways get the L/C/R suffix per ICAO. - TripleA
 		if (const FString* L1 = Labels.Find({ *It, false }))
 		{
-			DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), *L1, nullptr, FColor::Yellow, 0.f, true, 1.2f);
+			DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), *L1, nullptr, FColor::Yellow, 0.05f, true, 1.2f);
 		}
 		if (It->bAllowReciprocal)
 		{
 			if (const FString* L2 = Labels.Find({ *It, true }))
 			{
-				DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), *L2, nullptr, FColor::Yellow, 0.f, true, 1.2f);
+				DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), *L2, nullptr, FColor::Yellow, 0.05f, true, 1.2f);
 			}
 		}
 	}
@@ -1971,40 +2393,29 @@ void AClearanceSimulationController::DrawDebugView()
 
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f%s\n"),
 		SessionTime,
-		Scoring ? Scoring->GetCurrentScore() : 0,
-		Scoring ? Scoring->GetEfficiency() * 100.f : 100.f,
+		RepScoreTotal,
+		RepScoreEfficiencyPct,
 		States.Num(),
 		Env.WindDirection, Env.WindSpeed, Env.ActiveRunwayHeading,
 		*AARTag);
 
-	// Scoring breakdown, tallied from the session log so we can see what's adding up.
-	if (Scoring)
+	// Scoring breakdown - read from replicated fields (server mirrors Scoring state
+	// + per-incident tallies, client gets it via replication). - TripleA
+	Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
+		RepScoreTotal,
+		RepScoreLandings, RepScoreDepartures, RepScoreResolved, RepScoreIntercepts, RepScoreEmergencies,
+		RepScoreGoArounds, RepScoreSepLoss, RepScoreWake, RepScoreTCAS, RepScoreStrayed, RepScoreMisID, RepScoreViolated, RepScoreCrashed, RepScoreBusted,
+		RepScoreNextSpawnSec);
+
+	// Read from replicated fields (server mirrors ScenarioRunner state, client gets it via replication). - TripleA
+	if (bRepScenarioRunning)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0, nBust = 0;
-		for (const FIncidentRecord& R : Scoring->GetSessionLog())
-		{
-			switch (R.Type)
-			{
-			case EIncidentType::SuccessfulLanding:    ++nLand; break;
-			case EIncidentType::SuccessfulDeparture:  ++nDep;  break;
-			case EIncidentType::SuccessfulResolution: ++nRes;  break;
-			case EIncidentType::SuccessfulIntercept:  ++nInt;  break;
-			case EIncidentType::GoAroundTriggered:    ++nGA;   break;
-			case EIncidentType::SeparationLoss:       ++nSep;  break;
-			case EIncidentType::UnresolvedExit:       ++nExit; break;
-			case EIncidentType::WakeEncounter:        ++nWake; break;
-			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
-			case EIncidentType::MisidentifiedCivilian: ++nMisID; break;
-			case EIncidentType::ViolationZoneBreached: ++nViol; break;
-			case EIncidentType::SuccessfulEmergencyHandling: ++nEmer; break;
-			case EIncidentType::AircraftCrashed:       ++nCrash; break;
-			case EIncidentType::RestrictedAirspaceBust: ++nBust; break;
-			default: break;
-			}
-		}
-		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
-			Scoring->GetCurrentScore(),
-			nLand, nDep, nRes, nInt, nEmer, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, nCrash, nBust, Scoring->GetCurrentSpawnInterval());
+		Readout += FString::Printf(TEXT("SCENARIO  %s  |  T+%02d:%02d  |  events %d/%d  triggers %d/%d\n"),
+			*RepScenarioName,
+			FMath::FloorToInt(RepScenarioElapsedSec / 60.f),
+			FMath::FloorToInt(RepScenarioElapsedSec) % 60,
+			RepScenarioFiredEvents,  RepScenarioTotalEvents,
+			RepScenarioFiredTriggers, RepScenarioTotalTriggers);
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -2067,7 +2478,11 @@ void AClearanceSimulationController::DrawDebugView()
 			{
 				const FRadarTrack& Trk = Pair.Value;
 				const int32 Seen = Sightings[Pair.Key];
-				const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(Trk.TruthCallsign) : EAlertLevel::None;
+				// Read the alert from the (replicated) state, not the local detector,
+				// so client windows show the same conflict colouring. - TripleA
+				const EAlertLevel Alert = AirspaceManager
+					? AirspaceManager->GetAircraftState(Trk.TruthCallsign).CurrentAlertLevel
+					: EAlertLevel::None;
 				const FString IdLabel = Trk.bHasSecondary ? Trk.DisplayCallsign.ToString() : FString(TEXT("PRI"));
 				Readout += FString::Printf(TEXT("RDR %s [%d/%d]  hdg %3.0f  alt %5.0f  spd %3.0f  conf %.0f%%%s\n"),
 					*IdLabel, Seen, Radars.Num(), Trk.Heading, Trk.Altitude, Trk.Speed,
@@ -2079,7 +2494,9 @@ void AClearanceSimulationController::DrawDebugView()
 	{
 		for (const FAircraftState& A : States)
 		{
-			const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(A.Callsign) : EAlertLevel::None;
+			// Read from state, not the local detector - the field is set by the
+			// server's detector and replicates down. - TripleA
+			const EAlertLevel Alert = A.CurrentAlertLevel;
 			const FColor C = ColourFor(Alert);
 
 			// Spheres are the fallback for any aircraft with no spawned mesh; modelled
@@ -2094,11 +2511,10 @@ void AClearanceSimulationController::DrawDebugView()
 				DrawDebugLine(World, P, P + Dir * 2200.f, C, false, -1.f, 0, 60.f);
 			}
 
-			// Float the callsign + current>target heading over each aircraft, so you can
-			// pick one out and see where it's pointing vs where you've sent it. - TripleA
+			// Float the callsign + current>target heading over each aircraft. - TripleA
 			DrawDebugString(World, WorldPositionFor(A) + FVector(0, 0, 1.2f * S),
 				FString::Printf(TEXT("%s  hdg %03.0f>%03.0f"), *A.Callsign.ToString(), A.Heading, A.TargetHeading),
-				nullptr, C, 0.f, true, 1.1f);
+				nullptr, C, 0.05f, true, 1.1f);
 
 			// In GCI mode prefix the line with a NATO-style threat tag so the operator can
 			// see classification at a glance. - TripleA
@@ -2148,10 +2564,10 @@ void AClearanceSimulationController::DrawDebugView()
 		}
 	}
 
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(7, 0.f, FColor::White, Readout);
-	}
+	// Main HUD readout. GEngine queue is shared across PIE windows and renders
+	// inconsistently per viewport; stash on the controller so the HUD can pull
+	// it into the right canvas. - TripleA
+	CurrentReadout = Readout;
 }
 
 void AClearanceSimulationController::CheckExits()
@@ -2167,6 +2583,12 @@ void AClearanceSimulationController::CheckExits()
 	for (const FAircraftState& State : AirspaceManager->GetAllAircraftStates())
 	{
 		const float Dist = FVector2D(State.Position.X, State.Position.Y).Size();
+
+		// Flag entry the first time an aircraft is inside the sector. The exit-as-
+		// stray check below is gated on this so aircraft spawned outside the boundary
+		// (scenario incoming traffic) aren't instant-deregistered before they get to
+		// fly in. - TripleA
+		if (Dist <= ExitRadiusNm) { EverEnteredSector.Add(State.Callsign); }
 
 		// GCI-controlled aircraft leaving: a flight (bandit + 1-3 fighters) shares one
 		// bandit key. Credit Successful Intercept once per bandit and deregister the
@@ -2210,12 +2632,15 @@ void AClearanceSimulationController::CheckExits()
 					Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None,
 						FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector"), Fighters.Num(), *BanditCs.ToString()));
 				}
-				if (GEngine)
 				{
-					GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green,
-						FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
-							Fighters.Num(), *BanditCs.ToString(),
-							Scoring ? Scoring->PointsIntercept : 0));
+					const FString NMsg = FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
+						Fighters.Num(), *BanditCs.ToString(),
+						Scoring ? Scoring->PointsIntercept : 0);
+					PushNotification(NMsg, FColor::Green, 5.f);
+					if (GEngine)
+					{
+						GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green, NMsg);
+					}
 				}
 				AirspaceManager->DeregisterAircraft(BanditCs);
 				for (const FName& F : Fighters) { AirspaceManager->DeregisterAircraft(F); }
@@ -2251,11 +2676,19 @@ void AClearanceSimulationController::CheckExits()
 			}
 			AirspaceManager->DeregisterAircraft(State.Callsign);
 		}
-		else if (Dist > ExitRadiusNm)
+		else if (Dist > ExitRadiusNm && EverEnteredSector.Contains(State.Callsign))
 		{
 			// Cleared to leave = a clean departure; drifting out otherwise is a miss.
-			// An emergency aircraft drifting out unhandled is a catastrophic loss. - TripleA
+			// An emergency aircraft drifting out unhandled is a catastrophic loss.
+			// Non-friendly contacts (hostile / unknown) exiting are GCI's problem -
+			// they aren't civilian air traffic and don't count as "strayed".
+			// Only fires if the aircraft was actually inside at some point - protects
+			// scenario incoming traffic from being insta-killed at spawn. - TripleA
+			const bool bNonCivilian = (State.ThreatClass != EThreatClass::Friendly)
+			                         || State.bIsMilitary || State.bUnderGCIControl;
+
 			EIncidentType Outcome;
+			bool bLogIncident = true;
 			if (State.ActiveEmergency != EEmergencyType::None && State.FlightPhase != EFlightPhase::Exiting)
 			{
 				Outcome = EIncidentType::AircraftCrashed;
@@ -2266,11 +2699,17 @@ void AClearanceSimulationController::CheckExits()
 					? EIncidentType::SuccessfulEmergencyHandling
 					: EIncidentType::SuccessfulDeparture;
 			}
+			else if (bNonCivilian)
+			{
+				// GCI contact left the sector under its own steam - no civilian scoring event.
+				bLogIncident = false;
+				Outcome = EIncidentType::UnresolvedExit; // unused
+			}
 			else
 			{
 				Outcome = EIncidentType::UnresolvedExit;
 			}
-			if (Scoring) { Scoring->LogIncident(Outcome, State.Callsign, NAME_None, TEXT("Left sector")); }
+			if (bLogIncident && Scoring) { Scoring->LogIncident(Outcome, State.Callsign, NAME_None, TEXT("Left sector")); }
 			AirspaceManager->DeregisterAircraft(State.Callsign);
 		}
 	}
@@ -2661,6 +3100,11 @@ void AClearanceSimulationController::SetAutoSpawn(bool bEnabled)
 	if (Spawner) { Spawner->SetAutoSpawn(bEnabled); }
 }
 
+void AClearanceSimulationController::SetSpawnerScenarioLocked(bool bLocked)
+{
+	if (Spawner) { Spawner->SetScenarioLocked(bLocked); }
+}
+
 bool AClearanceSimulationController::SpawnOne()
 {
 	return Spawner ? Spawner->SpawnAircraft() : false;
@@ -2683,17 +3127,22 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 
 	if (!bExternal)
 	{
-		UClearanceAircraftBehaviour* Behaviour = NewObject<UClearanceAircraftBehaviour>(this);
-		Behaviour->Initialise(AirspaceManager, Callsign);
-		Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
-		BehaviourMap.Add(Callsign, Behaviour);
-		if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
+		// Server-only: creates state-mutating Behaviour; clients receive state via OnRep only. - TripleA
+		if (HasAuthority())
+		{
+			UClearanceAircraftBehaviour* Behaviour = NewObject<UClearanceAircraftBehaviour>(this);
+			Behaviour->Initialise(AirspaceManager, Callsign);
+			Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
+			BehaviourMap.Add(Callsign, Behaviour);
+			if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
+		}
 
 		// If the freshly-spawned aircraft is a bandit profile (NORDO, not declared
 		// friendly), redirect it AT a random violation zone instead of leaving it
 		// pointed at sector centre. A real intruder has an objective - that's what
 		// makes the operator's intercept call meaningful. - TripleA
-		if (AirspaceManager && GetWorld())
+		// Server-only: bandit redirect mutates state via RequestStateUpdate. - TripleA
+		if (HasAuthority() && AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 		{
 			const FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
 			if (S.bIsValid && !S.bIFFOperational && S.ThreatClass != EThreatClass::Friendly)
@@ -2736,7 +3185,11 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 			                                                      VariantsFor(State.WakeCategory);
 		if (Variants.Num() > 0)
 		{
-			const FAircraftVisualVariant& Variant = Variants[FMath::RandRange(0, Variants.Num() - 1)];
+			// Deterministic pick by callsign hash so server + client land on the
+			// same variant. FMath::RandRange rolled independently per peer and the
+			// meshes drifted - same data, different model. - TripleA
+			const int32 VariantIdx = static_cast<int32>(GetTypeHash(Callsign) % static_cast<uint32>(Variants.Num()));
+			const FAircraftVisualVariant& Variant = Variants[VariantIdx];
 			if (Variant.AircraftClass)
 			{
 				if (AActor* Visual = GetWorld()->SpawnActor<AActor>(Variant.AircraftClass))
@@ -2773,6 +3226,7 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 void AClearanceSimulationController::HandleAircraftDeregistered(FName Callsign)
 {
 	BehaviourMap.Remove(Callsign);
+	EverEnteredSector.Remove(Callsign); // reset entered-flag if the callsign reappears later
 	if (CommsRouter) { CommsRouter->UnregisterBehaviour(Callsign); }
 	if (ConflictDetector) { ConflictDetector->RemoveAircraft(Callsign); }
 
@@ -2828,13 +3282,16 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 		: Conflict.AlertLevel == EAlertLevel::Warning ? TEXT("WARNING") : TEXT("ADVISORY");
 
 	// Surface it on screen until there's a real UI, so conflicts are visible. - TripleA
-	if (GEngine)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, ColourFor(Conflict.AlertLevel),
-			FString::Printf(TEXT("%s  %s / %s  -  %.1f nm, %.0f ft%s"), Lvl,
-				*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
-				Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
-				Conflict.bRequiresGoAround ? TEXT("  [GO-AROUND]") : TEXT("")));
+		const FString NMsg = FString::Printf(TEXT("%s  %s / %s  -  %.1f nm, %.0f ft%s"), Lvl,
+			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
+			Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
+			Conflict.bRequiresGoAround ? TEXT("  [GO-AROUND]") : TEXT(""));
+		PushNotification(NMsg, ColourFor(Conflict.AlertLevel), 5.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, ColourFor(Conflict.AlertLevel), NMsg);
+		}
 	}
 
 	if (Recorder)
@@ -2858,10 +3315,12 @@ void AClearanceSimulationController::HandleConflictResolved(FConflictEvent Confl
 		(Conflict.AlertLevel == EAlertLevel::Warning || Conflict.AlertLevel == EAlertLevel::Critical))
 	{
 		Scoring->LogIncident(EIncidentType::SuccessfulResolution, Conflict.AircraftA, Conflict.AircraftB, TEXT("Conflict resolved"));
+		const FString NMsg = FString::Printf(TEXT("RESOLVED  %s / %s  (+%d)"),
+			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution);
+		PushNotification(NMsg, FColor::Green, 4.f);
 		if (GEngine)
 		{
-			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green,
-				FString::Printf(TEXT("RESOLVED  %s / %s  (+%d)"), *Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution));
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, NMsg);
 		}
 	}
 	if (Recorder)
@@ -3081,6 +3540,37 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 		}
 	}));
 
+// Per-world mute - in PIE, run this in the server console to silence its
+// VoiceOutput while still hearing the client's. World param routes naturally to
+// the local instance. Args: on / off / toggle (default toggle). - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceAudioMuteCmd(
+	TEXT("clearance.audio.mute"),
+	TEXT("clearance.audio.mute [on|off|toggle] - mute this window's TTS output"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (!World) { return; }
+		int32 Found = 0;
+		for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+		{
+			AClearanceVoiceOutput* V = *It;
+			if (!V) { continue; }
+			bool bNew = !V->bMuted;
+			if (Args.Num() >= 1)
+			{
+				const FString A = Args[0].ToLower();
+				if (A == TEXT("on") || A == TEXT("1"))  { bNew = true;  }
+				else if (A == TEXT("off") || A == TEXT("0")) { bNew = false; }
+			}
+			V->bMuted = bNew;
+			++Found;
+		}
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan,
+				FString::Printf(TEXT("audio mute applied to %d VoiceOutput(s)"), Found));
+		}
+	}));
+
 // --- GCI / Air Defence console commands ---------------------------------------
 static EThreatClass ParseThreatClass(const FString& T)
 {
@@ -3238,6 +3728,168 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceShadowCmd(
 		}
 	}));
 
+// ============================================================================
+// Instructor console commands - sent from any client window, routed through the
+// local PlayerController's Server RPC, executed on the server. - TripleA
+// ============================================================================
+
+static AClearanceOperatorPC* FindLocalOperatorPC(UWorld* World)
+{
+	if (!World) { return nullptr; }
+	if (APlayerController* PC = World->GetFirstPlayerController())
+	{
+		return Cast<AClearanceOperatorPC>(PC);
+	}
+	return nullptr;
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrEmergencyCmd(
+	TEXT("clearance.instructor.emergency"),
+	TEXT("clearance.instructor.emergency <callsign> <Mayday|CommsFailure|Hijack|FuelLow> - inject an emergency"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 2) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.instructor.emergency <callsign> <kind>")); return; }
+		AClearanceOperatorPC* PC = FindLocalOperatorPC(World);
+		if (!PC) { UE_LOG(LogTemp, Warning, TEXT("[Instructor] no AClearanceOperatorPC - set it as the default PlayerController in your GameMode")); return; }
+		EEmergencyType Kind = EEmergencyType::None;
+		const FString K = Args[1].ToLower();
+		if      (K == TEXT("mayday") || K == TEXT("7700"))           { Kind = EEmergencyType::GeneralMayday; }
+		else if (K == TEXT("commsfailure") || K == TEXT("7600"))     { Kind = EEmergencyType::CommsFailure; }
+		else if (K == TEXT("hijack") || K == TEXT("7500"))           { Kind = EEmergencyType::Hijack; }
+		else if (K == TEXT("fuellow") || K == TEXT("fuel"))          { Kind = EEmergencyType::FuelLow; }
+		else { UE_LOG(LogTemp, Warning, TEXT("unknown emergency type: %s"), *Args[1]); return; }
+		PC->Server_InjectEmergency(FName(*Args[0]), Kind);
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrSpawnCmd(
+	TEXT("clearance.instructor.spawn"),
+	TEXT("clearance.instructor.spawn - inject a random civilian spawn"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectSpawn(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrClearCmd(
+	TEXT("clearance.instructor.clear"),
+	TEXT("clearance.instructor.clear - wipe all sector traffic"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectClearTraffic(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrWindCmd(
+	TEXT("clearance.instructor.wind"),
+	TEXT("clearance.instructor.wind <dirDeg> <speedKts> - set sector wind"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 2) { return; }
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World))
+		{
+			PC->Server_InjectSetWind(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]));
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrLoadCmd(
+	TEXT("clearance.instructor.scenario.load"),
+	TEXT("clearance.instructor.scenario.load <name> - load a scenario on the server"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectLoadScenario(Args[0]); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrStopCmd(
+	TEXT("clearance.instructor.scenario.stop"),
+	TEXT("clearance.instructor.scenario.stop - stop the running scenario"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectStopScenario(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrPauseCmd(
+	TEXT("clearance.instructor.pause"),
+	TEXT("clearance.instructor.pause <0|1> - pause/unpause the sim on the server"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		const bool b = (Args.Num() > 0) ? (Args[0] != TEXT("0")) : true;
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectSetPaused(b); }
+	}));
+
+// Counts the number of Controllers + AirspaceManagers per world - if either is
+// greater than 1 there's a duplicate that explains state-divergence bugs. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceNetActorsCmd(
+	TEXT("clearance.net.actors"),
+	TEXT("clearance.net.actors - dump count of Controller + AirspaceManager actors in the local world"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (!World) { return; }
+		const TCHAR* Role = World->GetNetMode() == NM_Client ? TEXT("CLIENT") : TEXT("SERVER");
+		int32 NumCtl = 0, NumMgr = 0;
+		FString CtlSigs, MgrSigs;
+		for (TActorIterator<AClearanceSimulationController> It(World); It; ++It)
+		{
+			++NumCtl;
+			CtlSigs += FString::Printf(TEXT(" %s%s"), *It->GetName(), It->HasAuthority() ? TEXT("(A)") : TEXT(""));
+		}
+		for (TActorIterator<AClearanceAirspaceManager> It(World); It; ++It)
+		{
+			++NumMgr;
+			MgrSigs += FString::Printf(TEXT(" %s[ac=%d]"), *It->GetName(), It->GetAircraftCount());
+		}
+		UE_LOG(LogTemp, Display, TEXT("[NET %s] Controllers=%d:%s   Managers=%d:%s"),
+			Role, NumCtl, *CtlSigs, NumMgr, *MgrSigs);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 10.f, FColor::Yellow,
+				FString::Printf(TEXT("[NET %s] Ctl=%d Mgr=%d"), Role, NumCtl, NumMgr));
+		}
+	}));
+
+// Diagnostic: prints aircraft count from BOTH the world-iterator-found Manager
+// AND the Controller's UPROPERTY pointer. If they diverge, the Controller is
+// holding a stale or different Manager than the world has. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceNetCountCmd(
+	TEXT("clearance.net.count"),
+	TEXT("clearance.net.count - prints AirspaceManager count from iterator + from Controller.AirspaceManager"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (!World) { return; }
+		const TCHAR* Role = World->GetNetMode() == NM_Client ? TEXT("CLIENT")
+		                  : World->GetNetMode() == NM_ListenServer ? TEXT("SERVER")
+		                  : World->GetNetMode() == NM_DedicatedServer ? TEXT("DED-SERVER")
+		                  : TEXT("STANDALONE");
+
+		AClearanceAirspaceManager* MIter = nullptr;
+		for (TActorIterator<AClearanceAirspaceManager> It(World); It; ++It) { MIter = *It; break; }
+
+		AClearanceSimulationController* C = nullptr;
+		for (TActorIterator<AClearanceSimulationController> It(World); It; ++It) { C = *It; break; }
+
+		auto Dump = [](AClearanceAirspaceManager* M) -> FString {
+			if (!M) { return TEXT("null"); }
+			const TArray<FAircraftState> All = M->GetAllAircraftStates();
+			FString Out = FString::Printf(TEXT("%s[ac=%d]"), *M->GetName(), All.Num());
+			for (int32 i = 0; i < FMath::Min(5, All.Num()); ++i)
+			{
+				Out += FString::Printf(TEXT(" %s"), *All[i].Callsign.ToString());
+			}
+			return Out;
+		};
+
+		const FString IterStr = Dump(MIter);
+		const FString PtrStr  = C ? Dump(C->GetAirspaceManager()) : FString(TEXT("no controller"));
+		const bool bSame = MIter && C && (MIter == C->GetAirspaceManager());
+
+		UE_LOG(LogTemp, Display, TEXT("[NET %s] iter=%s  ctrl=%s  match=%s"),
+			Role, *IterStr, *PtrStr, bSame ? TEXT("YES") : TEXT("NO"));
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 10.f, bSame ? FColor::Green : FColor::Red,
+				FString::Printf(TEXT("[NET %s] iter=%s ctrl=%s %s"),
+					Role, *IterStr, *PtrStr, bSame ? TEXT("MATCH") : TEXT("DIVERGE")));
+		}
+	}));
+
 // Send every available friendly military aircraft at this bandit at once. - TripleA
 static FAutoConsoleCommandWithWorldAndArgs GClearanceInterceptFlightCmd(
 	TEXT("clearance.intercept.flight"),
@@ -3269,6 +3921,66 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceRadarCmd(
 		{
 			const bool bOn = (Args.Num() < 1) ? true : (Args[0].ToLower() != TEXT("off") && Args[0] != TEXT("0"));
 			C->SetRadarEnabled(bOn);
+		}
+	}));
+
+// Resolved at runtime so dev-builds + packaged builds find the same Scenarios folder. - TripleA
+static FString ClearanceScenarioDir()
+{
+	return FPaths::ProjectPluginsDir() / TEXT("ClearanceSim/Scenarios");
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioListCmd(
+	TEXT("clearance.scenario.list"),
+	TEXT("clearance.scenario.list - list scenario .json files in Plugins/ClearanceSim/Scenarios"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* /*World*/)
+	{
+		const FString Dir = ClearanceScenarioDir();
+		TArray<FString> Found;
+		IFileManager::Get().FindFiles(Found, *(Dir / TEXT("*.json")), true, false);
+		if (Found.Num() == 0)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[Scenario] no .json files in %s"), *Dir);
+			return;
+		}
+		UE_LOG(LogTemp, Display, TEXT("[Scenario] %d scenario(s) in %s:"), Found.Num(), *Dir);
+		for (const FString& F : Found) { UE_LOG(LogTemp, Display, TEXT("  - %s"), *F); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioLoadCmd(
+	TEXT("clearance.scenario.load"),
+	TEXT("clearance.scenario.load <name> - load + start a scenario (name without .json)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.scenario.load <name>")); return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetScenarioRunner()) { UE_LOG(LogTemp, Warning, TEXT("[Scenario] controller / runner missing")); return; }
+
+		const FString Name = Args[0].EndsWith(TEXT(".json")) ? Args[0] : Args[0] + TEXT(".json");
+		const FString Path = ClearanceScenarioDir() / Name;
+		FString Err;
+		if (!C->GetScenarioRunner()->LoadFromFile(Path, Err))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[Scenario] load failed: %s"), *Err);
+			return;
+		}
+		// Hard-lock the spawner BEFORE clearing so it can't tick in between and
+		// repopulate the manager with pre-scenario traffic. The lock is independent
+		// of bAutoSpawn, so free-play preference is preserved. - TripleA
+		C->SetSpawnerScenarioLocked(true);
+		C->ClearTraffic();
+		C->GetScenarioRunner()->Start();
+		UE_LOG(LogTemp, Display, TEXT("[Scenario] running: %s"), *C->GetScenarioRunner()->GetLoadedName());
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioStopCmd(
+	TEXT("clearance.scenario.stop"),
+	TEXT("clearance.scenario.stop - stop the running scenario"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			if (C->GetScenarioRunner()) { C->GetScenarioRunner()->Stop(); }
 		}
 	}));
 

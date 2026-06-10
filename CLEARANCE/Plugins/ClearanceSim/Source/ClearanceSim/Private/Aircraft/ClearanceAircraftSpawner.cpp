@@ -14,10 +14,12 @@ void AClearanceAircraftSpawner::SetReferences(AClearanceAirspaceManager* InManag
 
 void AClearanceAircraftSpawner::TickSpawning(float DeltaTime)
 {
-	if (!bAutoSpawn || !Manager || CurrentSpawnIntervalSeconds <= 0.f)
+	if (!bAutoSpawn || bScenarioLocked || !Manager || CurrentSpawnIntervalSeconds <= 0.f)
 	{
 		return;
 	}
+	// Trace - if this fires while a scenario should be locking, my gate is broken. - TripleA
+	UE_LOG(LogTemp, Warning, TEXT("[Spawner] TICKING (autospawn=%d locked=%d)"), bAutoSpawn?1:0, bScenarioLocked?1:0);
 
 	SpawnTimer += DeltaTime;
 	if (SpawnTimer >= CurrentSpawnIntervalSeconds)
@@ -79,6 +81,12 @@ void AClearanceAircraftSpawner::SetSpawnInterval(float Seconds)
 void AClearanceAircraftSpawner::SetAutoSpawn(bool bEnabled)
 {
 	bAutoSpawn = bEnabled;
+}
+
+void AClearanceAircraftSpawner::SetScenarioLocked(bool bLocked)
+{
+	bScenarioLocked = bLocked;
+	if (bLocked) { SpawnTimer = 0.f; } // reset so when unlocked we don't immediately fire a delayed spawn
 }
 
 FAircraftSpawnData AClearanceAircraftSpawner::GenerateSpawnData()

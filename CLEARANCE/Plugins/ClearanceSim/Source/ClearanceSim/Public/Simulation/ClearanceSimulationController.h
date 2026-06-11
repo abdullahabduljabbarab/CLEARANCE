@@ -722,6 +722,21 @@ private:
 
 	void TickGCIIntercepts(float DeltaTime);
 
+	// Bandit reactive EW: hostiles (and military Unknowns) auto-jam when an
+	// interceptor closes inside 25nm, auto-drop chaff at 10nm. Makes every
+	// intercept run a sensor problem, not just a vectoring one. - TripleA
+	void TickBanditEW(float DeltaTime);
+
+	// Per-bandit cooldown timestamps so we don't toggle jamming every frame
+	// or spam chaff. Keyed by callsign. - TripleA
+	struct FBanditEWState
+	{
+		float LastJamToggleTime = -1000.f;
+		float LastChaffDropTime = -1000.f;
+		bool  bWasJammingAtIntercept = false;  // scoring bookkeeping
+	};
+	TMap<FName, FBanditEWState> BanditEWStates;
+
 	// Pair keys (sorted "A|B") that have had TCAS fire on them this encounter; while
 	// the pair is in here we suppress the resolution reward, because TCAS did the
 	// resolving, not the player. Cleared when the pair resolves or either side leaves.

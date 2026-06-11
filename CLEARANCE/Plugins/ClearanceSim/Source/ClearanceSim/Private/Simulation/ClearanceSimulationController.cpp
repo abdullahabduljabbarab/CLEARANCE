@@ -987,6 +987,80 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	UpdateFollowCamera();
 }
 
+// Hostiles (and military Unknowns) react to closing friendly interceptors:
+// jammer on at 25nm, chaff at 10nm with an 8s reload, jammer off if everyone
+// disengages out past 40nm. Cooldowns are wall-clock so a tight intercept
+// chain doesn't trigger ten cycles in a row. - TripleA
+void AClearanceSimulationController::TickBanditEW(float DeltaTime)
+{
+	if (!AirspaceManager) { return; }
+
+	const TArray<FAircraftState> All = AirspaceManager->GetAllAircraftStates();
+
+	TArray<FVector> InterceptorPositions;
+	for (const FAircraftState& A : All)
+	{
+		if (A.ThreatClass == EThreatClass::Friendly && A.bIsMilitary && A.bUnderGCIControl)
+		{
+			InterceptorPositions.Add(A.Position);
+		}
+	}
+	if (InterceptorPositions.Num() == 0) { return; }
+
+	constexpr float JamOnRangeNm    = 25.f;
+	constexpr float ChaffRangeNm    = 10.f;
+	constexpr float JamOffRangeNm   = 40.f;
+	constexpr float JamCooldownSec  =  5.f;
+	constexpr float ChaffReloadSec  =  8.f;
+	const float Now = SessionTime;
+
+	for (const FAircraftState& B : All)
+	{
+		const bool bEligible = (B.ThreatClass == EThreatClass::Hostile)
+			|| (B.ThreatClass == EThreatClass::Unknown && B.bIsMilitary);
+		if (!bEligible) { continue; }
+
+		float ClosestNm = TNumericLimits<float>::Max();
+		for (const FVector& P : InterceptorPositions)
+		{
+			const float D = FVector::Dist2D(B.Position, P);
+			if (D < ClosestNm) { ClosestNm = D; }
+		}
+
+		FBanditEWState& Tac = BanditEWStates.FindOrAdd(B.Callsign);
+
+		if (!B.bJammingOn && ClosestNm <= JamOnRangeNm
+			&& (Now - Tac.LastJamToggleTime) > JamCooldownSec)
+		{
+			FAircraftState U = B;
+			U.bJammingOn = true;
+			AirspaceManager->RequestStateUpdate(U);
+			Tac.LastJamToggleTime = Now;
+			PushNotification(
+				FString::Printf(TEXT("EW: %s lit up jammers"), *B.Callsign.ToString()),
+				FColor(255, 80, 80), 5.f);
+		}
+		else if (B.bJammingOn && ClosestNm > JamOffRangeNm
+			&& (Now - Tac.LastJamToggleTime) > JamCooldownSec * 2.f)
+		{
+			FAircraftState U = B;
+			U.bJammingOn = false;
+			AirspaceManager->RequestStateUpdate(U);
+			Tac.LastJamToggleTime = Now;
+		}
+
+		if (ClosestNm <= ChaffRangeNm
+			&& (Now - Tac.LastChaffDropTime) > ChaffReloadSec)
+		{
+			AirspaceManager->DropChaff(B.Position, B.Altitude);
+			Tac.LastChaffDropTime = Now;
+			PushNotification(
+				FString::Printf(TEXT("EW: %s released chaff"), *B.Callsign.ToString()),
+				FColor(255, 220, 80), 4.f);
+		}
+	}
+}
+
 void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 {
 	if (!AirspaceManager || ActiveIntercepts.Num() == 0) { return; }
@@ -1873,6 +1947,7 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 	}
 
 	TickGCIIntercepts(DeltaTime);                                  // join-up + escort
+	TickBanditEW(DeltaTime);                                       // hostiles react to closing interceptors
 	TickCrashingAircraft(DeltaTime);                               // drop falling aircraft to the ground
 	CheckExits();                                                  // landings / departures / strays
 
@@ -2764,21 +2839,42 @@ void AClearanceSimulationController::CheckExits()
 			if (bAnyJoined && !BanditCs.IsNone() && !InterceptCredited.Contains(BanditCs))
 			{
 				InterceptCredited.Add(BanditCs);
+
+				// EW bonus: if this bandit was actively jamming when we caught
+				// it, the operator held the track through the jam - real skill,
+				// real payoff. - TripleA
+				const FAircraftState BanditAtKill = AirspaceManager->GetAircraftState(BanditCs);
+				const bool bThroughEW = BanditAtKill.bIsValid && BanditAtKill.bJammingOn;
+
 				if (Scoring)
 				{
-					Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None,
-						FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector"), Fighters.Num(), *BanditCs.ToString()));
+					const FString Detail = bThroughEW
+						? FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector (jammer active - EW bonus)"), Fighters.Num(), *BanditCs.ToString())
+						: FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector"), Fighters.Num(), *BanditCs.ToString());
+					Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None, Detail);
+					if (bThroughEW)
+					{
+						// Mirrors a SuccessfulIntercept entry to double the points without
+						// inventing a new incident type. Cheap, accurate to the logic. - TripleA
+						Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None,
+							FString::Printf(TEXT("EW bonus for %s"), *BanditCs.ToString()));
+					}
 				}
 				{
-					const FString NMsg = FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
-						Fighters.Num(), *BanditCs.ToString(),
-						Scoring ? Scoring->PointsIntercept : 0);
+					const int32 Base  = Scoring ? Scoring->PointsIntercept : 0;
+					const int32 Total = bThroughEW ? Base * 2 : Base;
+					const FString NMsg = bThroughEW
+						? FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out through EW  (+%d)"),
+							Fighters.Num(), *BanditCs.ToString(), Total)
+						: FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
+							Fighters.Num(), *BanditCs.ToString(), Total);
 					PushNotification(NMsg, FColor::Green, 5.f);
 					if (GEngine)
 					{
 						GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green, NMsg);
 					}
 				}
+				BanditEWStates.Remove(BanditCs); // tidy
 				AirspaceManager->DeregisterAircraft(BanditCs);
 				for (const FName& F : Fighters) { AirspaceManager->DeregisterAircraft(F); }
 				for (const FName& F : Fighters) { ActiveIntercepts.Remove(F); JoinedIntercepts.Remove(F); SettledInFormation.Remove(F); }
@@ -2922,6 +3018,51 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("INSTR %s %s %.0f"),
 			*UEnum::GetValueAsString(Instruction.Type), *Instruction.TargetCallsign.ToString(), Instruction.TargetValue));
 	}
+
+	// Operator-side "no joy" / "track lost" - drops the contact without the
+	// strayed penalty IF EW (jamming or active chaff near the contact) plausibly
+	// caused the loss. Without EW it scores as a normal unresolved-exit so the
+	// operator can't just dismiss difficult contacts for free. - TripleA
+	if (Instruction.Type == EInstructionType::DeclareTrackLost && AirspaceManager)
+	{
+		const FAircraftState S = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
+		if (!S.bIsValid) { return EInstructionResult::Rejected_InvalidCallsign; }
+
+		bool bEWPresent = S.bJammingOn;
+		if (!bEWPresent)
+		{
+			for (const FChaffCloud& C : AirspaceManager->GetActiveChaffClouds())
+			{
+				const float DistNm = FVector::Dist2D(S.Position, C.PositionNm);
+				if (DistNm < 3.f) { bEWPresent = true; break; }
+			}
+		}
+
+		if (Scoring)
+		{
+			if (bEWPresent)
+			{
+				Scoring->LogIncident(EIncidentType::SuccessfulIntercept, Instruction.TargetCallsign, NAME_None,
+					FString::Printf(TEXT("track lost to EW - %s released"), *Instruction.TargetCallsign.ToString()));
+			}
+			else
+			{
+				Scoring->LogIncident(EIncidentType::UnresolvedExit, Instruction.TargetCallsign, NAME_None,
+					FString::Printf(TEXT("track declared lost without EW - %s dropped"), *Instruction.TargetCallsign.ToString()));
+			}
+		}
+
+		PushNotification(
+			bEWPresent
+				? FString::Printf(TEXT("%s released (EW - no penalty)"), *Instruction.TargetCallsign.ToString())
+				: FString::Printf(TEXT("%s dropped (no EW - counted as strayed)"), *Instruction.TargetCallsign.ToString()),
+			bEWPresent ? FColor(80, 200, 255) : FColor(255, 140, 60), 5.f);
+
+		BanditEWStates.Remove(Instruction.TargetCallsign);
+		AirspaceManager->DeregisterAircraft(Instruction.TargetCallsign);
+		return EInstructionResult::Accepted;
+	}
+
 	if (CommsRouter)
 	{
 		return CommsRouter->IssueInstruction(Instruction);

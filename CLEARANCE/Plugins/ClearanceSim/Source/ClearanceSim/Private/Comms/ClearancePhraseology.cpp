@@ -485,6 +485,20 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			}
 			break; // the rest is the facility/frequency - don't parse it as commands
 		}
+		else if (T == TEXT("lost") || T == TEXT("no") || T == TEXT("noJoy") || T == TEXT("nojoy"))
+		{
+			// Operator declares a track lost - "<callsign> lost contact",
+			// "<callsign> no joy" (fighter pilot brevity for "I can't see the
+			// target"), "<callsign> lost track". Eats the optional follow-up
+			// noun ("contact"/"track"/"joy") so the readback is clean. - TripleA
+			++Idx;
+			if (Idx < Tokens.Num() && (Tokens[Idx] == TEXT("contact") || Tokens[Idx] == TEXT("track") || Tokens[Idx] == TEXT("joy")))
+			{
+				++Idx;
+			}
+			Make(EInstructionType::DeclareTrackLost, 0.f, TEXT("track lost"), 0, false);
+			break;
+		}
 		else if (T == TEXT("hold"))
 		{
 			// "hold", "hold left", "hold right" - enter a racetrack at the current

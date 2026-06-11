@@ -696,12 +696,30 @@ void UClearanceScenarioRunner::ExecuteAction(const FScenarioAction& Act)
 		break;
 	}
 	case EScenarioActionType::ActivateJammer:
-	case EScenarioActionType::DropChaff:
-		// EW actions are placeholders until the EW system lands. Author them now so
-		// scenarios can be written; wire them up when jamming exists. - TripleA
-		ScenarioSay(FString::Printf(TEXT("EW action %d (pending EW system)"), (int32)Act.Type),
-			FColor(220, 200, 80));
+	{
+		const FString* Cs = Act.Params.Find(TEXT("callsign"));
+		if (!Cs || !Manager) { break; }
+		const FString* StateStr = Act.Params.Find(TEXT("on"));
+		const bool bOn = StateStr ? (StateStr->ToLower() != TEXT("false") && *StateStr != TEXT("0")) : true;
+		FAircraftState S = Manager->GetAircraftState(FName(**Cs));
+		if (!S.bIsValid) { break; }
+		S.bJammingOn = bOn;
+		Manager->RequestStateUpdate(S);
+		ScenarioSay(FString::Printf(TEXT("EW: %s jammer %s"), **Cs, bOn ? TEXT("ON") : TEXT("OFF")),
+			FColor(255, 80, 80));
 		break;
+	}
+	case EScenarioActionType::DropChaff:
+	{
+		const FString* Cs = Act.Params.Find(TEXT("callsign"));
+		if (!Cs || !Manager) { break; }
+		const FAircraftState S = Manager->GetAircraftState(FName(**Cs));
+		if (!S.bIsValid) { break; }
+		Manager->DropChaff(S.Position, S.Altitude);
+		ScenarioSay(FString::Printf(TEXT("EW: %s chaff release"), **Cs),
+			FColor(255, 220, 80));
+		break;
+	}
 	default:
 		break;
 	}

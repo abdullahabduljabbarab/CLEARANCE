@@ -33,7 +33,8 @@ enum class EInstructionType : uint8
 	Hold				UMETA(DisplayName = "Hold"),
 	ApproachClearance	UMETA(DisplayName = "Approach Clearance"),
 	TakeoffClearance	UMETA(DisplayName = "Takeoff Clearance"),
-	ExitSector			UMETA(DisplayName = "Exit Sector")
+	ExitSector			UMETA(DisplayName = "Exit Sector"),
+	DeclareTrackLost	UMETA(DisplayName = "Declare Track Lost")  // "no joy", EW disengage
 };
 
 /** Severity of a conflict / safety event. */

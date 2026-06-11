@@ -250,6 +250,11 @@ void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& I
 	case EInstructionType::ExitSector:
 		State.FlightPhase = EFlightPhase::Exiting;
 		break;
+	case EInstructionType::DeclareTrackLost:
+		// The aircraft itself doesn't change behaviour - this instruction is
+		// operator-facing only. The Controller listens for the validator's
+		// outcome and deregisters the contact with an EW-aware exit reason. - TripleA
+		break;
 	case EInstructionType::Hold:
 	default:
 		break;

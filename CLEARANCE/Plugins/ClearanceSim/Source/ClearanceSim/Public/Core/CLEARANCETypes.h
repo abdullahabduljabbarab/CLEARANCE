@@ -301,6 +301,36 @@ struct CLEARANCESIM_API FAircraftState
 	// detector of its own - it just colours the debug overlay from this. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Conflict")
 	EAlertLevel CurrentAlertLevel = EAlertLevel::None;
+
+	// Electronic warfare: when true, this aircraft is actively jamming. Each
+	// radar that paints it produces a degraded track (low confidence, big
+	// jitter) AND blankets neighbouring bearings from that radar with noise.
+	// Pairs with the fusion layer - one jammed sensor doesn't lose the picture
+	// when other sensors cover the same volume from a different angle. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	bool bJammingOn = false;
+};
+
+// One chaff cloud release. Sits in the world for a few seconds scattering
+// returns; every radar in line of sight reports it as a ghost track with
+// no transponder. Fusion can't eliminate it (every sensor sees it, that's
+// the point) but the lack of Mode C + static position betray it. - TripleA
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FChaffCloud
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	FVector PositionNm = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	float AltitudeFt = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	float DropSessionTime = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	float LifetimeSec = 12.f;
 };
 
 /** A single instruction targeted at one aircraft. */
@@ -461,6 +491,12 @@ struct CLEARANCESIM_API FRadarTrack
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
 	float Confidence = 0.f;                 // 0..1, fades with time since last paint
+
+	// What the radar saw on the LAST paint, before time-based fade. Lets
+	// EW pin a degraded read (jammed = 0.25, chaff ghost = 0.35) without
+	// the per-tick fade pass resetting it back to full. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	float PaintConfidence = 1.f;
 };
 
 /** One snapshot of the whole sector at a moment in time, captured by the recorder. */

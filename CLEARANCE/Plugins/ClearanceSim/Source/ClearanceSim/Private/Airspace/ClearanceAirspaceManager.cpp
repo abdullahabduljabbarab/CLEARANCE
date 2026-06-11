@@ -15,6 +15,45 @@ void AClearanceAirspaceManager::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 	DOREPLIFETIME(AClearanceAirspaceManager, ReplicatedAircraft);
 	DOREPLIFETIME(AClearanceAirspaceManager, SectorEnvironment);
 	DOREPLIFETIME(AClearanceAirspaceManager, Runways);
+	DOREPLIFETIME(AClearanceAirspaceManager, ChaffClouds);
+}
+
+void AClearanceAirspaceManager::DropChaff(const FVector& PositionNm, float AltitudeFt)
+{
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AirspaceMgr] BLOCKED DropChaff on CLIENT"));
+		return;
+	}
+	FChaffCloud C;
+	C.PositionNm = PositionNm;
+	C.AltitudeFt = AltitudeFt;
+	C.DropSessionTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	C.LifetimeSec = 12.f;
+	ChaffClouds.Add(C);
+
+	// Trim retired clouds so the array doesn't grow unbounded across a long
+	// session - radars only see live ones anyway. - TripleA
+	const float Now = C.DropSessionTime;
+	ChaffClouds.RemoveAll([Now](const FChaffCloud& X)
+	{
+		return (Now - X.DropSessionTime) > X.LifetimeSec;
+	});
+}
+
+TArray<FChaffCloud> AClearanceAirspaceManager::GetActiveChaffClouds() const
+{
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	TArray<FChaffCloud> Out;
+	Out.Reserve(ChaffClouds.Num());
+	for (const FChaffCloud& C : ChaffClouds)
+	{
+		if ((Now - C.DropSessionTime) <= C.LifetimeSec)
+		{
+			Out.Add(C);
+		}
+	}
+	return Out;
 }
 
 void AClearanceAirspaceManager::OnRep_ReplicatedAircraft()

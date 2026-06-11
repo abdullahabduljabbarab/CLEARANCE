@@ -79,6 +79,17 @@ public:
 	// the wind picked as active. - TripleA
 	const TArray<FRunwayInfo>& GetAllRunways() const { return Runways; }
 
+	// Spawn a chaff cloud at the given sector-relative XY (nm) and altitude.
+	// Server-only; replicates down to clients so their scope shows the same
+	// ghost contacts. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Airspace|EW")
+	void DropChaff(const FVector& PositionNm, float AltitudeFt);
+
+	// Active chaff clouds, with anything past its lifetime trimmed. Radars iterate
+	// this each tick and inject ghost tracks at each cloud's position. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Airspace|EW")
+	TArray<FChaffCloud> GetActiveChaffClouds() const;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Airspace|Settings", meta = (ClampMin = "1"))
 	int32 MaxAircraftCount = 20;
 
@@ -133,6 +144,12 @@ private:
 	// markings) lines up with where the server placed the strips. - TripleA
 	UPROPERTY(Replicated)
 	TArray<FRunwayInfo> Runways;
+
+	// Active chaff clouds. Server pushes via DropChaff, clients receive via
+	// replication. Trimmed by GetActiveChaffClouds so callers see only live
+	// entries. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FChaffCloud> ChaffClouds;
 
 	bool ValidateState(const FAircraftState& State) const;
 	void ClampStateValues(FAircraftState& State) const;

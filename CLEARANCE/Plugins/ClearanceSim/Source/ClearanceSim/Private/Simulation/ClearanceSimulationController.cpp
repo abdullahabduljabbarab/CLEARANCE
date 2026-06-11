@@ -2598,6 +2598,28 @@ void AClearanceSimulationController::DrawDebugView()
 		}
 	}
 
+	// Chaff clouds - low-confidence ghost contacts drawn as fading amber rings
+	// where each cloud was dropped. The radar paints them as ghost tracks; the
+	// scope shows the physical cloud here too so the operator can correlate. - TripleA
+	if (AirspaceManager)
+	{
+		const float NowS = World->GetTimeSeconds();
+		for (const FChaffCloud& Cloud : AirspaceManager->GetActiveChaffClouds())
+		{
+			const float Age = NowS - Cloud.DropSessionTime;
+			const float Frac = FMath::Clamp(Age / FMath::Max(0.1f, Cloud.LifetimeSec), 0.f, 1.f);
+			const FVector ChaffPos(
+				Origin.X + Cloud.PositionNm.X * S,
+				Origin.Y + Cloud.PositionNm.Y * S,
+				GroundWorldZ + AltitudeToWorldZOffset(Cloud.AltitudeFt));
+			const FColor ChaffCol(255, static_cast<uint8>(220 * (1.f - Frac * 0.7f)), 60, 255);
+			DrawDebugCircle(World, ChaffPos, 1200.f - 800.f * Frac, 16, ChaffCol,
+				false, -1.f, 0, 60.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
+			DrawDebugString(World, ChaffPos + FVector(0, 0, 800),
+				TEXT("CHAFF"), nullptr, ChaffCol, 0.05f, true, 0.9f);
+		}
+	}
+
 	{
 		for (const FAircraftState& A : States)
 		{
@@ -2612,6 +2634,19 @@ void AClearanceSimulationController::DrawDebugView()
 			// the "out the tower window" view we'll wire later. - TripleA
 			const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + AltitudeToWorldZOffset(A.Altitude));
 			DrawMIL2525CAir(World, P, 1600.f, A.ThreatClass, A.Heading, A.bIsMilitary, Alert);
+
+			// Jamming indicator - jaggy lightning-bolt mark from the aircraft so
+			// the operator can spot the jammer even when its own track is degraded
+			// in the radar feed. - TripleA
+			if (A.bJammingOn)
+			{
+				const float Wedge = 600.f;
+				DrawDebugLine(World, P + FVector(-Wedge, Wedge, 0), P + FVector(0, Wedge * 0.4f, 0), FColor::Red, false, -1.f, 0, 50.f);
+				DrawDebugLine(World, P + FVector(0, Wedge * 0.4f, 0), P + FVector(-Wedge * 0.3f, -Wedge * 0.3f, 0), FColor::Red, false, -1.f, 0, 50.f);
+				DrawDebugLine(World, P + FVector(-Wedge * 0.3f, -Wedge * 0.3f, 0), P + FVector(Wedge, -Wedge, 0), FColor::Red, false, -1.f, 0, 50.f);
+				DrawDebugString(World, P + FVector(0, 0, 1400),
+					TEXT("JAM"), nullptr, FColor::Red, 0.05f, true, 1.0f);
+			}
 
 			// Float the callsign + current>target heading over each aircraft. - TripleA
 			DrawDebugString(World, WorldPositionFor(A) + FVector(0, 0, 1.2f * S),
@@ -3640,6 +3675,61 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
 		}
+	}));
+
+// --- Electronic Warfare console commands -------------------------------------
+// Toggle jamming on an aircraft: degrades that radar's reads on it plus
+// blankets the bearing arc to other contacts in the same wedge. Operator
+// sees one radar lose the picture, fused track stays up because the other
+// radars cover from a different angle. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceJamCmd(
+	TEXT("clearance.ew.jam"),
+	TEXT("clearance.ew.jam <callsign> <on|off> - toggle a jammer on the named aircraft"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.ew.jam <callsign> <on|off>")); return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+
+		const FName Callsign(*Args[0]);
+		const bool bOn = (Args.Num() < 2) ? true : (Args[1].ToLower() != TEXT("off") && Args[1] != TEXT("0"));
+
+		FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
+		if (!S.bIsValid)
+		{
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Red, FString::Printf(TEXT("ew.jam: no aircraft '%s'"), *Callsign.ToString())); }
+			return;
+		}
+		S.bJammingOn = bOn;
+		C->GetAirspaceManager()->RequestStateUpdate(S);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, bOn ? FColor::Red : FColor::Cyan,
+				FString::Printf(TEXT("EW: jammer %s on %s"), bOn ? TEXT("ON") : TEXT("OFF"), *Callsign.ToString()));
+		}
+	}));
+
+// Have an aircraft drop a chaff cloud at its current position. Every radar in
+// line of sight reports it as a low-confidence ghost with no transponder for
+// the next ~12 seconds. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceChaffCmd(
+	TEXT("clearance.ew.chaff"),
+	TEXT("clearance.ew.chaff <callsign> - drop a chaff cloud at the named aircraft's position"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.ew.chaff <callsign>")); return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+
+		const FName Callsign(*Args[0]);
+		const FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
+		if (!S.bIsValid)
+		{
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Red, FString::Printf(TEXT("ew.chaff: no aircraft '%s'"), *Callsign.ToString())); }
+			return;
+		}
+		C->GetAirspaceManager()->DropChaff(S.Position, S.Altitude);
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor(255, 220, 0), FString::Printf(TEXT("EW: chaff dropped at %s"), *Callsign.ToString())); }
 	}));
 
 // Per-world mute - in PIE, run this in the server console to silence its

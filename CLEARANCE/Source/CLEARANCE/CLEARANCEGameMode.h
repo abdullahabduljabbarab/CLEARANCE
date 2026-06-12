@@ -9,7 +9,7 @@
 /**
  *  Simple GameMode for a first person game
  */
-UCLASS(abstract)
+UCLASS()
 class ACLEARANCEGameMode : public AGameModeBase
 {
 	GENERATED_BODY()

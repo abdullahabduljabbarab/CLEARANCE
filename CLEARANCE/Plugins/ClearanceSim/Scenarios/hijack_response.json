@@ -1,0 +1,168 @@
+{
+  "metadata": {
+    "id": "hijack_response",
+    "name": "Hijack Response",
+    "brief": "Five civilian aircraft transiting the sector. Mid-flight one of them squawks 7500 - hijack in progress. Player must recognise the squawk, call a SHADOW escort (no hostile declaration, no mis-ID risk), vector other traffic clear of the hijack's path, and prevent the hijack from reaching the protected zone. Multiple win/lose paths.",
+    "location": "Continental FIR",
+    "roe": "7500 indicates hijack in progress. Doctrine is SHADOW (military escort, no weapons release). Hostile declaration only as last resort - civilian aircraft under duress cannot be classified hostile without consequence.",
+    "difficulty": "Hard",
+    "keepLevelZones": true
+  },
+
+  "environment": {
+    "windDirectionDeg": 280,
+    "windSpeedKts": 12,
+    "activeRunwayHeadingDeg": 270
+  },
+
+  "initialSpawns": [
+    {
+      "callsign": "BAW472",
+      "type": "MEDIUM",
+      "positionNm": { "x": 70, "y": 5 },
+      "headingDeg": 270,
+      "speedKts": 280,
+      "altitudeFt": 34000,
+      "squawk": 4721,
+      "threat": "Neutral",
+      "iff": true
+    },
+    {
+      "callsign": "DLH812",
+      "type": "MEDIUM",
+      "positionNm": { "x": -65, "y": 10 },
+      "headingDeg": 90,
+      "speedKts": 270,
+      "altitudeFt": 31000,
+      "squawk": 3812,
+      "threat": "Neutral",
+      "iff": true
+    },
+    {
+      "callsign": "AFR1109",
+      "type": "MEDIUM",
+      "positionNm": { "x": 15, "y": 65 },
+      "headingDeg": 180,
+      "speedKts": 290,
+      "altitudeFt": 36000,
+      "squawk": 1109,
+      "threat": "Neutral",
+      "iff": true
+    },
+    {
+      "callsign": "RYR2240",
+      "type": "MEDIUM",
+      "positionNm": { "x": -20, "y": -60 },
+      "headingDeg": 360,
+      "speedKts": 285,
+      "altitudeFt": 29000,
+      "squawk": 2240,
+      "threat": "Neutral",
+      "iff": true
+    },
+    {
+      "callsign": "KLM618",
+      "type": "MEDIUM",
+      "positionNm": { "x": 55, "y": 40 },
+      "headingDeg": 225,
+      "speedKts": 275,
+      "altitudeFt": 33000,
+      "squawk": 1618,
+      "threat": "Neutral",
+      "iff": true
+    }
+  ],
+
+  "timedEvents": [
+    {
+      "atSec": 20,
+      "action": {
+        "type": "injectMessage",
+        "params": {
+          "callsign": "ACC",
+          "voice": "en-GB-RyanNeural",
+          "text": "Five aircraft transiting the sector, all squawking standard codes. Maintain standard separation."
+        }
+      }
+    },
+    {
+      "atSec": 45,
+      "action": {
+        "type": "declareEmergency",
+        "params": { "callsign": "BAW472", "kind": "Hijack" }
+      }
+    },
+    {
+      "atSec": 50,
+      "action": {
+        "type": "injectMessage",
+        "params": {
+          "callsign": "ACC",
+          "voice": "en-GB-RyanNeural",
+          "text": "Speedbird four seven two squawking seven five zero zero. Hijack code. Activate doctrine, recommend immediate SHADOW intercept."
+        }
+      }
+    }
+  ],
+
+  "triggers": [
+    {
+      "id": "shadow_launched",
+      "once": true,
+      "when": {
+        "type": "flagSet",
+        "params": { "flag": "shadowLaunched" }
+      },
+      "then": {
+        "type": "injectMessage",
+        "params": {
+          "callsign": "ACC",
+          "voice": "en-GB-RyanNeural",
+          "text": "SHADOW flight airborne. Good call. Keep other traffic clear of the hijack's track."
+        }
+      }
+    },
+    {
+      "id": "shadow_close_to_hijack",
+      "once": true,
+      "when": {
+        "type": "aircraftAtAltitude",
+        "params": { "callsign": "BAW472", "op": "lt", "altitudeFt": 5000 }
+      },
+      "then": {
+        "type": "injectMessage",
+        "params": {
+          "callsign": "ACC",
+          "voice": "en-GB-RyanNeural",
+          "text": "Speedbird descending below five thousand. Hijack appears to be heading for the protected zone. Prepare contingency."
+        }
+      }
+    },
+    {
+      "id": "civilian_too_close_to_hijack",
+      "once": true,
+      "when": {
+        "type": "distanceBetween",
+        "params": { "a": "BAW472", "b": "AFR1109", "lessThanNm": 8 }
+      },
+      "then": {
+        "type": "logIncident",
+        "params": {
+          "note": "Civilian AFR1109 within 8nm of active hijack BAW472 - separation breakdown under emergency conditions."
+        }
+      }
+    },
+    {
+      "id": "scenario_complete_on_exit",
+      "once": true,
+      "when": {
+        "type": "aircraftCount",
+        "params": { "op": "eq", "count": 0 }
+      },
+      "then": {
+        "type": "finishScenario",
+        "params": {}
+      }
+    }
+  ]
+}

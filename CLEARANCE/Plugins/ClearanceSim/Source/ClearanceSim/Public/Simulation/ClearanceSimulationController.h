@@ -162,6 +162,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
 	bool DeclareEmergencyOn(FName Callsign, EEmergencyType Kind);
 
+	// Reset an active emergency back to normal flight: clears ActiveEmergency,
+	// resets squawk to 1200 (civilian VFR default), drops EmergencyDetail. The
+	// aircraft's behaviour loop sees the cleared state next tick and stops the
+	// emergency procedure. Instructor god-mode use only. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
+	bool ClearEmergencyOn(FName Callsign);
+
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Scenario")
 	class UClearanceScenarioRunner* GetScenarioRunner() const { return ScenarioRunner; }
 

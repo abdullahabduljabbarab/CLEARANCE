@@ -693,9 +693,10 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 			const float W = FMath::Max(1.f, WorldUnitsPerNm);
 			for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
 			{
-				// Only civilian friendly traffic - military, hostiles, hijacks etc
-				// are handled by other paths (or are LEGITIMATELY in the area).
-				if (S.bIsMilitary || S.bIsExternal || S.ThreatClass != EThreatClass::Friendly) { continue; }
+				// Only civilian traffic - military, hostiles, hijacks etc are
+				// handled by other paths (or are LEGITIMATELY in the area).
+				// Civilians are Neutral per MIL-STD-2525C affiliation. - TripleA
+				if (S.bIsMilitary || S.bIsExternal || S.ThreatClass != EThreatClass::Neutral) { continue; }
 				if (S.ActiveEmergency != EEmergencyType::None) { continue; }
 				for (AClearanceRestrictedArea* A : Areas)
 				{
@@ -836,13 +837,13 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 
 					if (Recorder)
 					{
-						Recorder->LogEvent(SessionTime, FString::Printf(TEXT("EMERGENCY - %s declared %s (sq %d)"),
-							*S.Callsign.ToString(), *UEnum::GetValueAsString(S.ActiveEmergency), NewSquawk));
+						Recorder->LogEvent(SessionTime, FString::Printf(TEXT("EMERGENCY - %s declared %s"),
+							*S.Callsign.ToString(), *UEnum::GetDisplayValueAsText(S.ActiveEmergency).ToString()));
 					}
 					{
 						const FColor Col = (S.ActiveEmergency == EEmergencyType::Hijack) ? FColor::Red : FColor::Yellow;
-						const FString NMsg = FString::Printf(TEXT("EMERGENCY: %s SQUAWK %d (%s)"),
-							*S.Callsign.ToString(), NewSquawk, *UEnum::GetValueAsString(S.ActiveEmergency));
+						const FString NMsg = FString::Printf(TEXT("EMERGENCY: %s %s"),
+							*S.Callsign.ToString(), *UEnum::GetDisplayValueAsText(S.ActiveEmergency).ToString());
 						PushNotification(NMsg, Col, 8.f);
 						if (GEngine)
 						{
@@ -1277,12 +1278,13 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
 	if (!S.bIsValid) { return; }
 
-	// CATASTROPHIC DOCTRINE FAILURE: declaring a confirmed civilian (IFF on AND
-	// non-military) as hostile. Vincennes / KAL-007 territory. Mark the incident,
-	// hit the score, lock further scrambles for the session. The classification
-	// still goes through - the player committed to it - but the consequences are
-	// permanent and unmistakable. - TripleA
-	if (NewClass == EThreatClass::Hostile && S.bIFFOperational && !S.bIsMilitary &&
+	// CATASTROPHIC DOCTRINE FAILURE: declaring a truly civilian contact as
+	// hostile. Vincennes / KAL-007 territory. Reads ground truth (TrueAffiliation)
+	// not the operator's belief so a bandit faking civilian IFF wouldn't make
+	// the correct Hostile call count as a misID. The classification still goes
+	// through - the player committed to it - but the consequences are permanent
+	// and unmistakable. - TripleA
+	if (NewClass == EThreatClass::Hostile && S.TrueAffiliation == EThreatClass::Neutral &&
 		S.ThreatClass != EThreatClass::Hostile)
 	{
 		if (Scoring)
@@ -1378,6 +1380,20 @@ bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergen
 			TEXT("EMERGENCY (scripted) - %s declared %d squawk %d"),
 			*Callsign.ToString(), (int32)Kind, NewSquawk));
 	}
+	return true;
+}
+
+bool AClearanceSimulationController::ClearEmergencyOn(FName Callsign)
+{
+	if (!AirspaceManager) { return false; }
+	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+	if (!S.bIsValid || S.ActiveEmergency == EEmergencyType::None) { return false; }
+
+	S.ActiveEmergency = EEmergencyType::None;
+	S.SquawkCode = 1200;            // VFR / civilian default
+	S.EmergencyDetail.Empty();
+	S.EmergencyDeclaredAtSeconds = 0.f;
+	AirspaceManager->RequestStateUpdate(S);
 	return true;
 }
 
@@ -2147,6 +2163,15 @@ void AClearanceSimulationController::DrawDebugView()
 		return;
 	}
 
+	// The instructor / client-peer window doesn't want world-space DrawDebug
+	// primitives bleeding through its UMG scope. Skip the whole pass on any
+	// non-authority world. The operator (listen-server / authority) window
+	// still gets the full debug layer for its free-cam view. - TripleA
+	if (!HasAuthority())
+	{
+		return;
+	}
+
 	// Wipe persistent debug strings + lines at the top of every frame. UE's
 	// DrawDebugString stores text on the PlayerController's HUD via AddDebugText
 	// with broken duration semantics. FlushDebugStrings iterates PCs and calls
@@ -2904,7 +2929,7 @@ void AClearanceSimulationController::CheckExits()
 				if (State.ActiveEmergency != EEmergencyType::None)
 				{
 					Scoring->LogIncident(EIncidentType::SuccessfulEmergencyHandling, State.Callsign, NAME_None,
-						FString::Printf(TEXT("Emergency %s safely landed"), *UEnum::GetValueAsString(State.ActiveEmergency)));
+						FString::Printf(TEXT("Emergency %s safely landed"), *UEnum::GetDisplayValueAsText(State.ActiveEmergency).ToString()));
 				}
 			}
 			AirspaceManager->DeregisterAircraft(State.Callsign);
@@ -2913,11 +2938,12 @@ void AClearanceSimulationController::CheckExits()
 		{
 			// Cleared to leave = a clean departure; drifting out otherwise is a miss.
 			// An emergency aircraft drifting out unhandled is a catastrophic loss.
-			// Non-friendly contacts (hostile / unknown) exiting are GCI's problem -
-			// they aren't civilian air traffic and don't count as "strayed".
-			// Only fires if the aircraft was actually inside at some point - protects
-			// scenario incoming traffic from being insta-killed at spawn. - TripleA
-			const bool bNonCivilian = (State.ThreatClass != EThreatClass::Friendly)
+			// Non-civilian contacts (hostile / unknown / military) exiting are GCI's
+			// problem and don't count as "strayed". Civilians are Neutral per
+			// MIL-STD-2525C affiliation. Only fires if the aircraft was actually
+			// inside at some point - protects scenario incoming traffic from being
+			// insta-killed at spawn. - TripleA
+			const bool bNonCivilian = (State.ThreatClass != EThreatClass::Neutral)
 			                         || State.bIsMilitary || State.bUnderGCIControl;
 
 			EIncidentType Outcome;
@@ -2952,12 +2978,15 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 {
 	// Civilian ATC can't command anything under air defence control, and can't
 	// command external (federated) aircraft either - those belong to whichever
-	// peer sim is publishing them. NORDO contacts (IFF off, not declared friendly)
-	// also reject silently - the non-response is the operator's clue. - TripleA
+	// peer sim is publishing them. NORDO contacts (IFF off, not friendly OR
+	// neutral) also reject silently - the non-response is the operator's clue
+	// they're dealing with an unknown / hostile. - TripleA
 	if (AirspaceManager)
 	{
 		const FAircraftState Target = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
-		if (Target.bIsValid && !Target.bIFFOperational && Target.ThreatClass != EThreatClass::Friendly)
+		if (Target.bIsValid && !Target.bIFFOperational
+			&& Target.ThreatClass != EThreatClass::Friendly
+			&& Target.ThreatClass != EThreatClass::Neutral)
 		{
 			if (GEngine)
 			{
@@ -3016,7 +3045,7 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 	if (Recorder)
 	{
 		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("INSTR %s %s %.0f"),
-			*UEnum::GetValueAsString(Instruction.Type), *Instruction.TargetCallsign.ToString(), Instruction.TargetValue));
+			*UEnum::GetDisplayValueAsText(Instruction.Type).ToString(), *Instruction.TargetCallsign.ToString(), Instruction.TargetValue));
 	}
 
 	// Operator-side "no joy" / "track lost" - drops the contact without the
@@ -3415,15 +3444,18 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 			if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
 		}
 
-		// If the freshly-spawned aircraft is a bandit profile (NORDO, not declared
-		// friendly), redirect it AT a random violation zone instead of leaving it
-		// pointed at sector centre. A real intruder has an objective - that's what
-		// makes the operator's intercept call meaningful. - TripleA
+		// If the freshly-spawned aircraft is a bandit profile (NORDO, not friendly
+		// or neutral), redirect it AT a random violation zone instead of leaving
+		// it pointed at sector centre. A real intruder has an objective - that's
+		// what makes the operator's intercept call meaningful. Civilians (Neutral)
+		// with broken IFF are NOT redirected - they're still civilian traffic. - TripleA
 		// Server-only: bandit redirect mutates state via RequestStateUpdate. - TripleA
 		if (HasAuthority() && AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 		{
 			const FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
-			if (S.bIsValid && !S.bIFFOperational && S.ThreatClass != EThreatClass::Friendly)
+			if (S.bIsValid && !S.bIFFOperational
+				&& S.ThreatClass != EThreatClass::Friendly
+				&& S.ThreatClass != EThreatClass::Neutral)
 			{
 				TArray<AClearanceViolationZone*> Zones;
 				for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
@@ -3736,7 +3768,7 @@ static void ClearanceIssueFromConsole(const TArray<FString>& Args, UWorld* World
 		Instruction.TargetValue = Value;
 
 		const EInstructionResult Result = It->PlayerIssueInstruction(Instruction);
-		const FString Msg = FString::Printf(TEXT("%s %s %.0f -> %s"), Label, *Callsign.ToString(), Value, *UEnum::GetValueAsString(Result));
+		const FString Msg = FString::Printf(TEXT("%s %s %.0f -> %s"), Label, *Callsign.ToString(), Value, *UEnum::GetDisplayValueAsText(Result).ToString());
 		UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
 		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		return;
@@ -4513,7 +4545,7 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceExitCmd(
 			I.TargetCallsign = FName(*Args[0]);
 			I.Type = EInstructionType::ExitSector;
 			const EInstructionResult Result = C->PlayerIssueInstruction(I);
-			const FString Msg = FString::Printf(TEXT("exit %s -> %s"), *I.TargetCallsign.ToString(), *UEnum::GetValueAsString(Result));
+			const FString Msg = FString::Printf(TEXT("exit %s -> %s"), *I.TargetCallsign.ToString(), *UEnum::GetDisplayValueAsText(Result).ToString());
 			UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		}

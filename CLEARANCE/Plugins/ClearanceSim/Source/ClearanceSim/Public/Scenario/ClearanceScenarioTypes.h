@@ -134,8 +134,21 @@ struct CLEARANCESIM_API FScenarioSpawn
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario")
 	int32 Squawk = 1200;
 
+	// Operator-facing classification. Default Neutral - civilian air traffic.
+	// Friendly is for own / allied military (Vipers etc.); scenarios that
+	// scramble them set it explicitly. Bandits / probes use Unknown so the
+	// operator has to ID them - their TrueAffiliation (below) carries the
+	// ground truth. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario")
-	EThreatClass Threat = EThreatClass::Friendly;
+	EThreatClass Threat = EThreatClass::Neutral;
+
+	// Ground truth - what the contact ACTUALLY is. Defaults to whatever Threat
+	// is set to (so civilians stay aligned by default). Scenarios authoring
+	// disguised hostiles override this explicitly: a probe spawning as
+	// Threat=Unknown with TrueAffiliation=Hostile shows up amber to the
+	// operator but red on the instructor god view. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario")
+	EThreatClass TrueAffiliation = EThreatClass::Neutral;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario")
 	bool bIFFOn = true;

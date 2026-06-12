@@ -211,10 +211,23 @@ struct CLEARANCESIM_API FAircraftState
 	float MaxClimbRate = 0.f;		// feet per minute
 
 	// --- GCI / air-defence tagging ----------------------------------------
-	// What this contact actually IS (the truth). The operator's classification of a
-	// track lives elsewhere; this is what an IFF interrogation would resolve to.
+	// Operator-facing classification: what the trainee has identified the contact
+	// as. Starts at whatever the spawner / scenario sets (Unknown for bandits,
+	// matches TrueAffiliation for civilians + own forces) and changes when the
+	// operator calls Reclassify. Used by the operator scope, scoring mis-ID
+	// checks, and the player's interrogation workflow. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
-	EThreatClass ThreatClass = EThreatClass::Friendly;
+	EThreatClass ThreatClass = EThreatClass::Neutral;
+
+	// Ground truth - what the contact ACTUALLY is. Set once at spawn and never
+	// touched by Reclassify. Used by the instructor scope (god view) and any
+	// behaviour that needs to know the real disposition (bandit AI, voice line
+	// selection, scoring mis-ID detection). Civilians + own forces have
+	// TrueAffiliation == ThreatClass; bandits start with ThreatClass=Unknown
+	// and TrueAffiliation=Hostile so the instructor sees the truth while the
+	// operator has to work it out. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	EThreatClass TrueAffiliation = EThreatClass::Neutral;
 
 	// SSR / Mode A "squawk" code (octal, 0-7777). 1200 = VFR civilian default.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")

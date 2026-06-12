@@ -96,10 +96,12 @@ namespace
 
 	EThreatClass ParseThreat(const FString& S)
 	{
+		if (S.Equals(TEXT("Friendly"), ESearchCase::IgnoreCase)) { return EThreatClass::Friendly; }
 		if (S.Equals(TEXT("Hostile"),  ESearchCase::IgnoreCase)) { return EThreatClass::Hostile; }
 		if (S.Equals(TEXT("Unknown"),  ESearchCase::IgnoreCase)) { return EThreatClass::Unknown; }
 		if (S.Equals(TEXT("Neutral"),  ESearchCase::IgnoreCase)) { return EThreatClass::Neutral; }
-		return EThreatClass::Friendly;
+		// Default for unrecognised - civilian air traffic per MIL-STD-2525C. - TripleA
+		return EThreatClass::Neutral;
 	}
 
 	EEmergencyType ParseEmergency(const FString& S)
@@ -197,7 +199,19 @@ bool UClearanceScenarioRunner::LoadFromFile(const FString& AbsolutePath, FString
 			Sp.SpeedKts   = GetNum(O, TEXT("speedKts"), 250.f);
 			Sp.AltitudeFt = GetNum(O, TEXT("altitudeFt"), 15000.f);
 			Sp.Squawk     = GetInt(O, TEXT("squawk"), 1200);
-			Sp.Threat     = ParseThreat(GetStr(O, TEXT("threat"), TEXT("Friendly")));
+			Sp.Threat     = ParseThreat(GetStr(O, TEXT("threat"), TEXT("Neutral")));
+			// Optional trueAffiliation - defaults to whatever Threat is so
+			// civilians stay aligned by default. Bandits authoring as
+			// threat="Unknown" override with trueAffiliation="Hostile". - TripleA
+			FString TrueAffStr;
+			if (O->TryGetStringField(TEXT("trueAffiliation"), TrueAffStr))
+			{
+				Sp.TrueAffiliation = ParseThreat(TrueAffStr);
+			}
+			else
+			{
+				Sp.TrueAffiliation = Sp.Threat;
+			}
 			Sp.bIFFOn     = GetBool(O, TEXT("iff"), true);
 
 			const TSharedPtr<FJsonObject>* PosObj = nullptr;
@@ -402,6 +416,7 @@ void UClearanceScenarioRunner::FireInitialSpawns()
 		A.Altitude        = Sp.AltitudeFt;
 		A.SquawkCode      = Sp.Squawk;
 		A.ThreatClass     = Sp.Threat;
+		A.TrueAffiliation = Sp.TrueAffiliation;
 		A.bIFFOperational = Sp.bIFFOn;
 		A.FlightPhase     = EFlightPhase::Enroute;
 		A.bIsValid        = true;
@@ -564,7 +579,12 @@ void UClearanceScenarioRunner::ExecuteAction(const FScenarioAction& Act)
 		const FString* Sq  = Act.Params.Find(TEXT("squawk"));
 		Sp.Squawk     = Sq ? FCString::Atoi(**Sq) : 1200;
 		const FString* Th  = Act.Params.Find(TEXT("threat"));
-		Sp.Threat     = Th ? ParseThreat(*Th) : EThreatClass::Friendly;
+		Sp.Threat     = Th ? ParseThreat(*Th) : EThreatClass::Neutral;
+		// Optional trueAffiliation field - if absent, the truth matches what
+		// the operator sees (no disguised hostile). Probes / hidden bandits
+		// set threat=Unknown + trueAffiliation=Hostile. - TripleA
+		const FString* TrueAff = Act.Params.Find(TEXT("trueAffiliation"));
+		Sp.TrueAffiliation = TrueAff ? ParseThreat(*TrueAff) : Sp.Threat;
 		const FString* If_ = Act.Params.Find(TEXT("iff"));
 		Sp.bIFFOn     = If_ ? (If_->Equals(TEXT("true"), ESearchCase::IgnoreCase) || *If_ == TEXT("1")) : true;
 
@@ -579,6 +599,7 @@ void UClearanceScenarioRunner::ExecuteAction(const FScenarioAction& Act)
 		A.Altitude        = Sp.AltitudeFt;
 		A.SquawkCode      = Sp.Squawk;
 		A.ThreatClass     = Sp.Threat;
+		A.TrueAffiliation = Sp.TrueAffiliation;
 		A.bIFFOperational = Sp.bIFFOn;
 		A.FlightPhase     = EFlightPhase::Enroute;
 		A.bIsValid        = true;

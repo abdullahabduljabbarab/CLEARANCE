@@ -53,20 +53,25 @@ bool AClearanceAircraftSpawner::SpawnAircraft()
 
 	if (bBandit)
 	{
-		// Drop a hostile contact in alongside the civilian traffic. ThreatClass stays
-		// UNKNOWN until the operator interrogates and classifies - the player has to
-		// notice no IFF response and make the call. Squawk 7777 is the NATO hostile
-		// code; civilians never use it, so a sharp operator catches it on the scope
-		// too. - TripleA
-		State.Callsign         = GenerateBanditCallsign();
-		State.ThreatClass      = EThreatClass::Unknown;
-		State.SquawkCode       = 7777;
-		State.bIFFOperational  = false;
-		State.bIsMilitary      = true;
+		// Drop a hostile contact in alongside the civilian traffic. ThreatClass
+		// stays UNKNOWN until the operator interrogates and classifies - the
+		// player has to notice no IFF response and make the call. TrueAffiliation
+		// is Hostile so the instructor's god view sees the truth. Squawk 7777 is
+		// the NATO hostile code; civilians never use it, so a sharp operator
+		// catches it on the scope too. - TripleA
+		State.Callsign          = GenerateBanditCallsign();
+		State.ThreatClass       = EThreatClass::Unknown;
+		State.TrueAffiliation   = EThreatClass::Hostile;
+		State.SquawkCode        = 7777;
+		State.bIFFOperational   = false;
+		State.bIsMilitary       = true;
 	}
 	else
 	{
-		State.Callsign = Data.Callsign;
+		// Civilian airliner. Both fields agree - no ambiguity to classify. - TripleA
+		State.Callsign        = Data.Callsign;
+		State.ThreatClass     = EThreatClass::Neutral;
+		State.TrueAffiliation = EThreatClass::Neutral;
 	}
 
 	// targets / performance limits are filled in when the Behaviour initialises

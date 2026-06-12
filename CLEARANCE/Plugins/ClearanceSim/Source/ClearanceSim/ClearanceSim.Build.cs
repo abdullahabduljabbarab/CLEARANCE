@@ -10,7 +10,9 @@ public class ClearanceSim : ModuleRules
 		{
 			"Core",
 			"CoreUObject",
-			"Engine"
+			"Engine",
+			"UMG",        // UUserWidget base class for the instructor panel
+			"SlateCore"   // FCanvasItem / FGeometry types the widget uses
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

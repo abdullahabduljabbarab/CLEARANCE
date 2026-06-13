@@ -15,6 +15,7 @@
 class AClearanceOperatorPC;
 class AClearanceSimulationController;
 class UCanvas;
+class UTextureRenderTarget2D;
 
 UCLASS(Blueprintable, Abstract)
 class CLEARANCESIM_API UClearanceInstructorPanel : public UUserWidget
@@ -82,8 +83,76 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
 	FName GetSelectedCallsign() const { return SelectedCallsign; }
 
+	// --- Picture-in-picture camera feed -----------------------------------
+	// A live 3D feed of the active preset camera (Tower / Approach / Overview /
+	// Follow). Sits in the scope area, swapped in via ToggleScopeCameraView so
+	// the same canvas region is used for either the truth scope or the camera
+	// feed. Cycling between camera modes here doesn't disturb the operator's
+	// main viewpoint - independent SceneCapture, independent state. - TripleA
+
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void ToggleScopeCameraView();
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	bool IsScopeCameraViewActive() const { return bShowCameraView; }
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	UTextureRenderTarget2D* GetInstructorPipRT() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void SetInstructorPipView(EClearanceCameraView View);
+
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void CycleInstructorPipView();
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	EClearanceCameraView GetInstructorPipView() const;
+
+	// Bind the camera feed Image widget's brush to the current PIP render
+	// target. Call this from the toggle handler instead of Event Construct -
+	// the RT is allocated by the controller's BeginPlay, which may fire
+	// after the widget's Construct, so a Construct-time bind would catch a
+	// null RT and the image would stay blank forever. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void RebindCameraFeedBrush(class UImage* TargetImage);
+
+	// Pan the Tower view. UMG calls this from its Tick when the user is
+	// holding a pan-left / pan-right button - degrees per tick = sweep
+	// speed (deg/sec) * world delta-seconds. A 60deg/sec sweep gives a
+	// full rotation in 6 seconds. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void ApplyTowerYawDelta(float DeltaDeg);
+
+	// Approach view runway picker. UMG pops a selector when the instructor
+	// clicks APPROACH, populates it from GetApproachRunwayLabels, and calls
+	// SetInstructorPipApproachRunway with the chosen index. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	TArray<FString> GetApproachRunwayLabels() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void SetInstructorPipApproachRunway(int32 Index);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	int32 GetInstructorPipApproachRunwayIndex() const;
+
+	// Label-dispatched runway picker - safer for UMG than the index variant.
+	// Each runway button calls this with a literal string ("RWY 27R" etc.). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void PickApproachRunwayByLabel(const FString& Label);
+
+	// Chase sub-angle cycle. Wire these to left/right arrow buttons that show
+	// only when GetInstructorPipView() == Follow. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void CycleChaseAngleNext();
+
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Camera")
+	void CycleChaseAnglePrev();
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	EClearanceFollowAngle GetChaseAngle() const;
+
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
-	void SetSelectedCallsign(FName NewSelection) { SelectedCallsign = NewSelection; }
+	void SetSelectedCallsign(FName NewSelection);
 
 	// --- Change notifications (BindWidget these in your derived BP) ------
 
@@ -290,6 +359,12 @@ public:
 	// Toggleable in BP so the instructor can hide-on-clutter / expand-on-detail. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor|Scope")
 	bool bShowFullDataBlocks = false;
+
+	// Scope <-> camera-feed swap state. BlueprintReadOnly so UMG can drive
+	// widget visibility off it (truth scope visible when false, camera image
+	// visible when true). - TripleA
+	UPROPERTY(BlueprintReadOnly, Category = "Instructor|Camera")
+	bool bShowCameraView = false;
 
 	// --- Tuning -----------------------------------------------------------
 

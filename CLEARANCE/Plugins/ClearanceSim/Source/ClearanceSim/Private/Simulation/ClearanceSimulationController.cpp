@@ -22,6 +22,11 @@
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "ContentStreaming.h"
 #include "Kismet/GameplayStatics.h"
 #include "Core/ClearanceConstants.h"
 #include "DrawDebugHelpers.h"
@@ -175,11 +180,119 @@ AClearanceSimulationController::AClearanceSimulationController()
 	// All simulation work still happens server-side; clients just render. - TripleA
 	bReplicates = true;
 	bAlwaysRelevant = true;
+
+	// Instructor PIP capture. Sits on the controller and teleports per-tick to
+	// the active preset camera's transform - one component, four viewpoints. We
+	// disable bCaptureEveryFrame so it only renders when the instructor flips
+	// the panel to camera mode, and we manually CaptureScene() to throttle to
+	// the configured rate. - TripleA
+	InstructorPipCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("InstructorPipCapture"));
+	InstructorPipCapture->SetupAttachment(RootComponent);
+	InstructorPipCapture->bCaptureEveryFrame = false;
+	InstructorPipCapture->bCaptureOnMovement = false;
+	// Persist the renderer state across manual captures - without this, each
+	// CaptureScene call has to re-initialise transient render data and the
+	// first few frames after enable come back black or stale. - TripleA
+	InstructorPipCapture->bAlwaysPersistRenderingState = true;
+	// FinalToneCurveHDR is the closest match to what the main viewport
+	// renders - includes post-processing, tone mapping, exposure, and
+	// importantly the HDR pipeline so reflections / GI lookups produce the
+	// right colours. SCS_FinalColorLDR drops too much information. - TripleA
+	InstructorPipCapture->CaptureSource = ESceneCaptureSource::SCS_FinalToneCurveHDR;
+	InstructorPipCapture->FOVAngle = 80.f;
+	InstructorPipCapture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
+
+	// Quality overrides: SceneCapture defaults to a stripped render path for
+	// perf reasons (no TAA, no AntiAliasing, no Lumen GI, no SSR, biased LOD).
+	// Re-enable what's needed so aircraft look like proper meshes instead of
+	// Roblox blobs. Without these, the same mesh that renders fine in the
+	// main viewport ends up flat-shaded and reflection-less in the PIP. - TripleA
+	InstructorPipCapture->ShowFlags.SetAntiAliasing(true);
+	InstructorPipCapture->ShowFlags.SetTemporalAA(true);
+	InstructorPipCapture->ShowFlags.SetMotionBlur(false);   // off for scope clarity
+	InstructorPipCapture->ShowFlags.SetTonemapper(true);
+	InstructorPipCapture->ShowFlags.SetEyeAdaptation(true);
+	InstructorPipCapture->ShowFlags.SetBloom(true);
+	InstructorPipCapture->ShowFlags.SetAmbientOcclusion(true);
+	InstructorPipCapture->ShowFlags.SetLighting(true);
+	InstructorPipCapture->ShowFlags.SetReflectionEnvironment(true);
+	InstructorPipCapture->ShowFlags.SetScreenSpaceReflections(true);
+	InstructorPipCapture->ShowFlags.SetGlobalIllumination(true);
+	InstructorPipCapture->ShowFlags.SetLumenGlobalIllumination(true);
+	InstructorPipCapture->ShowFlags.SetLumenReflections(true);
+	InstructorPipCapture->ShowFlags.SetSkyLighting(true);
+	InstructorPipCapture->ShowFlags.SetDirectLighting(true);
+	InstructorPipCapture->ShowFlags.SetIndirectLightingCache(true);
+	InstructorPipCapture->ShowFlags.SetTexturedLightProfiles(true);
+	InstructorPipCapture->ShowFlags.SetVolumetricFog(true);
+
+	// Post-process volume contribution. Without this, post-process volumes in
+	// the level (like exposure curves and color grading) don't apply to the
+	// capture, so it looks washed out vs the main view. - TripleA
+	InstructorPipCapture->PostProcessBlendWeight = 1.f;
+
+	// LODDistanceFactor < 1 forces higher-detail LODs at the same distance.
+	// Aircraft meshes drop to low-poly potatoes pretty aggressively under the
+	// default 1.0 bias - 0.1 forces near-LOD-0 everywhere. Costs more but
+	// only one capture is running. - TripleA
+	InstructorPipCapture->LODDistanceFactor = 0.1f;
 }
 
 void AClearanceSimulationController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Force the high replication rate on every active SimulationController
+	// instance regardless of what the level-placed actor was serialised with.
+	// 100Hz NetUpdateFrequency means clients see aircraft state changes within
+	// ~10ms of the server applying them. - TripleA
+	SetNetUpdateFrequency(100.f);
+	SetMinNetUpdateFrequency(60.f);
+
+	// Force the PIP capture's quality settings here regardless of what got
+	// serialised on the level-placed component. The constructor sets sensible
+	// defaults but the level keeps whatever was saved when the actor was
+	// placed; re-applying in BeginPlay guarantees the live values match the
+	// latest code. - TripleA
+	if (InstructorPipCapture)
+	{
+		InstructorPipCapture->CaptureSource = ESceneCaptureSource::SCS_FinalToneCurveHDR;
+		InstructorPipCapture->bAlwaysPersistRenderingState = true;
+		InstructorPipCapture->LODDistanceFactor = 0.1f;
+		InstructorPipCapture->PostProcessBlendWeight = 1.f;
+		InstructorPipCapture->ShowFlags.SetAntiAliasing(true);
+		InstructorPipCapture->ShowFlags.SetTemporalAA(true);
+		InstructorPipCapture->ShowFlags.SetMotionBlur(false);
+		InstructorPipCapture->ShowFlags.SetTonemapper(true);
+		InstructorPipCapture->ShowFlags.SetEyeAdaptation(true);
+		InstructorPipCapture->ShowFlags.SetBloom(true);
+		InstructorPipCapture->ShowFlags.SetAmbientOcclusion(true);
+		InstructorPipCapture->ShowFlags.SetLighting(true);
+		InstructorPipCapture->ShowFlags.SetReflectionEnvironment(true);
+		InstructorPipCapture->ShowFlags.SetScreenSpaceReflections(true);
+		InstructorPipCapture->ShowFlags.SetGlobalIllumination(true);
+		InstructorPipCapture->ShowFlags.SetLumenGlobalIllumination(true);
+		InstructorPipCapture->ShowFlags.SetLumenReflections(true);
+		InstructorPipCapture->ShowFlags.SetSkyLighting(true);
+		InstructorPipCapture->ShowFlags.SetDirectLighting(true);
+		InstructorPipCapture->ShowFlags.SetIndirectLightingCache(true);
+		InstructorPipCapture->ShowFlags.SetTexturedLightProfiles(true);
+		InstructorPipCapture->ShowFlags.SetVolumetricFog(true);
+	}
+
+	// Allocate the PIP render target on every instance (host + clients). The RT
+	// is a per-machine resource; the capture only produces a texture where
+	// the panel actually wants to render it. - TripleA
+	if (InstructorPipCapture && !InstructorPipRT)
+	{
+		InstructorPipRT = NewObject<UTextureRenderTarget2D>(this, TEXT("InstructorPipRT"));
+		InstructorPipRT->InitAutoFormat(
+			FMath::Max(64, InstructorPipResolution.X),
+			FMath::Max(64, InstructorPipResolution.Y));
+		InstructorPipRT->UpdateResource();
+		InstructorPipCapture->TextureTarget = InstructorPipRT;
+	}
+
 	// Server-only: the simulation lives here. Clients receive the world via the
 	// replicated AirspaceManager + Controller state and only render. - TripleA
 	if (!HasAuthority()) { return; }
@@ -416,6 +529,12 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreBusted);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreNextSpawnSec);
 	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
+	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
+	DOREPLIFETIME(AClearanceSimulationController, CameraTower);
+	DOREPLIFETIME(AClearanceSimulationController, CameraApproach);
+	DOREPLIFETIME(AClearanceSimulationController, CameraFollow);
+	DOREPLIFETIME(AClearanceSimulationController, OperatorViewRotation);
+	DOREPLIFETIME(AClearanceSimulationController, OperatorViewLocation);
 }
 
 void AClearanceSimulationController::PushNotification(const FString& Text, FColor Colour, float LifetimeSec)
@@ -494,6 +613,11 @@ void AClearanceSimulationController::OnRep_AirspaceManager()
 void AClearanceSimulationController::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// Instructor PIP feed runs everywhere - host renders its own, each client
+	// renders its own. The RT is a per-machine resource so the capture has to
+	// happen wherever the panel wants to display it. - TripleA
+	UpdateInstructorPip(DeltaTime);
 
 	// Client-side render path: just paint the world from the replicated state.
 	// No sim mutations; the server is the only writer. - TripleA
@@ -1272,7 +1396,7 @@ void AClearanceSimulationController::SetGCIModeEnabled(bool bInEnabled)
 	}
 }
 
-void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatClass NewClass)
+void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatClass NewClass, bool bAsInstructor)
 {
 	if (!AirspaceManager) { return; }
 	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
@@ -1283,8 +1407,12 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	// not the operator's belief so a bandit faking civilian IFF wouldn't make
 	// the correct Hostile call count as a misID. The classification still goes
 	// through - the player committed to it - but the consequences are permanent
-	// and unmistakable. - TripleA
-	if (NewClass == EThreatClass::Hostile && S.TrueAffiliation == EThreatClass::Neutral &&
+	// and unmistakable.
+	// Skipped when bAsInstructor is true: the instructor reclassifying via the
+	// inject panel is god-mode scenario shaping, not the trainee committing a
+	// doctrinal call. - TripleA
+	if (!bAsInstructor &&
+		NewClass == EThreatClass::Hostile && S.TrueAffiliation == EThreatClass::Neutral &&
 		S.ThreatClass != EThreatClass::Hostile)
 	{
 		if (Scoring)
@@ -1307,6 +1435,13 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	}
 
 	S.ThreatClass = NewClass;
+	if (bAsInstructor)
+	{
+		// God-view shaping: the instructor is rewriting the ground truth, not
+		// just nudging the operator picture. The truth scope reads
+		// TrueAffiliation so the symbol on it has to follow this. - TripleA
+		S.TrueAffiliation = NewClass;
+	}
 	// Hostile contacts lock out of civilian ATC immediately.
 	S.bUnderGCIControl = (NewClass == EThreatClass::Hostile);
 	AirspaceManager->RequestStateUpdate(S);
@@ -2166,7 +2301,14 @@ void AClearanceSimulationController::DrawDebugView()
 	// The instructor / client-peer window doesn't want world-space DrawDebug
 	// primitives bleeding through its UMG scope. Skip the whole pass on any
 	// non-authority world. The operator (listen-server / authority) window
-	// still gets the full debug layer for its free-cam view. - TripleA
+	// still gets the full debug layer for its free-cam view.
+	//
+	// Note: SceneCaptureComponent2D doesn't render DrawDebugLine primitives by
+	// default (LineBatcher isn't in the capture render path), so ungating this
+	// gate does not feed debug into the instructor PIP - it just re-introduces
+	// the bleed-through. Doing it "properly" means replacing the DrawDebug
+	// calls with billboard / mesh actors that render via the normal scene
+	// pass; that's a separate task. - TripleA
 	if (!HasAuthority())
 	{
 		return;
@@ -3278,6 +3420,7 @@ void AClearanceSimulationController::SpawnPresetCameras()
 
 	// FOLLOW: position updated per-tick in UpdateFollowCamera.
 	CameraFollow = World->SpawnActor<ACameraActor>(Origin, FRotator::ZeroRotator);
+
 }
 
 void AClearanceSimulationController::SetCameraView(EClearanceCameraView View, FName FollowCallsign)
@@ -3389,6 +3532,422 @@ void AClearanceSimulationController::CycleFollowAngle()
 	case EClearanceFollowAngle::Top:     FollowAngle = EClearanceFollowAngle::Chase;   break;
 	}
 	UpdateFollowCamera();
+}
+
+void AClearanceSimulationController::SetInstructorPipView(EClearanceCameraView View)
+{
+	// Default isn't a preset transform - the operator's pawn isn't useful as
+	// a PIP source - so fall back to Tower in that case. - TripleA
+	InstructorPipView = (View == EClearanceCameraView::Default)
+		? EClearanceCameraView::Tower
+		: View;
+}
+
+void AClearanceSimulationController::CycleInstructorPipView()
+{
+	switch (InstructorPipView)
+	{
+	case EClearanceCameraView::Tower:    InstructorPipView = EClearanceCameraView::Follow;   break;
+	case EClearanceCameraView::Follow:   InstructorPipView = EClearanceCameraView::Approach; break;
+	case EClearanceCameraView::Approach: InstructorPipView = EClearanceCameraView::Overview; break;
+	case EClearanceCameraView::Overview: InstructorPipView = EClearanceCameraView::Tower;    break;
+	default:                              InstructorPipView = EClearanceCameraView::Tower;    break;
+	}
+}
+
+void AClearanceSimulationController::SetInstructorPipEnabled(bool bEnabled)
+{
+	bInstructorPipEnabled = bEnabled;
+	// Reset the throttle so the first frame after re-enable captures immediately
+	// instead of waiting up to a full interval. - TripleA
+	InstructorPipCaptureAccum = 1.f / FMath::Max(1.f, InstructorPipCaptureRateHz);
+}
+
+void AClearanceSimulationController::SetInstructorPipFollowCallsign(FName Callsign)
+{
+	InstructorPipFollowCallsign = Callsign;
+}
+
+void AClearanceSimulationController::ApplyTowerYawDelta(float DeltaDeg)
+{
+	InstructorTowerYawDeg = FMath::Fmod(InstructorTowerYawDeg + DeltaDeg, 360.f);
+	if (InstructorTowerYawDeg < 0.f) { InstructorTowerYawDeg += 360.f; }
+}
+
+TArray<FString> AClearanceSimulationController::GetApproachRunwayLabels() const
+{
+	TArray<FString> Out;
+	if (!AirspaceManager) { return Out; }
+	const TArray<FRunwayInfo>& All = AirspaceManager->GetAllRunways();
+
+	// Bucket the runways by base designator (heading rounded to nearest 10),
+	// then for each group with siblings, project the threshold onto the
+	// "right" vector relative to landing direction and tag L / R / C from
+	// rightmost to leftmost. Single-runway designators get no suffix. - TripleA
+	const int32 N = All.Num();
+	TArray<int32> Designator;
+	Designator.SetNum(N);
+	for (int32 i = 0; i < N; ++i)
+	{
+		int32 D = FMath::RoundToInt(All[i].HeadingDeg / 10.f);
+		if (D <= 0) { D = 36; }
+		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
+		Designator[i] = D;
+	}
+
+	for (int32 i = 0; i < N; ++i)
+	{
+		const FRunwayInfo& Me = All[i];
+		const int32 MyDes = Designator[i];
+
+		TArray<int32> Group;
+		for (int32 j = 0; j < N; ++j)
+		{
+			if (Designator[j] == MyDes) { Group.Add(j); }
+		}
+
+		FString Suffix;
+		if (Group.Num() > 1)
+		{
+			// Right vector when facing the landing direction.
+			const float Rad = FMath::DegreesToRadians(Me.HeadingDeg);
+			const FVector2D RightDir(FMath::Cos(Rad), -FMath::Sin(Rad));
+			const float MyProj = FVector2D::DotProduct(Me.ThresholdNm, RightDir);
+			int32 MoreRight = 0, MoreLeft = 0;
+			for (int32 j : Group)
+			{
+				if (j == i) { continue; }
+				const float P = FVector2D::DotProduct(All[j].ThresholdNm, RightDir);
+				if (P > MyProj) { ++MoreRight; }
+				if (P < MyProj) { ++MoreLeft; }
+			}
+			if (Group.Num() == 2)
+			{
+				Suffix = (MoreRight == 0) ? TEXT("R") : TEXT("L");
+			}
+			else
+			{
+				if (MoreLeft == 0)       { Suffix = TEXT("L"); }
+				else if (MoreRight == 0) { Suffix = TEXT("R"); }
+				else                     { Suffix = TEXT("C"); }
+			}
+		}
+
+		Out.Add(FString::Printf(TEXT("RWY %02d%s"), MyDes, *Suffix));
+	}
+	return Out;
+}
+
+void AClearanceSimulationController::SetInstructorPipApproachRunway(int32 Index)
+{
+	if (!AirspaceManager) { return; }
+	const int32 N = AirspaceManager->GetAllRunways().Num();
+	if (N <= 0) { return; }
+	InstructorApproachRunwayIndex = FMath::Clamp(Index, 0, N - 1);
+	InstructorPipView = EClearanceCameraView::Approach;
+	UE_LOG(LogTemp, Warning, TEXT("[PIP] SetApproachRunway: this=%p auth=%d storedIdx=%d totalRunways=%d"),
+		this, HasAuthority() ? 1 : 0, InstructorApproachRunwayIndex, N);
+}
+
+void AClearanceSimulationController::PickApproachRunwayByLabel(const FString& Label)
+{
+	const TArray<FString> Labels = GetApproachRunwayLabels();
+	const int32 Idx = Labels.IndexOfByPredicate([&Label](const FString& S) { return S == Label; });
+	UE_LOG(LogTemp, Warning, TEXT("[PIP] PickByLabel: requested='%s' available=[%s] foundIdx=%d"),
+		*Label, *FString::Join(Labels, TEXT(", ")), Idx);
+	if (Idx == INDEX_NONE) { return; }
+	SetInstructorPipApproachRunway(Idx);
+}
+
+void AClearanceSimulationController::SetInstructorPipFollowAngle(EClearanceFollowAngle Angle)
+{
+	InstructorPipFollowAngle = Angle;
+}
+
+void AClearanceSimulationController::CycleInstructorPipFollowAngleNext()
+{
+	switch (InstructorPipFollowAngle)
+	{
+	case EClearanceFollowAngle::Chase:   InstructorPipFollowAngle = EClearanceFollowAngle::Cockpit; break;
+	case EClearanceFollowAngle::Cockpit: InstructorPipFollowAngle = EClearanceFollowAngle::Side;    break;
+	case EClearanceFollowAngle::Side:    InstructorPipFollowAngle = EClearanceFollowAngle::Top;     break;
+	case EClearanceFollowAngle::Top:     InstructorPipFollowAngle = EClearanceFollowAngle::Chase;   break;
+	}
+}
+
+void AClearanceSimulationController::CycleInstructorPipFollowAnglePrev()
+{
+	switch (InstructorPipFollowAngle)
+	{
+	case EClearanceFollowAngle::Chase:   InstructorPipFollowAngle = EClearanceFollowAngle::Top;     break;
+	case EClearanceFollowAngle::Top:     InstructorPipFollowAngle = EClearanceFollowAngle::Side;    break;
+	case EClearanceFollowAngle::Side:    InstructorPipFollowAngle = EClearanceFollowAngle::Cockpit; break;
+	case EClearanceFollowAngle::Cockpit: InstructorPipFollowAngle = EClearanceFollowAngle::Chase;   break;
+	}
+}
+
+void AClearanceSimulationController::SetOperatorViewRotation(FRotator NewRot)
+{
+	OperatorViewRotation = NewRot;
+}
+
+void AClearanceSimulationController::SetOperatorViewLocation(FVector NewLoc)
+{
+	OperatorViewLocation = NewLoc;
+}
+
+void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
+{
+	if (!bInstructorPipEnabled || !InstructorPipCapture || !InstructorPipRT)
+	{
+		return;
+	}
+	if (!AirspaceManager)
+	{
+		return;
+	}
+
+	// Compute the camera transform inline from replicated state instead of
+	// looking up an ACameraActor pointer. The CameraActor pointers don't
+	// resolve reliably on clients (replication of references to non-replicated
+	// actors is a known UE gotcha) so we derive the same transforms from
+	// data that IS replicated: sector centre (this actor's location),
+	// SectorEnvironment (replicated on AirspaceManager), and class-default
+	// UPROPERTYs which are identical on every machine. - TripleA
+	const FVector Origin = GetActorLocation();
+	const float S = WorldUnitsPerNm;
+	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+
+	const FVector ThrW(Origin.X + Env.ActiveRunwayThreshold.X * S,
+		Origin.Y + Env.ActiveRunwayThreshold.Y * S,
+		GroundWorldZ);
+	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+	const float FacRad = FMath::DegreesToRadians(FAC);
+	const FVector InboundDir(FMath::Sin(FacRad), FMath::Cos(FacRad), 0.f);
+
+	FVector TargetLoc;
+	FRotator TargetRot;
+	float TargetFOV = 80.f;
+
+	switch (InstructorPipView)
+	{
+	case EClearanceCameraView::Overview:
+	{
+		TargetLoc = Origin + FVector(0.f, -ExitRadiusNm * S * 0.55f, ExitRadiusNm * S * 0.95f);
+		TargetRot = (ThrW - TargetLoc).Rotation();
+		break;
+	}
+	case EClearanceCameraView::Tower:
+	{
+		// If the designer has tagged an actor in the level with "ClearanceTower"
+		// (a tower building mesh, a placed marker, anything) the camera uses
+		// THAT actor's world transform. Otherwise fall back to 50m above the
+		// runway threshold looking down the approach corridor. Tag-based so
+		// no new class is needed - just drop a tag on whatever mesh you've
+		// got. - TripleA
+		AActor* TowerAnchor = nullptr;
+		if (UWorld* W = GetWorld())
+		{
+			static const FName TowerTag(TEXT("ClearanceTower"));
+			for (TActorIterator<AActor> It(W); It; ++It)
+			{
+				if (*It && It->ActorHasTag(TowerTag))
+				{
+					TowerAnchor = *It;
+					break;
+				}
+			}
+		}
+
+		if (TowerAnchor)
+		{
+			// Camera sits exactly where the tagged actor is. Place a
+			// TargetPoint (or any empty actor) at the cab / window position
+			// you want and tag it; the camera transform is literal. - TripleA
+			TargetLoc = TowerAnchor->GetActorLocation();
+			FRotator BaseRot = TowerAnchor->GetActorRotation();
+			BaseRot.Yaw += InstructorTowerYawDeg;
+			TargetRot = BaseRot;
+		}
+		else
+		{
+			TargetLoc = ThrW + FVector(0.f, 0.f, 5000.f);
+			const FVector LookAt = ThrW - InboundDir * (20.f * S);
+			FRotator BaseRot = (LookAt - TargetLoc).Rotation();
+			BaseRot.Yaw += InstructorTowerYawDeg;
+			TargetRot = BaseRot;
+		}
+		break;
+	}
+	case EClearanceCameraView::Approach:
+	{
+		// Use the selected runway from GetAllRunways instead of the wind-active
+		// one in Env, so the runway picker selects which one to frame. - TripleA
+		const TArray<FRunwayInfo>& AllRunways = AirspaceManager->GetAllRunways();
+		FVector2D RwyThrNm(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+		float RwyHeading = FAC;
+		if (AllRunways.Num() > 0)
+		{
+			const int32 Idx = FMath::Clamp(InstructorApproachRunwayIndex, 0, AllRunways.Num() - 1);
+			RwyThrNm = AllRunways[Idx].ThresholdNm;
+			RwyHeading = AllRunways[Idx].HeadingDeg;
+		}
+		static int32 ApproachLogTick = 0;
+		if (++ApproachLogTick % 60 == 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[PIP] Approach: this=%p auth=%d idx=%d total=%d thr=(%.0f,%.0f) hdg=%.0f"),
+				this, HasAuthority() ? 1 : 0,
+				InstructorApproachRunwayIndex, AllRunways.Num(),
+				RwyThrNm.X, RwyThrNm.Y, RwyHeading);
+		}
+		const FVector RwyThrW(Origin.X + RwyThrNm.X * S, Origin.Y + RwyThrNm.Y * S, GroundWorldZ);
+		const float RwyRad = FMath::DegreesToRadians(RwyHeading);
+		const FVector RwyInboundDir(FMath::Sin(RwyRad), FMath::Cos(RwyRad), 0.f);
+		const FVector RwyRightPerp(FMath::Cos(RwyRad), -FMath::Sin(RwyRad), 0.f);
+
+		// 3/4 angle: elevated, off to the side of the threshold, looking at
+		// a point along the runway. Frames the runway extending into the
+		// distance with the corridor visible behind it. Aircraft on final
+		// approach come from the back of the frame toward the threshold. - TripleA
+		const float SideDistance  = 60000.f;  // 600m off to the side
+		const float Elevation     = 30000.f;  // 300m up
+		const float LookRunwayPos = 40000.f;  // look at a point 400m down the runway from threshold
+		TargetLoc = RwyThrW + RwyRightPerp * SideDistance + FVector(0.f, 0.f, Elevation);
+		const FVector LookAt = RwyThrW + RwyInboundDir * LookRunwayPos;
+		TargetRot = (LookAt - TargetLoc).Rotation();
+		break;
+	}
+	case EClearanceCameraView::Follow:
+	{
+		const FName Follow = !InstructorPipFollowCallsign.IsNone()
+			? InstructorPipFollowCallsign
+			: FollowTargetCallsign;
+		if (Follow.IsNone())
+		{
+			return;
+		}
+		const FAircraftState St = AirspaceManager->GetAircraftState(Follow);
+		if (!St.bIsValid)
+		{
+			return;
+		}
+		// Read POSITION from the visual actor (whatever the renderer is about
+		// to draw the mesh at) so the camera and the mesh stay perfectly
+		// locked - no per-frame drift within the chase frame.
+		// Read HEADING from the replicated state (compass convention) - it's
+		// the same value UpdateVisuals used to compute the actor's rotation,
+		// and computing the camera Forward vector from compass heading is
+		// straightforward. Mixing in the actor's UE-Yaw + YawOffsetDeg here
+		// gets the angles wrong. - TripleA
+		FVector Aircraft;
+		float MeshHalfLength = 750.f; // medium-aircraft default if no visual yet
+		const FSpawnedAircraftVisual* Visual = VisualActors.Find(Follow);
+		if (Visual && Visual->Actor)
+		{
+			Aircraft = Visual->Actor->GetActorLocation();
+			// Estimate the aircraft's half-length from its world-axis bounds.
+			// max(X, Y) catches whichever axis the plane is aligned along; we
+			// pad 1.3x to compensate for the bounding box shrinking when the
+			// plane is rotated off-axis. Used to scale chase pull-back and
+			// cockpit forward-offset so big planes don't end up in-frame too
+			// close, and so the cockpit cam reaches the nose on a 747. - TripleA
+			FVector BoundsOrigin, BoundsExtent;
+			Visual->Actor->GetActorBounds(false, BoundsOrigin, BoundsExtent);
+			MeshHalfLength = FMath::Max(BoundsExtent.X, BoundsExtent.Y) * 1.3f;
+		}
+		else
+		{
+			Aircraft = WorldPositionFor(St);
+		}
+		const float HeadingRad = FMath::DegreesToRadians(St.Heading);
+		const FVector Forward(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
+		const FVector Right(FMath::Cos(HeadingRad), -FMath::Sin(HeadingRad), 0.f);
+		const FVector Up(0.f, 0.f, 1.f);
+		switch (InstructorPipFollowAngle)
+		{
+		case EClearanceFollowAngle::Cockpit:
+		{
+			// Push forward to where the cockpit windows actually are - on a
+			// typical airliner that's ~80% of the half-length ahead of the
+			// mesh origin. Plus a small height offset for the windscreen
+			// height. - TripleA
+			const float CockpitFwd = FMath::Max(80.f, MeshHalfLength * 0.8f);
+			const float CockpitUp  = FMath::Max(60.f, MeshHalfLength * 0.12f);
+			TargetLoc = Aircraft + Forward * CockpitFwd + Up * CockpitUp;
+			TargetRot = Forward.Rotation();
+			break;
+		}
+		case EClearanceFollowAngle::Side:
+			TargetLoc = Aircraft + Right * 1800.f + Up * 500.f;
+			TargetRot = (Aircraft - TargetLoc).Rotation();
+			break;
+		case EClearanceFollowAngle::Top:
+			TargetLoc = Aircraft + Up * 3500.f;
+			TargetRot = (Aircraft - TargetLoc).Rotation();
+			break;
+		case EClearanceFollowAngle::Chase:
+		default:
+		{
+			// Pull back ~2.2x half-length so a 747 frames properly without the
+			// camera being inside the fuselage. Floor at 1500 so a tiny
+			// Cessna doesn't end up infinitely close. Height proportional too
+			// so the angle stays cinematic. - TripleA
+			const float ChaseDist   = FMath::Max(1500.f, MeshHalfLength * 2.2f);
+			const float ChaseHeight = FMath::Max(600.f,  MeshHalfLength * 0.45f);
+			TargetLoc = Aircraft - Forward * ChaseDist + Up * ChaseHeight;
+			TargetRot = (Aircraft - TargetLoc).Rotation();
+			break;
+		}
+		}
+		break;
+	}
+	case EClearanceCameraView::Operator:
+	{
+		// Use the operator's pushed view transform directly. AClearanceOperatorPC
+		// updates OperatorViewRotation/Location every ~30ms from its local
+		// GetControlRotation() and pawn eye location - that bypasses every UE
+		// rotation-replication footgun (yaw-only Character replication, missing
+		// pitch for non-Character pawns, no roll anywhere) and gives the
+		// instructor exactly what the operator's camera sees. - TripleA
+		if (OperatorViewLocation.IsZero())
+		{
+			return; // no data yet - operator PC hasn't ticked
+		}
+		TargetLoc = OperatorViewLocation;
+		TargetRot = OperatorViewRotation;
+		TargetFOV = 90.f;
+		break;
+	}
+	default:
+	{
+		TargetLoc = ThrW + FVector(0.f, 0.f, 600.f);
+		TargetRot = FRotator::ZeroRotator;
+		break;
+	}
+	}
+
+	InstructorPipCapture->SetWorldLocationAndRotation(TargetLoc, TargetRot);
+	InstructorPipCapture->FOVAngle = TargetFOV;
+
+	// Tell the texture streamer about this view BEFORE capturing. Without this
+	// the SceneCapture renders against whatever low-mip placeholder textures
+	// happen to be in memory - which is why aircraft appeared as flat white
+	// blobs while the same mesh looks fine in the main viewport. Adding a
+	// view location requests proper streaming for everything in this frustum. - TripleA
+	if (InstructorPipRT)
+	{
+		const float ScreenSize = static_cast<float>(InstructorPipRT->SizeX);
+		const float FOVScreenSize = ScreenSize / FMath::Max(0.001f, FMath::Tan(FMath::DegreesToRadians(TargetFOV * 0.5f)));
+		IStreamingManager::Get().AddViewInformation(TargetLoc, ScreenSize, FOVScreenSize);
+	}
+
+	const float Interval = 1.f / FMath::Max(1.f, InstructorPipCaptureRateHz);
+	InstructorPipCaptureAccum += DeltaSeconds;
+	if (InstructorPipCaptureAccum >= Interval)
+	{
+		InstructorPipCaptureAccum = 0.f;
+		InstructorPipCapture->CaptureScene();
+	}
 }
 
 void AClearanceSimulationController::SetWind(float DirectionDeg, float SpeedKts)

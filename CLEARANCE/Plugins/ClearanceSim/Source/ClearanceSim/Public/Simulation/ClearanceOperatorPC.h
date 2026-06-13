@@ -19,6 +19,7 @@ class CLEARANCESIM_API AClearanceOperatorPC : public APlayerController
 
 public:
 	virtual void BeginPlay() override;
+	virtual void PlayerTick(float DeltaTime) override;
 
 	// Soft class so we don't force-load UMG content from C++. Default points
 	// at /Game/UI/WBP_InstructorPanel. - TripleA
@@ -75,4 +76,13 @@ public:
 
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectResetScenario();
+
+	// Push the operator's full control rotation to the SimController so the
+	// instructor PIP can mirror it. Unreliable - we send it every ~30Hz so a
+	// dropped packet just leaves the instructor one frame behind. - TripleA
+	UFUNCTION(Server, Unreliable, WithValidation)
+	void Server_PushOperatorView(FRotator NewRot, FVector NewLoc);
+
+private:
+	float ViewPushAccumSec = 0.f;
 };

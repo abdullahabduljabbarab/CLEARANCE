@@ -18,6 +18,8 @@ class UClearanceDISEmitter;
 class UClearanceDISReceiver;
 class UClearanceRadar;
 class ACameraActor;
+class USceneCaptureComponent2D;
+class UTextureRenderTarget2D;
 
 // Fixed instructor views. Free-cam is intentionally out so the player can't roam. - TripleA
 UENUM(BlueprintType)
@@ -27,7 +29,8 @@ enum class EClearanceCameraView : uint8
 	Overview    UMETA(DisplayName = "Sector overview"),
 	Tower       UMETA(DisplayName = "Tower (active runway threshold)"),
 	Approach    UMETA(DisplayName = "Far end of approach"),
-	Follow      UMETA(DisplayName = "Chase a chosen aircraft")
+	Follow      UMETA(DisplayName = "Chase a chosen aircraft"),
+	Operator    UMETA(DisplayName = "Operator POV (what the trainee sees)")
 };
 
 // Sub-angles for the Follow camera. - TripleA
@@ -152,8 +155,11 @@ public:
 	bool IsGCIModeEnabled() const { return bGCIMode; }
 
 	// Operator manually classifies a contact (e.g. after IFF interrogation or VID).
+	// bAsInstructor = true bypasses the mis-ID scoring penalty - the instructor
+	// reclassifying a contact via the inject panel isn't the operator making a
+	// call, it's god-mode scenario tuning. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
-	void ClassifyAircraft(FName Callsign, EThreatClass NewClass);
+	void ClassifyAircraft(FName Callsign, EThreatClass NewClass, bool bAsInstructor = false);
 
 	// Inject an emergency on a named aircraft - used by the scenario runner to script
 	// scheduled emergencies. Mirrors the random-injection path: sets emergency type,
@@ -309,6 +315,98 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
 	void CycleFollowAngle();
+
+	// --- Instructor PIP -----------------------------------------------------
+	// A SceneCapture that mirrors whichever preset camera is selected for the
+	// instructor's picture-in-picture feed. Independent of the operator's main
+	// view target - cycling the PIP doesn't disturb whatever the operator's
+	// looking at. - TripleA
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	UTextureRenderTarget2D* GetInstructorPipRT() const { return InstructorPipRT; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipView(EClearanceCameraView View);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void CycleInstructorPipView();
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	EClearanceCameraView GetInstructorPipView() const { return InstructorPipView; }
+
+	// Gate the SceneCapture render pass. SceneCapture is a full extra scene
+	// render so we keep it off until the instructor flips the panel to
+	// camera mode. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipEnabled(bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	bool IsInstructorPipEnabled() const { return bInstructorPipEnabled; }
+
+	// Aircraft the PIP follows in Follow mode. Per-instance state - each client
+	// (and the host) tracks its own target independently from the operator's
+	// main view, so the instructor can chase a contact without yanking the
+	// operator's camera off whatever they were watching. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipFollowCallsign(FName Callsign);
+
+	// Pan the Tower view left/right. A real ATC tower has 360-degree visibility
+	// so a fixed angle defeats the purpose - the instructor holds arrow
+	// buttons and the camera sweeps around the airfield. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void ApplyTowerYawDelta(float DeltaDeg);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	float GetTowerYawDeg() const { return InstructorTowerYawDeg; }
+
+	// Approach view runway picker. The instructor clicks APPROACH to pop a
+	// selector, picks one of these labels, the camera frames that runway. - TripleA
+
+	// Display strings for every runway in the airspace, e.g. "RWY 27R" /
+	// "RWY 27L" / "RWY 09L" / "RWY 09R". L / R / C suffixes are derived from
+	// each threshold's lateral offset from its same-heading siblings. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FString> GetApproachRunwayLabels() const;
+
+	// Switch to Approach view AND select the runway at the given index. The
+	// index matches the order of GetApproachRunwayLabels. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipApproachRunway(int32 Index);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	int32 GetInstructorPipApproachRunwayIndex() const { return InstructorApproachRunwayIndex; }
+
+	// Crash-proof alternative to SetInstructorPipApproachRunway(int32). UMG
+	// designer puts 4 buttons, each calls this with a hardcoded label string
+	// like "RWY 27R" - no GetArrayItem, no dynamic generation, no index math.
+	// Silent no-op if the label doesn't match any runway. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void PickApproachRunwayByLabel(const FString& Label);
+
+	// Chase view sub-angle. Independent of the operator's main FollowAngle so
+	// cycling here doesn't yank the operator's main camera. Cycles Chase ->
+	// Cockpit -> Side -> Top -> Chase ... - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void CycleInstructorPipFollowAngleNext();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void CycleInstructorPipFollowAnglePrev();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipFollowAngle(EClearanceFollowAngle Angle);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	EClearanceFollowAngle GetInstructorPipFollowAngle() const { return InstructorPipFollowAngle; }
+
+	// Explicit operator view replication. The OperatorPC pushes its
+	// ControlRotation + view location at ~30Hz so the instructor PIP can
+	// mirror exactly what the operator sees, regardless of pawn class or
+	// rotation replication settings. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetOperatorViewRotation(FRotator NewRot);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetOperatorViewLocation(FVector NewLoc);
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceConflictDetector* GetConflictDetector() const { return ConflictDetector; }
@@ -637,20 +735,73 @@ private:
 	float ReplaySpeed = 1.f;
 
 	// Preset cameras spawned on session start. Free-cam is intentionally not exposed.
-	UPROPERTY()
+	// Replicated so the instructor PIP on clients can resolve them - the
+	// CameraActors themselves replicate (built-in), but the controller's
+	// pointers do not unless we ask. - TripleA
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraOverview;
-	UPROPERTY()
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraTower;
-	UPROPERTY()
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraApproach;
-	UPROPERTY()
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraFollow;
 	EClearanceCameraView CurrentCameraView = EClearanceCameraView::Default;
 	FName FollowTargetCallsign;
 	EClearanceFollowAngle FollowAngle = EClearanceFollowAngle::Chase;
 
+	// Instructor PIP feed. The capture component lives on the controller and
+	// teleports per-tick to whichever preset camera the instructor selected.
+	// One capture pass, four viewpoints. - TripleA
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<USceneCaptureComponent2D> InstructorPipCapture;
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UTextureRenderTarget2D> InstructorPipRT;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	FIntPoint InstructorPipResolution = FIntPoint(1024, 768);
+
+	// Throttle the SceneCapture - it's a second full scene render so it adds
+	// real GPU cost. 60Hz gives a smooth stream that matches the host's render
+	// rate; drop it to 30 if you need more headroom. 20 reads as choppy when
+	// the operator is actively looking around because each capture lands on a
+	// different rotation. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true", ClampMin = "1.0", ClampMax = "120.0"))
+	float InstructorPipCaptureRateHz = 60.f;
+
+	// Pawn class to look up for the Operator POV view. The PIP scans the world
+	// for any pawn of this class that isn't the local player's pawn and uses
+	// its first CameraComponent's world transform - that way the instructor
+	// sees exactly what the trainee sees (including their VR head tracking,
+	// once the HMD is wired). Leave null to fall back to any non-local pawn. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<APawn> OperatorPawnClass;
+
+	EClearanceCameraView InstructorPipView = EClearanceCameraView::Tower;
+	bool bInstructorPipEnabled = false;
+	float InstructorPipCaptureAccum = 0.f;
+	FName InstructorPipFollowCallsign;
+	float InstructorTowerYawDeg = 0.f;
+	// Which runway threshold the Approach view is framing. Re-clicking APPROACH
+	// while already in Approach mode advances to the next runway in the list so
+	// the instructor can cycle through parallel pairs (27R -> 27L -> 09L ...). - TripleA
+	int32 InstructorApproachRunwayIndex = 0;
+	EClearanceFollowAngle InstructorPipFollowAngle = EClearanceFollowAngle::Chase;
+
+	// Replicated operator viewpoint. Pushed from AClearanceOperatorPC::PlayerTick
+	// (either directly on the host or via Server RPC from a remote client) and
+	// auto-replicated out to every machine - including the instructor's, which
+	// reads it in UpdateInstructorPip's Operator case. - TripleA
+	UPROPERTY(Replicated)
+	FRotator OperatorViewRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(Replicated)
+	FVector OperatorViewLocation = FVector::ZeroVector;
+
 	void SpawnPresetCameras();
 	void UpdateFollowCamera();
+	void UpdateInstructorPip(float DeltaSeconds);
 	// Live world frozen on EnterReplay so ResumeLive can restore it. - TripleA
 	UPROPERTY()
 	FRecordedSnapshot PreReplayState;

@@ -7,6 +7,14 @@ AClearanceAirspaceManager::AClearanceAirspaceManager()
 	PrimaryActorTick.bCanEverTick = false;
 	bReplicates = true;
 	bAlwaysRelevant = true; // shared state for every connected operator - no relevance culling
+	// Push the aircraft array to clients at the highest cadence UE allows so
+	// the instructor PIP chase / operator views don't catch stale positions
+	// and visibly teleport between network updates. The default 100Hz cap
+	// is plenty for our aircraft count; bandwidth cost is one array of
+	// FAircraftState per replication tick, well under any practical
+	// constraint. - TripleA
+	SetNetUpdateFrequency(100.f);
+	SetMinNetUpdateFrequency(60.f);
 }
 
 void AClearanceAirspaceManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -137,6 +145,13 @@ void AClearanceAirspaceManager::RebuildReplicatedArray()
 void AClearanceAirspaceManager::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Force the high replication rate at runtime in case the level-placed
+	// actor was saved with a lower serialised value. 100Hz NetUpdateFrequency
+	// keeps aircraft state churning to clients fast enough for the chase /
+	// operator PIP feeds to look smooth. - TripleA
+	SetNetUpdateFrequency(100.f);
+	SetMinNetUpdateFrequency(60.f);
 
 	// Server initialises the environment; clients receive it via replication.
 	// Without this gate the client would overwrite the replicated wind/runway

@@ -6,6 +6,8 @@
 #include "Airspace/ClearanceWaypoint.h"
 #include "Scenario/ClearanceScenarioRunner.h"
 #include "Components/ScrollBox.h"
+#include "Components/Image.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineUtils.h"
@@ -36,13 +38,22 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 	const int32 Result = Super::NativePaint(Args, AllottedGeometry, MyCullingRect,
 		OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
 
-	// Build a paint context and surface it to BP so the scope can paint into
-	// it. const_cast is the standard pattern - BlueprintImplementableEvent
-	// dispatch is non-const but the paint elements list it writes to is
-	// already the const& we got passed. - TripleA
-	FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
-		LayerId, InWidgetStyle, bParentEnabled);
-	const_cast<UClearanceInstructorPanel*>(this)->BP_PaintScope(Context, AllottedGeometry.GetLocalSize());
+	// Skip the scope paint entirely when the panel is in camera-feed mode -
+	// otherwise the vectors would render on top of the camera Image widget
+	// (NativePaint runs after child widgets so its LayerId is higher) and
+	// the user would see a scope overlay on the camera feed. The Image
+	// widget itself is shown/hidden by UMG; this just stops C++ from
+	// drawing into the same area. - TripleA
+	if (!bShowCameraView)
+	{
+		// Build a paint context and surface it to BP so the scope can paint into
+		// it. const_cast is the standard pattern - BlueprintImplementableEvent
+		// dispatch is non-const but the paint elements list it writes to is
+		// already the const& we got passed. - TripleA
+		FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
+			LayerId, InWidgetStyle, bParentEnabled);
+		const_cast<UClearanceInstructorPanel*>(this)->BP_PaintScope(Context, AllottedGeometry.GetLocalSize());
+	}
 
 	return Result;
 }
@@ -245,6 +256,142 @@ TArray<FInstructorAircraftRow> UClearanceInstructorPanel::GetAircraftRows() cons
 	TArray<FInstructorAircraftRow> Out;
 	BuildAircraftRows(Out);
 	return Out;
+}
+
+// --- Picture-in-picture camera feed ---------------------------------------
+// Thin wrappers around the controller's PIP API. The toggle also flips the
+// SceneCapture on/off so we're not paying for a second render pass while the
+// instructor's looking at the scope. - TripleA
+
+void UClearanceInstructorPanel::ToggleScopeCameraView()
+{
+	bShowCameraView = !bShowCameraView;
+	if (!CachedController) { RefreshLocalRefs(); }
+	if (CachedController)
+	{
+		CachedController->SetInstructorPipEnabled(bShowCameraView);
+		if (bShowCameraView)
+		{
+			// Default to Overview each time the instructor opens the camera
+			// feed so they always land on a sensible sector-wide shot rather
+			// than wherever the last mode left things. - TripleA
+			CachedController->SetInstructorPipView(EClearanceCameraView::Overview);
+		}
+	}
+}
+
+UTextureRenderTarget2D* UClearanceInstructorPanel::GetInstructorPipRT() const
+{
+	return CachedController ? CachedController->GetInstructorPipRT() : nullptr;
+}
+
+void UClearanceInstructorPanel::SetInstructorPipView(EClearanceCameraView View)
+{
+	if (!CachedController) { return; }
+	CachedController->SetInstructorPipView(View);
+}
+
+void UClearanceInstructorPanel::CycleInstructorPipView()
+{
+	if (!CachedController) { return; }
+	CachedController->CycleInstructorPipView();
+}
+
+EClearanceCameraView UClearanceInstructorPanel::GetInstructorPipView() const
+{
+	return CachedController ? CachedController->GetInstructorPipView() : EClearanceCameraView::Tower;
+}
+
+void UClearanceInstructorPanel::ApplyTowerYawDelta(float DeltaDeg)
+{
+	if (!CachedController) { RefreshLocalRefs(); }
+	if (CachedController)
+	{
+		CachedController->ApplyTowerYawDelta(DeltaDeg);
+	}
+}
+
+TArray<FString> UClearanceInstructorPanel::GetApproachRunwayLabels() const
+{
+	return CachedController ? CachedController->GetApproachRunwayLabels() : TArray<FString>();
+}
+
+void UClearanceInstructorPanel::SetInstructorPipApproachRunway(int32 Index)
+{
+	if (!CachedController) { RefreshLocalRefs(); }
+	UE_LOG(LogTemp, Warning, TEXT("[PIP] Panel SetApproachRunway: idx=%d controller=%p"),
+		Index, CachedController.Get());
+	if (!CachedController) { return; }
+	CachedController->SetInstructorPipApproachRunway(Index);
+}
+
+int32 UClearanceInstructorPanel::GetInstructorPipApproachRunwayIndex() const
+{
+	return CachedController ? CachedController->GetInstructorPipApproachRunwayIndex() : 0;
+}
+
+void UClearanceInstructorPanel::PickApproachRunwayByLabel(const FString& Label)
+{
+	if (!CachedController) { RefreshLocalRefs(); }
+	if (!CachedController) { return; }
+	CachedController->PickApproachRunwayByLabel(Label);
+}
+
+void UClearanceInstructorPanel::CycleChaseAngleNext()
+{
+	if (!CachedController) { RefreshLocalRefs(); }
+	if (CachedController) { CachedController->CycleInstructorPipFollowAngleNext(); }
+}
+
+void UClearanceInstructorPanel::CycleChaseAnglePrev()
+{
+	if (!CachedController) { RefreshLocalRefs(); }
+	if (CachedController) { CachedController->CycleInstructorPipFollowAnglePrev(); }
+}
+
+EClearanceFollowAngle UClearanceInstructorPanel::GetChaseAngle() const
+{
+	return CachedController ? CachedController->GetInstructorPipFollowAngle() : EClearanceFollowAngle::Chase;
+}
+
+void UClearanceInstructorPanel::SetSelectedCallsign(FName NewSelection)
+{
+	const bool bChanged = (NewSelection != SelectedCallsign);
+	SelectedCallsign = NewSelection;
+	// Selection IS the chase target. Whenever the instructor picks a different
+	// aircraft, the Chase view follows along automatically - no extra clicks
+	// required. Empty selection means no chase target, the Follow case in
+	// UpdateInstructorPip silently no-ops which freezes the camera on the last
+	// good frame. - TripleA
+	if (!CachedController) { RefreshLocalRefs(); }
+	if (CachedController)
+	{
+		CachedController->SetInstructorPipFollowCallsign(NewSelection);
+		// Reset the chase sub-angle to the default behind-and-above each time
+		// the selection moves to a new aircraft. Cycling angles is meant for
+		// the contact you're currently watching - keeping a previous "Top"
+		// view on a freshly selected aircraft is just stale state. - TripleA
+		if (bChanged)
+		{
+			CachedController->SetInstructorPipFollowAngle(EClearanceFollowAngle::Chase);
+		}
+	}
+}
+
+void UClearanceInstructorPanel::RebindCameraFeedBrush(UImage* TargetImage)
+{
+	if (!TargetImage) { return; }
+	if (!CachedController) { RefreshLocalRefs(); }
+	if (!CachedController) { return; }
+	UTextureRenderTarget2D* RT = GetInstructorPipRT();
+	if (!RT) { return; }
+
+	FSlateBrush Brush = TargetImage->GetBrush();
+	Brush.SetResourceObject(RT);
+	Brush.SetImageSize(FVector2D(RT->SizeX, RT->SizeY));
+	Brush.DrawAs = ESlateBrushDrawType::Image;
+	Brush.TintColor = FSlateColor(FLinearColor::White);
+	TargetImage->SetBrush(Brush);
 }
 
 FInstructorScoreView UClearanceInstructorPanel::GetScoreView() const

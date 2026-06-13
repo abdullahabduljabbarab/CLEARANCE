@@ -51,6 +51,60 @@ namespace
 	}
 }
 
+void AClearanceOperatorPC::PlayerTick(float DeltaTime)
+{
+	Super::PlayerTick(DeltaTime);
+
+	// Only the operator (the PC that actually has a possessed pawn and is
+	// running locally) pushes its viewpoint. The instructor PC has its pawn
+	// destroyed in BeginPlay so it skips this naturally. - TripleA
+	if (!IsLocalController()) { return; }
+	APawn* P = GetPawn();
+	if (!P) { return; }
+
+	// Push every frame the host renders. The replicated UPROPERTY rate is
+	// capped by NetUpdateFrequency anyway, so this is effectively "as fast as
+	// the network allows" - which is what's needed for the PIP to stream
+	// smoothly instead of catching different rotation values per capture. - TripleA
+	ViewPushAccumSec += DeltaTime;
+	if (ViewPushAccumSec < (1.f / 120.f)) { return; }
+	ViewPushAccumSec = 0.f;
+
+	const FRotator Rot = GetControlRotation();
+	const FVector Loc = P->GetPawnViewLocation();
+
+	if (HasAuthority())
+	{
+		// Listen-server / standalone host case: operator IS the server, just
+		// write directly into the replicated UPROPERTY. - TripleA
+		if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+		{
+			C->SetOperatorViewRotation(Rot);
+			C->SetOperatorViewLocation(Loc);
+		}
+	}
+	else
+	{
+		// Operator is a remote client - RPC the value over to the server
+		// where it'll get replicated back out to all clients including the
+		// instructor. - TripleA
+		Server_PushOperatorView(Rot, Loc);
+	}
+}
+
+bool AClearanceOperatorPC::Server_PushOperatorView_Validate(FRotator NewRot, FVector NewLoc)
+{
+	return true;
+}
+void AClearanceOperatorPC::Server_PushOperatorView_Implementation(FRotator NewRot, FVector NewLoc)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->SetOperatorViewRotation(NewRot);
+		C->SetOperatorViewLocation(NewLoc);
+	}
+}
+
 // --- Emergency -------------------------------------------------------------
 
 bool AClearanceOperatorPC::Server_InjectEmergency_Validate(FName Callsign, EEmergencyType Kind)
@@ -90,7 +144,12 @@ void AClearanceOperatorPC::Server_InjectClassify_Implementation(FName Callsign, 
 	if (Callsign == NAME_None) { return; }
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->ClassifyAircraft(Callsign, NewClass);
+		// "Inject" path = instructor panel reclassification; bypass mis-ID
+		// scoring so changing a contact's threat class from god view doesn't
+		// log a doctrine failure against the trainee. Operator voice
+		// classifications still go through ClassifyAircraft with the default
+		// bAsInstructor=false and DO score. - TripleA
+		C->ClassifyAircraft(Callsign, NewClass, /*bAsInstructor=*/true);
 	}
 }
 

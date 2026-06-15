@@ -469,6 +469,18 @@ struct CLEARANCESIM_API FRunwayInfo
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
 	float HeadingDeg = 270.f;
+
+	// Asphalt length in world units (UE cm), from the runway actor's mesh
+	// bounds. Used by camera-feed overlays to draw a centerline that
+	// matches the actual strip rather than a fixed-length guess. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	float LengthUnits = 0.f;
+
+	// Asphalt width, same source/units as LengthUnits. Lets the camera-feed
+	// overlay outline the strip as a rectangle instead of a single
+	// centerline. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	float WidthUnits = 0.f;
 };
 
 /** What the RADAR believes about one aircraft. Distinct from the truth held in the

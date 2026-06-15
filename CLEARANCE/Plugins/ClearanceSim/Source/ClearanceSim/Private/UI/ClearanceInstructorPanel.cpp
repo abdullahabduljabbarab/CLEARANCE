@@ -54,6 +54,17 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 			LayerId, InWidgetStyle, bParentEnabled);
 		const_cast<UClearanceInstructorPanel*>(this)->BP_PaintScope(Context, AllottedGeometry.GetLocalSize());
 	}
+	else
+	{
+		// Camera-view paint pass for HUD overlays (runway centerlines,
+		// approach corridors). Use Result + 1 so we sit ABOVE every child
+		// widget that just painted - using the original LayerId puts us
+		// underneath Img_CameraFeed (the image draws at a higher layer than
+		// the panel root) and the lines get hidden behind the feed. - TripleA
+		FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
+			Result + 1, InWidgetStyle, bParentEnabled);
+		const_cast<UClearanceInstructorPanel*>(this)->BP_PaintCameraOverlay(Context, AllottedGeometry.GetLocalSize());
+	}
 
 	return Result;
 }
@@ -354,6 +365,21 @@ EClearanceFollowAngle UClearanceInstructorPanel::GetChaseAngle() const
 	return CachedController ? CachedController->GetInstructorPipFollowAngle() : EClearanceFollowAngle::Chase;
 }
 
+TArray<FInstructorCameraLabel> UClearanceInstructorPanel::GetCameraLabels() const
+{
+	return CachedController ? CachedController->GetCameraLabels() : TArray<FInstructorCameraLabel>();
+}
+
+TArray<FInstructorCameraLine> UClearanceInstructorPanel::GetCameraOverlayLines() const
+{
+	return CachedController ? CachedController->GetCameraOverlayLines() : TArray<FInstructorCameraLine>();
+}
+
+TArray<FInstructorCameraText> UClearanceInstructorPanel::GetCameraOverlayText() const
+{
+	return CachedController ? CachedController->GetCameraOverlayText() : TArray<FInstructorCameraText>();
+}
+
 void UClearanceInstructorPanel::SetSelectedCallsign(FName NewSelection)
 {
 	const bool bChanged = (NewSelection != SelectedCallsign);
@@ -375,6 +401,64 @@ void UClearanceInstructorPanel::SetSelectedCallsign(FName NewSelection)
 		{
 			CachedController->SetInstructorPipFollowAngle(EClearanceFollowAngle::Chase);
 		}
+	}
+}
+
+void UClearanceInstructorPanel::DrawCameraOverlayLines(FPaintContext& Context, UImage* CameraImage)
+{
+	if (!CameraImage) { return; }
+
+	// Paint-space geometry is the image's geometry for THIS paint pass.
+	// GetCachedGeometry() returns whatever was last painted - in dual-
+	// viewport / multi-pass setups (which is what this widget tree turned
+	// out to be), the cached value can be from a sibling render pass that
+	// has nothing to do with the visible one. - TripleA
+	const FGeometry& ImageGeo = CameraImage->GetPaintSpaceGeometry();
+	const FVector2D ImageSize = ImageGeo.GetLocalSize();
+	if (ImageSize.X <= 0.f || ImageSize.Y <= 0.f) { return; }
+
+	const FVector2D PanelAbs = Context.AllottedGeometry.GetAbsolutePosition();
+	const FVector2D ImageAbs = ImageGeo.GetAbsolutePosition();
+	const float Scale = FMath::Max(KINDA_SMALL_NUMBER, Context.AllottedGeometry.Scale);
+	const FVector2D ImageOriginInPanel = (ImageAbs - PanelAbs) / Scale;
+
+	const TArray<FInstructorCameraLine> Lines = GetCameraOverlayLines();
+	for (const FInstructorCameraLine& Line : Lines)
+	{
+		const FVector2D Start = ImageOriginInPanel + Line.StartUV * ImageSize;
+		const FVector2D End   = ImageOriginInPanel + Line.EndUV   * ImageSize;
+		UWidgetBlueprintLibrary::DrawLine(Context, Start, End, Line.Color, true, Line.Thickness);
+	}
+}
+
+void UClearanceInstructorPanel::DrawCameraOverlayText(FPaintContext& Context, UImage* CameraImage)
+{
+	if (!CameraImage) { return; }
+
+	const FGeometry& ImageGeo = CameraImage->GetPaintSpaceGeometry();
+	const FVector2D ImageSize = ImageGeo.GetLocalSize();
+	if (ImageSize.X <= 0.f || ImageSize.Y <= 0.f) { return; }
+
+	const FVector2D PanelAbs = Context.AllottedGeometry.GetAbsolutePosition();
+	const FVector2D ImageAbs = ImageGeo.GetAbsolutePosition();
+	const float Scale = FMath::Max(KINDA_SMALL_NUMBER, Context.AllottedGeometry.Scale);
+	const FVector2D ImageOriginInPanel = (ImageAbs - PanelAbs) / Scale;
+
+	const TArray<FInstructorCameraText> Items = GetCameraOverlayText();
+	const FLinearColor ShadowColor(0.f, 0.f, 0.f, 0.85f);
+	for (const FInstructorCameraText& Item : Items)
+	{
+		// Rough character-width offset so the text reads centred on the
+		// projected threshold instead of left-justified to it. ~8 px per
+		// char of the default text style is a usable estimate. - TripleA
+		const FVector2D Centre = ImageOriginInPanel + Item.ScreenUV * ImageSize;
+		const FVector2D Offset(Item.Text.Len() * 7.f, Item.FontSize * 0.5f);
+		const FVector2D Pos = Centre - Offset;
+		// Cheap drop-shadow: same string painted 1 px down-right in black
+		// first. Keeps the cyan legible whether it lands over sky, runway
+		// or terrain. - TripleA
+		UWidgetBlueprintLibrary::DrawText(Context, Item.Text, Pos + FVector2D(2.f, 2.f), ShadowColor);
+		UWidgetBlueprintLibrary::DrawText(Context, Item.Text, Pos, Item.Color);
 	}
 }
 

@@ -126,3 +126,54 @@ struct CLEARANCESIM_API FInstructorAirwaySegment
 	UPROPERTY(BlueprintReadOnly) FVector2D StartNm = FVector2D::ZeroVector;
 	UPROPERTY(BlueprintReadOnly) FVector2D EndNm   = FVector2D::ZeroVector;
 };
+
+// One floating label entry for the camera-feed HUD overlay. Computed by
+// projecting the aircraft's world position through the PIP capture's view
+// frustum. UMG positions a TextBlock at ScreenUV * ImageSize each tick.
+// Only aircraft inside the frustum are returned; off-screen ones are
+// dropped so the UMG doesn't need to bother with culling. - TripleA
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FInstructorCameraLabel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FName Callsign;
+	// Top-left origin, 0..1 across the PIP image. UMG multiplies by the
+	// image's render size to get pixel coords. - TripleA
+	UPROPERTY(BlueprintReadOnly) FVector2D ScreenUV = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) EThreatClass ThreatClass = EThreatClass::Unknown;
+	UPROPERTY(BlueprintReadOnly) int32 FlightLevel = 0;
+	// Compass heading in degrees (0..360, 0 = North). - TripleA
+	UPROPERTY(BlueprintReadOnly) int32 HeadingDeg = 0;
+	// Ground speed in knots. - TripleA
+	UPROPERTY(BlueprintReadOnly) int32 SpeedKts = 0;
+};
+
+// Projected line segment for the camera-feed HUD overlay. Used for runway
+// centerlines, approach corridors, glide slopes, sector boundaries -
+// anything that's a world-space line painted as a 2D screen-space stroke
+// over the camera feed. - TripleA
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FInstructorCameraLine
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FVector2D StartUV = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FVector2D EndUV   = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FLinearColor Color = FLinearColor::White;
+	UPROPERTY(BlueprintReadOnly) float Thickness = 2.f;
+};
+
+// Projected text label for the camera-feed HUD overlay. Used for runway
+// designators (36R / 18L / ...) painted at the threshold ends and
+// anything else where a string needs to sit on a world position. - TripleA
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FInstructorCameraText
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Text;
+	UPROPERTY(BlueprintReadOnly) FVector2D ScreenUV = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FLinearColor Color = FLinearColor::White;
+	UPROPERTY(BlueprintReadOnly) int32 FontSize = 14;
+};

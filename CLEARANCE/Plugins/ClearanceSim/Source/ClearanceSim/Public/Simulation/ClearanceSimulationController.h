@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "Templates/SubclassOf.h"
 #include "Core/CLEARANCETypes.h"
+#include "UI/ClearanceInstructorTypes.h"
 #include "ClearanceSimulationController.generated.h"
 
 class AClearanceAirspaceManager;
@@ -342,6 +343,28 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
 	bool IsInstructorPipEnabled() const { return bInstructorPipEnabled; }
+
+	// Projected screen-space labels for the camera-feed HUD overlay. Walks
+	// every aircraft, transforms its world position through the PIP capture's
+	// view-projection matrix, and emits a label for each one inside the
+	// frustum. UMG positions a widget at ScreenUV * ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FInstructorCameraLabel> GetCameraLabels() const;
+
+	// Projected world-space lines for the camera-feed HUD overlay - runway
+	// centerlines, approach corridors. Lines fully behind the camera are
+	// dropped; lines that straddle the near plane are clipped to it so the
+	// projection doesn't go off to infinity. UMG paints each entry between
+	// StartUV * ImageSize and EndUV * ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FInstructorCameraLine> GetCameraOverlayLines() const;
+
+	// Screen-space text labels for the camera-feed HUD overlay. Currently
+	// emits one runway designator (e.g. "36R") per threshold so both ends
+	// of every runway are marked. UMG paints each entry at ScreenUV *
+	// ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FInstructorCameraText> GetCameraOverlayText() const;
 
 	// Aircraft the PIP follows in Follow mode. Per-instance state - each client
 	// (and the host) tracks its own target independently from the operator's

@@ -39,6 +39,21 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Instructor|Scope")
 	void BP_PaintScope(UPARAM(ref) struct FPaintContext& Context, FVector2D PanelSize);
 
+	// Override in BP to draw HUD overlays on top of the camera feed (runway
+	// centerlines, approach corridors, etc.). Fires every paint pass when the
+	// panel is in camera-feed mode. Call DrawCameraOverlayLines() from inside
+	// this with Img_CameraFeed as the second arg. - TripleA
+	UFUNCTION(BlueprintImplementableEvent, Category = "Instructor|Camera")
+	void BP_PaintCameraOverlay(UPARAM(ref) struct FPaintContext& Context, FVector2D PanelSize);
+
+	// Paint helper that draws all entries from GetCameraOverlayLines() into
+	// the given PaintContext, using the camera-feed image widget's geometry
+	// to translate the 0..1 UVs into panel-local pixel coords. Hand it the
+	// same FPaintContext you got in BP_PaintCameraOverlay and the
+	// Img_CameraFeed widget reference. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Camera")
+	void DrawCameraOverlayLines(UPARAM(ref) struct FPaintContext& Context, class UImage* CameraImage);
+
 	// --- Read views (call from BP to refresh on demand) -------------------
 	// Most of the time you'll just bind the OnXxxChanged events below;
 	// these are here for manual pulls (e.g. populating a combo box on open). - TripleA
@@ -150,6 +165,31 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
 	EClearanceFollowAngle GetChaseAngle() const;
+
+	// Screen-space aircraft labels for the camera-feed HUD overlay. UMG
+	// polls this each tick (or as bind delegate) and positions a widget
+	// per entry at ScreenUV * ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	TArray<FInstructorCameraLabel> GetCameraLabels() const;
+
+	// Projected world-space lines for the camera-feed HUD overlay - runway
+	// centerlines, extended approach centerlines. Neo paints each entry
+	// between StartUV * ImageSize and EndUV * ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	TArray<FInstructorCameraLine> GetCameraOverlayLines() const;
+
+	// Projected text labels for the camera-feed HUD overlay - runway
+	// designators at each threshold. Wire alongside DrawCameraOverlayLines
+	// in the same paint pass. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
+	TArray<FInstructorCameraText> GetCameraOverlayText() const;
+
+	// Paint helper that writes every runway designator into the camera
+	// feed at its projected screen position. Uses the same image-paint-
+	// space anchor as DrawCameraOverlayLines so lines and text agree on
+	// where the runway is. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Camera")
+	void DrawCameraOverlayText(UPARAM(ref) struct FPaintContext& Context, class UImage* CameraImage);
 
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
 	void SetSelectedCallsign(FName NewSelection);

@@ -371,12 +371,17 @@ void AClearanceSimulationController::InitialiseSystems()
 			// the touchdown points, the markers and everything else. - TripleA
 			FVector CentreW = It->GetActorLocation();
 			float LengthW = 1600.f; // fallback (~1.6nm) until a mesh is assigned
+			float WidthW  = 4500.f; // fallback ~45m strip
 			float TopZ = CentreW.Z;
 			FVector MeshCentre, MeshExtent;
 			if (It->GetRunwayBounds(MeshCentre, MeshExtent))
 			{
 				CentreW = MeshCentre;
 				LengthW = 2.f * (MeshExtent.X * FMath::Abs(Inbound.X) + MeshExtent.Y * FMath::Abs(Inbound.Y));
+				// Perpendicular to the heading - swaps the axis the projection
+				// reads. - TripleA
+				const FVector Perp(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
+				WidthW = 2.f * (MeshExtent.X * FMath::Abs(Perp.X) + MeshExtent.Y * FMath::Abs(Perp.Y));
 				TopZ = MeshCentre.Z + MeshExtent.Z;
 			}
 
@@ -385,12 +390,19 @@ void AClearanceSimulationController::InitialiseSystems()
 
 			// Landing on H, you cross the near threshold (behind the centre) and roll
 			// through; the reciprocal lands the other way from the far end. - TripleA
-			FRunwayInfo A; A.ThresholdNm = CentreNm - Inbound * HalfNm; A.HeadingDeg = H;
+			FRunwayInfo A;
+			A.ThresholdNm = CentreNm - Inbound * HalfNm;
+			A.HeadingDeg = H;
+			A.LengthUnits = LengthW;
+			A.WidthUnits  = WidthW;
 			RunwayInfos.Add(A);
 			if (It->bAllowReciprocal)
 			{
-				FRunwayInfo B; B.ThresholdNm = CentreNm + Inbound * HalfNm;
+				FRunwayInfo B;
+				B.ThresholdNm = CentreNm + Inbound * HalfNm;
 				B.HeadingDeg = FMath::Fmod(H + 180.f, 360.f);
+				B.LengthUnits = LengthW;
+				B.WidthUnits  = WidthW;
 				RunwayInfos.Add(B);
 			}
 			if (!bGroundSet) { GroundWorldZ = TopZ; bGroundSet = true; } // 0ft = top of the runway mesh
@@ -618,6 +630,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	// renders its own. The RT is a per-machine resource so the capture has to
 	// happen wherever the panel wants to display it. - TripleA
 	UpdateInstructorPip(DeltaTime);
+
 
 	// Client-side render path: just paint the world from the replicated state.
 	// No sim mutations; the server is the only writer. - TripleA
@@ -3696,6 +3709,697 @@ void AClearanceSimulationController::SetOperatorViewLocation(FVector NewLoc)
 	OperatorViewLocation = NewLoc;
 }
 
+TArray<FInstructorCameraLabel> AClearanceSimulationController::GetCameraLabels() const
+{
+	TArray<FInstructorCameraLabel> Out;
+	if (!AirspaceManager || !InstructorPipCapture || !InstructorPipRT) { return Out; }
+
+	const FVector ViewLocation = InstructorPipCapture->GetComponentLocation();
+	const FRotator ViewRotation = InstructorPipCapture->GetComponentRotation();
+	const FVector ViewForward = ViewRotation.Vector();
+	const float FOVDegrees = InstructorPipCapture->FOVAngle;
+	const int32 Width = InstructorPipRT->SizeX;
+	const int32 Height = InstructorPipRT->SizeY;
+	if (Width <= 0 || Height <= 0) { return Out; }
+
+	// FLookFromMatrix needs an up vector that isn't parallel to forward, or
+	// the X-axis derivation (Up x Forward) is zero and the matrix breaks.
+	// Top-down chase view has forward = (0,0,-1) which is parallel to
+	// world up - that produced wrong labels for every aircraft in the Top
+	// sub-angle. Using the camera's OWN local up axis (which is the
+	// rotation applied to +Z) is guaranteed perpendicular to its forward
+	// for any valid rotation, including straight down. - TripleA
+	const FVector ViewUp = ViewRotation.RotateVector(FVector::UpVector);
+	const FMatrix ViewMatrix = FLookFromMatrix(ViewLocation, ViewForward, ViewUp);
+
+	const float HalfFOVRad = FMath::DegreesToRadians(FOVDegrees * 0.5f);
+	const FMatrix ProjMatrix = FPerspectiveMatrix(
+		HalfFOVRad,
+		static_cast<float>(Width),
+		static_cast<float>(Height),
+		GNearClippingPlane);
+
+	const FMatrix ViewProj = ViewMatrix * ProjMatrix;
+
+	for (const FAircraftState& State : AirspaceManager->GetAllAircraftStates())
+	{
+		if (!State.bIsValid) { continue; }
+		const FVector WorldPos = WorldPositionFor(State);
+
+		// Skip behind camera via dot product against forward (faster than
+		// trusting Clip.W which can be unreliable for near-parallel cases). - TripleA
+		if (FVector::DotProduct(WorldPos - ViewLocation, ViewForward) <= 0.f) { continue; }
+
+		const FPlane Clip = ViewProj.TransformFVector4(FVector4(WorldPos, 1.f));
+		if (Clip.W <= KINDA_SMALL_NUMBER) { continue; }
+
+		const float NDC_X = Clip.X / Clip.W;
+		const float NDC_Y = Clip.Y / Clip.W;
+		const float UV_X = (NDC_X + 1.f) * 0.5f;
+		// Flip Y so 0 = top edge (UMG convention). - TripleA
+		const float UV_Y = 1.f - (NDC_Y + 1.f) * 0.5f;
+
+		FInstructorCameraLabel Label;
+		Label.Callsign = State.Callsign;
+		Label.ScreenUV = FVector2D(UV_X, UV_Y);
+		Label.ThreatClass = State.TrueAffiliation;
+		Label.FlightLevel = FMath::RoundToInt(State.Altitude / 100.f);
+		// Heading wrapped to 0..360 and rounded; speed rounded to whole kt
+		// for a clean readout. - TripleA
+		const float HdgWrapped = FMath::Fmod(FMath::Fmod(State.Heading, 360.f) + 360.f, 360.f);
+		Label.HeadingDeg = FMath::RoundToInt(HdgWrapped);
+		Label.SpeedKts = FMath::RoundToInt(State.Speed);
+		Out.Add(Label);
+	}
+
+	return Out;
+}
+
+TArray<FInstructorCameraLine> AClearanceSimulationController::GetCameraOverlayLines() const
+{
+	TArray<FInstructorCameraLine> Out;
+	if (!AirspaceManager || !InstructorPipCapture || !InstructorPipRT) { return Out; }
+
+	const FVector ViewLocation = InstructorPipCapture->GetComponentLocation();
+	const FRotator ViewRotation = InstructorPipCapture->GetComponentRotation();
+	const FVector ViewForward = ViewRotation.Vector();
+	const FVector ViewUp = ViewRotation.RotateVector(FVector::UpVector);
+	const float FOVDegrees = InstructorPipCapture->FOVAngle;
+	const int32 Width = InstructorPipRT->SizeX;
+	const int32 Height = InstructorPipRT->SizeY;
+	if (Width <= 0 || Height <= 0) { return Out; }
+
+	const FMatrix ViewMatrix = FLookFromMatrix(ViewLocation, ViewForward, ViewUp);
+	const float HalfFOVRad = FMath::DegreesToRadians(FOVDegrees * 0.5f);
+	const FMatrix ProjMatrix = FPerspectiveMatrix(HalfFOVRad,
+		static_cast<float>(Width), static_cast<float>(Height), GNearClippingPlane);
+	const FMatrix ViewProj = ViewMatrix * ProjMatrix;
+
+	// Anything closer than this along the camera forward axis is treated as
+	// behind the near plane. Bigger than the actual GNearClippingPlane to
+	// keep the W division well-conditioned (a point that's technically in
+	// front but only by a few cm projects to ridiculous UVs). - TripleA
+	constexpr float NearClipDist = 1000.f; // 10 m
+
+	auto ProjectToUV = [&](const FVector& WorldPos, FVector2D& OutUV) -> bool
+	{
+		if (FVector::DotProduct(WorldPos - ViewLocation, ViewForward) < NearClipDist) { return false; }
+		const FPlane Clip = ViewProj.TransformFVector4(FVector4(WorldPos, 1.f));
+		if (Clip.W <= KINDA_SMALL_NUMBER) { return false; }
+		OutUV.X = (Clip.X / Clip.W + 1.f) * 0.5f;
+		OutUV.Y = 1.f - (Clip.Y / Clip.W + 1.f) * 0.5f;
+		return true;
+	};
+
+	// Liang-Barsky line clip slightly inside [0, 1] - a 1.5% inset on each
+	// side absorbs line thickness (a 3 px line at the very edge would
+	// otherwise extend ~1.5 px past the image boundary because Slate
+	// strokes are centred on the endpoint). Returns false if the segment
+	// misses the image entirely. - TripleA
+	auto ClipUV = [](FVector2D& P1, FVector2D& P2) -> bool
+	{
+		constexpr float Inset = 0.015f;
+		constexpr float Xmin = Inset, Xmax = 1.f - Inset;
+		constexpr float Ymin = Inset, Ymax = 1.f - Inset;
+
+		const float Dx = P2.X - P1.X;
+		const float Dy = P2.Y - P1.Y;
+
+		float Tin = 0.f, Tout = 1.f;
+		const float P[4] = {-Dx, Dx, -Dy, Dy};
+		const float Q[4] = {P1.X - Xmin, Xmax - P1.X, P1.Y - Ymin, Ymax - P1.Y};
+
+		for (int32 i = 0; i < 4; ++i)
+		{
+			if (FMath::Abs(P[i]) < KINDA_SMALL_NUMBER)
+			{
+				if (Q[i] < 0.f) { return false; }
+				continue;
+			}
+			const float U = Q[i] / P[i];
+			if (P[i] < 0.f) { Tin = FMath::Max(Tin, U); }
+			else { Tout = FMath::Min(Tout, U); }
+		}
+
+		if (Tin > Tout) { return false; }
+
+		const FVector2D Original = P1;
+		P1 = Original + FVector2D(Tin * Dx, Tin * Dy);
+		P2 = Original + FVector2D(Tout * Dx, Tout * Dy);
+		return true;
+	};
+
+	// Project a line segment. World-space clip against the near plane so
+	// both endpoints sit at >= NearClipDist before they hit ProjectToUV,
+	// then UV-space Liang-Barsky clip so the segment is bounded to the
+	// visible image (plus a one-viewport pad) - lines crossing the camera
+	// view are kept regardless of how far their far end projects to. - TripleA
+	auto AddLine = [&](FVector A, FVector B, const FLinearColor& Color, float Thickness)
+	{
+		const float DotA = FVector::DotProduct(A - ViewLocation, ViewForward);
+		const float DotB = FVector::DotProduct(B - ViewLocation, ViewForward);
+		if (DotA < NearClipDist && DotB < NearClipDist) { return; }
+
+		if (DotA < NearClipDist)
+		{
+			const float T = (NearClipDist - DotA) / (DotB - DotA);
+			A = A + FMath::Clamp(T, 0.f, 1.f) * (B - A);
+		}
+		else if (DotB < NearClipDist)
+		{
+			const float T = (NearClipDist - DotB) / (DotA - DotB);
+			B = B + FMath::Clamp(T, 0.f, 1.f) * (A - B);
+		}
+
+		FVector2D StartUV, EndUV;
+		if (!ProjectToUV(A, StartUV) || !ProjectToUV(B, EndUV)) { return; }
+		if (!ClipUV(StartUV, EndUV)) { return; }
+
+		FInstructorCameraLine Line;
+		Line.StartUV = StartUV;
+		Line.EndUV = EndUV;
+		Line.Color = Color;
+		Line.Thickness = Thickness;
+		Out.Add(Line);
+	};
+
+	const FVector Origin = GetActorLocation();
+	const float S = WorldUnitsPerNm;
+
+	// Approach corridor extends from threshold all the way out to the
+	// top-of-descent. 100 nm on a 3° slope reaches ~31,800 ft - matches
+	// where arrival traffic spawns, so the glide line actually meets the
+	// sky instead of dying just above the runway. - TripleA
+	constexpr float ApproachLengthNm = 100.f;
+
+	// Runway outline pulses too - gentle, narrow alpha range so it always
+	// reads as the primary structural element. Corridor + glide-slope use
+	// a wider/deeper pulse so they feel like secondary guidance overlays.
+	// Same sine source so they breathe in sync. Tick marks + dashed
+	// centerline stay steady - they're reference paint, not guides. - TripleA
+	const float NowSec = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f);
+	const float Pulse01 = 0.5f + 0.5f * FMath::Sin(NowSec * 2.f * PI * 0.7f); // 0..1 @ 0.7 Hz
+	const float RunwayAlpha   = 0.65f + 0.30f * Pulse01;   // 0.65–0.95
+	const float ApproachAlpha = 0.20f + 0.40f * Pulse01;   // 0.20–0.60
+
+	const FLinearColor RunwayColor(0.16f, 0.86f, 1.f, RunwayAlpha);
+	const FLinearColor CenterDashColor(1.f, 1.f, 1.f, 0.95f);
+	// Magenta for the descent guides - VFR sectional convention for
+	// controlled airspace, and the complementary contrast against warm
+	// golden-hour skies keeps the lines readable when orange got eaten
+	// by the sunset. - TripleA
+	const FLinearColor ApproachLineColor(1.0f, 0.18f, 0.85f, ApproachAlpha);
+	const FLinearColor ApproachTickColor(1.0f, 0.18f, 0.85f, 0.55f);
+	const FLinearColor GlideLineColor   (0.85f, 0.20f, 1.0f, ApproachAlpha);
+	const FLinearColor GlideTickColor   (0.85f, 0.20f, 1.0f, 0.55f);
+
+	// Suppress on Overview (top-down map - the guides clutter without
+	// adding info) and Chase (riding the aircraft - the line would streak
+	// across the frame). Everything else - Tower, Approach, Operator -
+	// gets the guides. - TripleA
+	const bool bShowApproachGuides =
+		(InstructorPipView != EClearanceCameraView::Overview) &&
+		(InstructorPipView != EClearanceCameraView::Follow);
+
+	// Runway outline rectangle reads as a tactical-map element - useful
+	// from above (Overview, Chase) but in the first-person 3D views
+	// (Tower, Approach, Operator) the asphalt is already obvious from the
+	// mesh and the cyan box looks like a debug overlay. Same logic for
+	// the dashed centreline against the Operator view: the player is
+	// looking at real painted markings, no need to overdraw them. - TripleA
+	const bool bShowRunwayOutline =
+		(InstructorPipView != EClearanceCameraView::Tower) &&
+		(InstructorPipView != EClearanceCameraView::Approach) &&
+		(InstructorPipView != EClearanceCameraView::Operator);
+	const bool bShowRunwayCenterline =
+		(InstructorPipView != EClearanceCameraView::Operator);
+
+	// Wind picks the landing end - only that runway gets the corridor /
+	// glide-slope / fix labels, the reciprocal end stays clean. Updates
+	// live when the instructor changes wind because GetActiveRunway()
+	// is recalculated on each SetWind call. - TripleA
+	const float ActiveRwyHdg = AirspaceManager->GetActiveRunway();
+
+	for (const FRunwayInfo& Rwy : AirspaceManager->GetAllRunways())
+	{
+		const FVector ThrW(Origin.X + Rwy.ThresholdNm.X * S,
+			Origin.Y + Rwy.ThresholdNm.Y * S, GroundWorldZ);
+
+		const float RadHeading = FMath::DegreesToRadians(Rwy.HeadingDeg);
+		const FVector InboundDir(FMath::Sin(RadHeading), FMath::Cos(RadHeading), 0.f);
+		const FVector RightDir(FMath::Cos(RadHeading), -FMath::Sin(RadHeading), 0.f);
+		// Fallbacks if the runway has no mesh bounds yet - rather than draw
+		// a zero-sized rectangle, ship something visible. - TripleA
+		const float RwyLen = (Rwy.LengthUnits > 0.f) ? Rwy.LengthUnits : 30000.f;
+		const float RwyWid = (Rwy.WidthUnits  > 0.f) ? Rwy.WidthUnits  : 4500.f;
+		const float HalfW  = RwyWid * 0.5f;
+
+		// Four corners of the runway rectangle, near edge then far. - TripleA
+		const FVector NL = ThrW - RightDir * HalfW;
+		const FVector NR = ThrW + RightDir * HalfW;
+		const FVector FL = NL + InboundDir * RwyLen;
+		const FVector FR = NR + InboundDir * RwyLen;
+
+		// Depth-aware occlusion only runs on Overview - that's the view
+		// where "see through terrain" actually reads as a bug. Chase wants
+		// the rectangle to act as a persistent HUD element regardless of
+		// the aircraft fuselage / ridges sitting between camera and asphalt
+		// (line-tracing there just makes the outline pop in and out). - TripleA
+		const bool bDepthOcclude = (InstructorPipView == EClearanceCameraView::Overview);
+		auto SegmentVisible = [&](const FVector& A, const FVector& B) -> bool
+		{
+			if (!bDepthOcclude || !GetWorld()) { return true; }
+			const FVector Mid = (A + B) * 0.5f;
+			FHitResult Hit;
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(InstructorRunwayOverlayVis), false);
+			Params.AddIgnoredActor(this);
+			if (!GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, Mid, ECC_Visibility, Params))
+			{
+				return true;
+			}
+			const float DistMid = FVector::Distance(ViewLocation, Mid);
+			const float DistHit = FVector::Distance(ViewLocation, Hit.ImpactPoint);
+			return DistHit >= DistMid - 200.f;
+		};
+		if (bShowRunwayOutline)
+		{
+			if (SegmentVisible(NL, NR)) { AddLine(NL, NR, RunwayColor, 3.f); } // near edge (threshold bar)
+			if (SegmentVisible(FL, FR)) { AddLine(FL, FR, RunwayColor, 3.f); } // far edge
+			if (SegmentVisible(NL, FL)) { AddLine(NL, FL, RunwayColor, 3.f); } // left edge
+			if (SegmentVisible(NR, FR)) { AddLine(NR, FR, RunwayColor, 3.f); } // right edge
+		}
+
+		// Dashed centerline. ICAO Annex 14 spec: 30m stripe + 20m gap. Evenly
+		// re-tile across whatever length the runway actually is so the pattern
+		// always fits, instead of clipping the last stripe mid-paint. - TripleA
+		if (bShowRunwayCenterline)
+		{
+			constexpr float DashLen = 3000.f; // 30 m
+			constexpr float GapLen  = 2000.f; // 20 m
+			const int32 DashCount = FMath::Max(1, FMath::FloorToInt(RwyLen / (DashLen + GapLen)));
+			const float Cycle = RwyLen / static_cast<float>(DashCount);
+			const float DashFrac = DashLen / (DashLen + GapLen);
+			const float DashLenAdj = Cycle * DashFrac;
+			const float Margin = (Cycle - DashLenAdj) * 0.5f; // start the first dash off the threshold by half a gap
+			for (int32 i = 0; i < DashCount; ++i)
+			{
+				const float StartT = Margin + i * Cycle;
+				const float EndT   = StartT + DashLenAdj;
+				AddLine(ThrW + InboundDir * StartT, ThrW + InboundDir * EndT, CenterDashColor, 2.f);
+			}
+		}
+
+		if (!bShowApproachGuides) { continue; }
+		// Skip the reciprocal end - wind says this isn't the landing
+		// direction. Heading-equality tolerance handles the 360<->0 wrap. - TripleA
+		const float HdgDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(Rwy.HeadingDeg, ActiveRwyHdg));
+		if (HdgDelta > 0.5f) { continue; }
+
+		const FVector AppEnd = ThrW - InboundDir * (ApproachLengthNm * S);
+		AddLine(ThrW, AppEnd, ApproachLineColor, 2.f);
+
+		// Range tick marks perpendicular to the corridor at standard ILS
+		// fix distances - 1 / 3 / 5 / 10 nm. Gives the instructor a quick
+		// "how far out is he?" reference without a separate readout. - TripleA
+		const float TickHalfWid = 1500.f; // 15 m to either side of centerline
+		const float RangeNm[] = {1.f, 3.f, 5.f, 10.f, 20.f, 50.f, 100.f};
+		for (float R : RangeNm)
+		{
+			if (R > ApproachLengthNm) { continue; }
+			const FVector TickCentre = ThrW - InboundDir * (R * S);
+			const FVector TickL = TickCentre - RightDir * TickHalfWid;
+			const FVector TickR = TickCentre + RightDir * TickHalfWid;
+			AddLine(TickL, TickR, ApproachTickColor, 1.5f);
+		}
+
+		// 3° glide-slope from the threshold extending back along the
+		// approach. Standard ILS slope - 31,800 ft at 100 nm. World Z runs
+		// through AltitudeToWorldZOffset so the line tracks the same
+		// exaggerated-altitude curve aircraft do - a plane on the slope
+		// sits ON the line, not far above it. Drawn as multiple segments
+		// so the non-linear power curve renders smoothly instead of as a
+		// straight line that diverges from the true profile. - TripleA
+		constexpr float GlideSlopeDeg = 3.f;
+		constexpr int32 GlideSegments = 24;
+		constexpr float FtPerNm = 6076.12f;
+		const float GlideTan = FMath::Tan(FMath::DegreesToRadians(GlideSlopeDeg));
+		FVector GlidePrev = ThrW;
+		for (int32 i = 1; i <= GlideSegments; ++i)
+		{
+			const float SegFrac = static_cast<float>(i) / static_cast<float>(GlideSegments);
+			const float DistNm = SegFrac * ApproachLengthNm;
+			const float DistUnits = DistNm * S;
+			const float AltFt = DistNm * FtPerNm * GlideTan;
+			const float WorldZ = AltitudeToWorldZOffset(AltFt);
+			const FVector GlidePoint(
+				ThrW.X - InboundDir.X * DistUnits,
+				ThrW.Y - InboundDir.Y * DistUnits,
+				ThrW.Z + WorldZ);
+			AddLine(GlidePrev, GlidePoint, GlideLineColor, 2.f);
+			GlidePrev = GlidePoint;
+		}
+
+		// Altitude ticks on the glide slope at the same ranges as the
+		// horizontal corridor ticks - little horizontal bars across the
+		// slope at each ATC reference distance, perpendicular to the
+		// runway's right axis (same orientation as the ground tick
+		// marks), so the instructor reads "10 nm out the aircraft should
+		// be at this altitude" straight off the line. Labels come from
+		// GetCameraOverlayText using the same range table. - TripleA
+		const float AltTickHalfWid = 1500.f; // 15 m bar each side
+		for (float R : RangeNm)
+		{
+			if (R > ApproachLengthNm) { continue; }
+			const float DistUnits = R * S;
+			const float AltFt = R * FtPerNm * GlideTan;
+			const float WorldZ = AltitudeToWorldZOffset(AltFt);
+			const FVector TickCentre(
+				ThrW.X - InboundDir.X * DistUnits,
+				ThrW.Y - InboundDir.Y * DistUnits,
+				ThrW.Z + WorldZ);
+			const FVector TickL = TickCentre - RightDir * AltTickHalfWid;
+			const FVector TickR = TickCentre + RightDir * AltTickHalfWid;
+			AddLine(TickL, TickR, GlideTickColor, 1.5f);
+		}
+	}
+
+	// Restricted + protected airspace zones - rendered as ground-level
+	// circles so the instructor can see hostile no-fly bubbles and
+	// civilian avoid areas overlaid on the camera feed. Colours follow
+	// MIL-STD-2525 affiliation: red for protected (hostile-must-not-
+	// reach), amber for restricted (civilian-must-avoid). Same gentle
+	// pulse as the runway so they read as airspace structure rather
+	// than debug draws. Shown on every camera view - tactical
+	// boundaries you always want visible. - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		const FLinearColor ProtectedColor (1.f, 0.18f, 0.18f, 0.40f + 0.45f * Pulse01);
+		const FLinearColor RestrictedColor(1.f, 0.72f, 0.05f, 0.40f + 0.45f * Pulse01);
+		constexpr int32 ZoneSegments = 36;
+
+		auto DrawZone = [&](const FVector& Centre, float RadiusW, const FLinearColor& Color)
+		{
+			if (RadiusW <= 0.f) { return; }
+			FVector PrevPt(Centre.X + RadiusW, Centre.Y, Centre.Z);
+			for (int32 i = 1; i <= ZoneSegments; ++i)
+			{
+				const float Theta = (static_cast<float>(i) / ZoneSegments) * 2.f * PI;
+				const FVector NextPt(
+					Centre.X + RadiusW * FMath::Cos(Theta),
+					Centre.Y + RadiusW * FMath::Sin(Theta),
+					Centre.Z);
+				AddLine(PrevPt, NextPt, Color, 2.f);
+				PrevPt = NextPt;
+			}
+		};
+
+		// Wireframe-cylinder rendering: ground ring + ceiling ring + four
+		// vertical spokes at the cardinal points. Communicates that the
+		// zone is an airspace volume, not just a painted line on the dirt.
+		// Skipped on Overview - from straight above the ceiling ring lands
+		// on top of the ground ring and just reads as two overlapping
+		// circles. Ceiling sits at FL500 worth of world Z (passes through
+		// the same altitude curve aircraft use) so the column reaches the
+		// top of the airspace anything realistic can fly in. - TripleA
+		const bool bDrawColumn = (InstructorPipView != EClearanceCameraView::Overview);
+		const float ZoneCeilingZ = AltitudeToWorldZOffset(50000.f);
+
+		auto DrawZoneShape = [&](const FVector& GroundCentre, float RadiusW, const FLinearColor& Color)
+		{
+			if (RadiusW <= 0.f) { return; }
+			DrawZone(GroundCentre, RadiusW, Color);
+			if (!bDrawColumn) { return; }
+			const FVector CeilingCentre(GroundCentre.X, GroundCentre.Y, GroundCentre.Z + ZoneCeilingZ);
+			DrawZone(CeilingCentre, RadiusW, Color);
+			for (int32 i = 0; i < 4; ++i)
+			{
+				const float Theta = static_cast<float>(i) * (PI * 0.5f);
+				const FVector SpokeBase(
+					GroundCentre.X + RadiusW * FMath::Cos(Theta),
+					GroundCentre.Y + RadiusW * FMath::Sin(Theta),
+					GroundCentre.Z);
+				const FVector SpokeTop(SpokeBase.X, SpokeBase.Y, SpokeBase.Z + ZoneCeilingZ);
+				AddLine(SpokeBase, SpokeTop, Color, 1.5f);
+			}
+		};
+
+		for (TActorIterator<AClearanceViolationZone> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			DrawZoneShape(FVector(Loc.X, Loc.Y, GroundWorldZ), It->RadiusNm * S, ProtectedColor);
+		}
+		for (TActorIterator<AClearanceRestrictedArea> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			DrawZoneShape(FVector(Loc.X, Loc.Y, GroundWorldZ), It->RadiusNm * S, RestrictedColor);
+		}
+	}
+
+	// Sector boundary - the outer edge of the instructor's controlled
+	// airspace at ExitRadiusNm. Drawn as a ring on the ground in a
+	// tactical green so it's distinct from runway cyan / zone red. Same
+	// gentle pulse as the rest of the structural overlays. Heading
+	// labels around the perimeter come from GetCameraOverlayText. - TripleA
+	if (ExitRadiusNm > 0.f)
+	{
+		const FLinearColor SectorRingColor(0.30f, 0.90f, 0.55f, 0.30f + 0.35f * Pulse01);
+		constexpr int32 SectorSegments = 72;
+		const float SectorRadiusW = ExitRadiusNm * S;
+		FVector PrevPt(Origin.X + SectorRadiusW, Origin.Y, GroundWorldZ);
+		for (int32 i = 1; i <= SectorSegments; ++i)
+		{
+			const float Theta = (static_cast<float>(i) / SectorSegments) * 2.f * PI;
+			const FVector NextPt(
+				Origin.X + SectorRadiusW * FMath::Cos(Theta),
+				Origin.Y + SectorRadiusW * FMath::Sin(Theta),
+				GroundWorldZ);
+			AddLine(PrevPt, NextPt, SectorRingColor, 2.f);
+			PrevPt = NextPt;
+		}
+	}
+
+	return Out;
+}
+
+TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayText() const
+{
+	TArray<FInstructorCameraText> Out;
+	if (!AirspaceManager || !InstructorPipCapture || !InstructorPipRT) { return Out; }
+
+	const FVector ViewLocation = InstructorPipCapture->GetComponentLocation();
+	const FRotator ViewRotation = InstructorPipCapture->GetComponentRotation();
+	const FVector ViewForward = ViewRotation.Vector();
+	const FVector ViewUp = ViewRotation.RotateVector(FVector::UpVector);
+	const float FOVDegrees = InstructorPipCapture->FOVAngle;
+	const int32 Width = InstructorPipRT->SizeX;
+	const int32 Height = InstructorPipRT->SizeY;
+	if (Width <= 0 || Height <= 0) { return Out; }
+
+	const FMatrix ViewMatrix = FLookFromMatrix(ViewLocation, ViewForward, ViewUp);
+	const float HalfFOVRad = FMath::DegreesToRadians(FOVDegrees * 0.5f);
+	const FMatrix ProjMatrix = FPerspectiveMatrix(HalfFOVRad,
+		static_cast<float>(Width), static_cast<float>(Height), GNearClippingPlane);
+	const FMatrix ViewProj = ViewMatrix * ProjMatrix;
+
+	auto ProjectToUV = [&](const FVector& WorldPos, FVector2D& OutUV) -> bool
+	{
+		if (FVector::DotProduct(WorldPos - ViewLocation, ViewForward) < 1000.f) { return false; }
+		const FPlane Clip = ViewProj.TransformFVector4(FVector4(WorldPos, 1.f));
+		if (Clip.W <= KINDA_SMALL_NUMBER) { return false; }
+		OutUV.X = (Clip.X / Clip.W + 1.f) * 0.5f;
+		OutUV.Y = 1.f - (Clip.Y / Clip.W + 1.f) * 0.5f;
+		return true;
+	};
+
+	const TArray<FRunwayInfo>& All = AirspaceManager->GetAllRunways();
+	const int32 N = All.Num();
+
+	// Bucket runways by base designator (heading rounded to nearest 10) so
+	// parallels get L/C/R suffixes - identical convention to
+	// GetApproachRunwayLabels so the on-camera text and the picker buttons
+	// agree. - TripleA
+	TArray<int32> Designator;
+	Designator.SetNum(N);
+	for (int32 i = 0; i < N; ++i)
+	{
+		int32 D = FMath::RoundToInt(All[i].HeadingDeg / 10.f);
+		if (D <= 0) { D = 36; }
+		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
+		Designator[i] = D;
+	}
+
+	const FVector Origin = GetActorLocation();
+	const float S = WorldUnitsPerNm;
+	// Pure white for the runway designator - matches real-world runway
+	// paint, sits cleanly in the cyan + orange palette without competing,
+	// and the drop-shadow in DrawCameraOverlayText keeps it legible over
+	// sky or asphalt. - TripleA
+	const FLinearColor TextColor(1.0f, 1.0f, 1.0f, 0.95f);
+
+	for (int32 i = 0; i < N; ++i)
+	{
+		const FRunwayInfo& Me = All[i];
+		const int32 MyDes = Designator[i];
+
+		TArray<int32> Group;
+		for (int32 j = 0; j < N; ++j)
+		{
+			if (Designator[j] == MyDes) { Group.Add(j); }
+		}
+
+		FString Suffix;
+		if (Group.Num() > 1)
+		{
+			const float Rad = FMath::DegreesToRadians(Me.HeadingDeg);
+			const FVector2D RightDir(FMath::Cos(Rad), -FMath::Sin(Rad));
+			const float MyProj = FVector2D::DotProduct(Me.ThresholdNm, RightDir);
+			int32 MoreRight = 0, MoreLeft = 0;
+			for (int32 j : Group)
+			{
+				if (j == i) { continue; }
+				const float P = FVector2D::DotProduct(All[j].ThresholdNm, RightDir);
+				if (P > MyProj) { ++MoreRight; }
+				if (P < MyProj) { ++MoreLeft; }
+			}
+			if (Group.Num() == 2)
+			{
+				Suffix = (MoreRight == 0) ? TEXT("R") : TEXT("L");
+			}
+			else
+			{
+				if (MoreLeft == 0)       { Suffix = TEXT("L"); }
+				else if (MoreRight == 0) { Suffix = TEXT("R"); }
+				else                     { Suffix = TEXT("C"); }
+			}
+		}
+
+		const float RadHeading = FMath::DegreesToRadians(Me.HeadingDeg);
+		const FVector InboundDir(FMath::Sin(RadHeading), FMath::Cos(RadHeading), 0.f);
+		const FVector ThrW(Origin.X + Me.ThresholdNm.X * S,
+			Origin.Y + Me.ThresholdNm.Y * S, GroundWorldZ);
+
+		FVector2D ThrUV;
+		if (!ProjectToUV(ThrW, ThrUV)) { continue; }
+
+		// Perpendicular to the runway direction in screen space - puts the
+		// label to the SIDE of the runway rather than at the end (which
+		// is where the approach corridor extends to on the active end).
+		// Pick whichever perpendicular has the larger downward component
+		// so labels sit consistently below the runway, never floating
+		// where the corridor / glide-slope live. Offset magnitude scales
+		// with the runway's apparent size in screen (Len) - a fixed 4%
+		// UV nudge throws the label miles off in Chase view where the
+		// runway might only span 1% of frame at 12 km distance. - TripleA
+		FVector2D OutwardDir(0.f, 1.f);
+		float OffsetMag = 0.04f;
+		FVector2D InsideUV;
+		if (ProjectToUV(ThrW + InboundDir * 10000.f, InsideUV))
+		{
+			const FVector2D Delta = InsideUV - ThrUV;
+			const float Len = Delta.Length();
+			if (Len > KINDA_SMALL_NUMBER)
+			{
+				FVector2D Perp(-Delta.Y, Delta.X);
+				if (Perp.Y < 0.f) { Perp = -Perp; }
+				OutwardDir = Perp / Len;
+				OffsetMag = FMath::Clamp(Len * 0.8f, 0.005f, 0.04f);
+			}
+		}
+
+		FVector2D UV = ThrUV + OutwardDir * OffsetMag;
+		if (UV.X < 0.02f || UV.X > 0.98f || UV.Y < 0.02f || UV.Y > 0.98f) { continue; }
+
+		FInstructorCameraText Entry;
+		Entry.Text = FString::Printf(TEXT("%02d%s"), MyDes, *Suffix);
+		Entry.ScreenUV = UV;
+		Entry.Color = TextColor;
+		Entry.FontSize = 24;
+		Out.Add(Entry);
+
+		// Approach-guide text labels stripped - the tick marks themselves
+		// already convey "this is a reference distance" without needing
+		// numeric overlays to decode. Keeps the camera feed cleaner for
+		// portfolio capture; FL / NM digits read as clutter to anyone
+		// who isn't an aviation native. - TripleA
+	}
+
+	// Zone designators - name floats over the centre of each protected /
+	// restricted circle so the instructor reads what they're looking at
+	// without having to memorise the actor list. Same red / amber palette
+	// as the circle rings, solid alpha so they're always legible (no
+	// pulse - text breathing is harder to read than steady). - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		const FLinearColor ProtectedTextColor (1.f, 0.40f, 0.40f, 0.95f);
+		const FLinearColor RestrictedTextColor(1.f, 0.78f, 0.20f, 0.95f);
+
+		auto EmitZoneLabel = [&](const FVector& Centre, const FString& Text, const FLinearColor& Color)
+		{
+			FVector2D ZoneUV;
+			if (!ProjectToUV(Centre, ZoneUV)) { return; }
+			if (ZoneUV.X < 0.02f || ZoneUV.X > 0.98f || ZoneUV.Y < 0.02f || ZoneUV.Y > 0.98f) { return; }
+
+			FInstructorCameraText ZoneEntry;
+			ZoneEntry.Text = Text;
+			ZoneEntry.ScreenUV = ZoneUV;
+			ZoneEntry.Color = Color;
+			ZoneEntry.FontSize = 16;
+			Out.Add(ZoneEntry);
+		};
+
+		for (TActorIterator<AClearanceViolationZone> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			const FVector Centre(Loc.X, Loc.Y, GroundWorldZ);
+			const FString Name = It->ZoneName.IsNone() ? TEXT("PROTECTED") : It->ZoneName.ToString().ToUpper();
+			EmitZoneLabel(Centre, Name, ProtectedTextColor);
+		}
+		for (TActorIterator<AClearanceRestrictedArea> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			const FVector Centre(Loc.X, Loc.Y, GroundWorldZ);
+			const FString Name = It->AreaName.IsNone() ? TEXT("RESTRICTED") : It->AreaName.ToString().ToUpper();
+			EmitZoneLabel(Centre, Name, RestrictedTextColor);
+		}
+	}
+
+	// Compass headings around the sector ring at every 30°. Same green
+	// as the ring itself so they read as the boundary's annotation.
+	// Position is just inside the ring (90% radius) so the digits sit
+	// on the asphalt-side rather than floating in the void. - TripleA
+	if (ExitRadiusNm > 0.f)
+	{
+		const FVector RingOrigin = GetActorLocation();
+		const FLinearColor SectorTextColor(0.45f, 1.f, 0.65f, 0.85f);
+		const float SectorRadiusW = ExitRadiusNm * S * 0.90f;
+		for (int32 Hdg = 0; Hdg < 360; Hdg += 30)
+		{
+			const float HdgRad = FMath::DegreesToRadians(static_cast<float>(Hdg));
+			const FVector HdgPos(
+				RingOrigin.X + FMath::Sin(HdgRad) * SectorRadiusW,
+				RingOrigin.Y + FMath::Cos(HdgRad) * SectorRadiusW,
+				GroundWorldZ + 1500.f);
+
+			FVector2D HdgUV;
+			if (!ProjectToUV(HdgPos, HdgUV)) { continue; }
+			if (HdgUV.X < 0.02f || HdgUV.X > 0.98f || HdgUV.Y < 0.02f || HdgUV.Y > 0.98f) { continue; }
+
+			FInstructorCameraText HdgEntry;
+			HdgEntry.Text = FString::Printf(TEXT("%03d"), Hdg);
+			HdgEntry.ScreenUV = HdgUV;
+			HdgEntry.Color = SectorTextColor;
+			HdgEntry.FontSize = 14;
+			Out.Add(HdgEntry);
+		}
+	}
+
+	return Out;
+}
+
 void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
 {
 	if (!bInstructorPipEnabled || !InstructorPipCapture || !InstructorPipRT)
@@ -3733,8 +4437,13 @@ void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
 	{
 	case EClearanceCameraView::Overview:
 	{
-		TargetLoc = Origin + FVector(0.f, -ExitRadiusNm * S * 0.55f, ExitRadiusNm * S * 0.95f);
-		TargetRot = (ThrW - TargetLoc).Rotation();
+		// Strict top-down centred on the sector origin. Altitude tuned
+		// so the sector ring fills roughly 85% of the frame instead of
+		// floating in a sea of margin. Pitch -90 / Yaw 90 lays the
+		// view out north-up. - TripleA
+		TargetLoc = Origin + FVector(0.f, 0.f, ExitRadiusNm * S * 1.45f);
+		TargetRot = FRotator(-90.f, 90.f, 0.f);
+		TargetFOV = 90.f;
 		break;
 	}
 	case EClearanceCameraView::Tower:
@@ -3777,6 +4486,10 @@ void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
 			BaseRot.Yaw += InstructorTowerYawDeg;
 			TargetRot = BaseRot;
 		}
+		// Tower-cab wide field. Real ATC tower windows are panoramic;
+		// 110 deg gives the instructor most of the apron + the active
+		// runway + a chunk of approach in one frame. - TripleA
+		TargetFOV = 110.f;
 		break;
 	}
 	case EClearanceCameraView::Approach:
@@ -3809,12 +4522,17 @@ void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
 		// a point along the runway. Frames the runway extending into the
 		// distance with the corridor visible behind it. Aircraft on final
 		// approach come from the back of the frame toward the threshold. - TripleA
-		const float SideDistance  = 60000.f;  // 600m off to the side
-		const float Elevation     = 30000.f;  // 300m up
-		const float LookRunwayPos = 40000.f;  // look at a point 400m down the runway from threshold
+		// 3/4 frame centred on the threshold, pulled further back so the
+		// corridor + glide-slope have room to extend behind. Looking AT
+		// the threshold keeps the runway as the foreground anchor; the
+		// wider 100 deg FOV + bigger side / elevation reads more like a
+		// proper approach-controller observation post than a close
+		// fly-by. - TripleA
+		const float SideDistance = 250000.f;  // 2.5 km off to the side
+		const float Elevation    = 120000.f;  // 1.2 km up
 		TargetLoc = RwyThrW + RwyRightPerp * SideDistance + FVector(0.f, 0.f, Elevation);
-		const FVector LookAt = RwyThrW + RwyInboundDir * LookRunwayPos;
-		TargetRot = (LookAt - TargetLoc).Rotation();
+		TargetRot = (RwyThrW - TargetLoc).Rotation();
+		TargetFOV = 100.f;
 		break;
 	}
 	case EClearanceCameraView::Follow:

@@ -33,6 +33,15 @@ public:
 	                          const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements,
 	                          int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
+	// Mouse handling for Overview drag + zoom. Gated to camera-feed mode +
+	// Overview view inside the implementations; outside that they fall back
+	// to Super so the rest of the panel still gets normal input. - TripleA
+	virtual FReply NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual FReply NativeOnMouseButtonDoubleClick(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+
 	// Override in BP to draw the scope. Runs every paint pass with the panel's
 	// FPaintContext + pixel size. Call DrawScopeBoundary / DrawAffiliationSymbol
 	// / DrawScopeChaffCloud from inside this. - TripleA
@@ -477,6 +486,22 @@ public:
 private:
 	UPROPERTY(Transient) TObjectPtr<AClearanceSimulationController> CachedController;
 	UPROPERTY(Transient) TObjectPtr<AClearanceOperatorPC> CachedOperatorPC;
+
+	// Optional bind for the camera-feed image - so the native mouse handlers
+	// can read its cached geometry to convert cursor pixels into normalized
+	// image-space. BlueprintReadOnly because the existing BP graph also
+	// reads it (BP_PaintCameraOverlay -> DrawCameraOverlayLines etc.) -
+	// without that markup, the BP's Get nodes drop the reference and the
+	// overlay paint silently breaks. Optional in case a derived BP names
+	// the widget something else; mouse drag/zoom is a no-op when not
+	// bound. - TripleA
+	UPROPERTY(Transient, BlueprintReadOnly, meta = (BindWidgetOptional, AllowPrivateAccess = "true"), Category = "Instructor|Camera")
+	TObjectPtr<class UImage> Img_CameraFeed;
+
+	// Overview drag state. No UPROPERTY needed - internal only. - TripleA
+	bool bOverviewDragging = false;
+	FVector2D OverviewDragLastScreenPos = FVector2D::ZeroVector;
+	bool IsOverviewActiveForInput() const;
 
 	// Last-tick snapshots so we only fire BP events on actual change. Saves
 	// the UMG paint loop a lot of wasted work. - TripleA

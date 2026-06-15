@@ -30,6 +30,83 @@ void UClearanceInstructorPanel::NativeConstruct()
 	RefreshLocalRefs();
 }
 
+// --- Overview mouse handling ----------------------------------------------
+//
+// Drag + zoom + double-click reset live in C++ because the UMG paint-event /
+// mouse-event overrides have to bind to the parent class's NativeOn... pair,
+// which the MCP editor tool can't reliably author from the Widget Blueprint
+// side. C++ here forwards into AddOverviewPan / AddOverviewZoom /
+// ResetOverviewView on the controller; the controller owns the actual pan +
+// zoom state so it persists across view switches. - TripleA
+
+bool UClearanceInstructorPanel::IsOverviewActiveForInput() const
+{
+	if (!bShowCameraView || !CachedController) { return false; }
+	return CachedController->GetInstructorPipView() == EClearanceCameraView::Overview;
+}
+
+FReply UClearanceInstructorPanel::NativeOnMouseButtonDown(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && IsOverviewActiveForInput())
+	{
+		bOverviewDragging = true;
+		OverviewDragLastScreenPos = InMouseEvent.GetScreenSpacePosition();
+		SetCursor(EMouseCursor::GrabHandClosed);
+		return FReply::Handled().CaptureMouse(TakeWidget());
+	}
+	return Super::NativeOnMouseButtonDown(InGeometry, InMouseEvent);
+}
+
+FReply UClearanceInstructorPanel::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (bOverviewDragging && Img_CameraFeed && CachedController)
+	{
+		const FVector2D Current = InMouseEvent.GetScreenSpacePosition();
+		const FVector2D ImageSize = Img_CameraFeed->GetCachedGeometry().GetLocalSize();
+		if (ImageSize.X > KINDA_SMALL_NUMBER && ImageSize.Y > KINDA_SMALL_NUMBER)
+		{
+			// No negation - drag direction = camera direction, so dragging
+			// right pans the view right. Feels like steering the camera
+			// rather than dragging the world. - TripleA
+			const FVector2D Delta = (Current - OverviewDragLastScreenPos) / ImageSize;
+			CachedController->AddOverviewPan(Delta);
+			OverviewDragLastScreenPos = Current;
+		}
+	}
+	return Super::NativeOnMouseMove(InGeometry, InMouseEvent);
+}
+
+FReply UClearanceInstructorPanel::NativeOnMouseButtonUp(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && bOverviewDragging)
+	{
+		bOverviewDragging = false;
+		SetCursor(EMouseCursor::Default);
+		return FReply::Handled().ReleaseMouseCapture();
+	}
+	return Super::NativeOnMouseButtonUp(InGeometry, InMouseEvent);
+}
+
+FReply UClearanceInstructorPanel::NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (IsOverviewActiveForInput())
+	{
+		CachedController->AddOverviewZoom(InMouseEvent.GetWheelDelta() * 0.1f);
+		return FReply::Handled();
+	}
+	return Super::NativeOnMouseWheel(InGeometry, InMouseEvent);
+}
+
+FReply UClearanceInstructorPanel::NativeOnMouseButtonDoubleClick(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && IsOverviewActiveForInput())
+	{
+		CachedController->ResetOverviewView();
+		return FReply::Handled();
+	}
+	return Super::NativeOnMouseButtonDoubleClick(InGeometry, InMouseEvent);
+}
+
 int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 	const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId,

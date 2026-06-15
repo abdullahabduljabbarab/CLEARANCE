@@ -3587,6 +3587,52 @@ void AClearanceSimulationController::ApplyTowerYawDelta(float DeltaDeg)
 	if (InstructorTowerYawDeg < 0.f) { InstructorTowerYawDeg += 360.f; }
 }
 
+void AClearanceSimulationController::AddOverviewPan(FVector2D PanDeltaUv)
+{
+	// Convert normalized image-space delta into world units based on the
+	// area currently visible at the active zoom level. 1:1 drag means
+	// when the cursor moves N% of the image, the camera shifts N% of the
+	// visible ground. - TripleA
+	const float DefaultAlt = ExitRadiusNm * WorldUnitsPerNm * 1.45f;
+	const float CurrentAlt = DefaultAlt / FMath::Max(0.001f, InstructorOverviewZoomLevel);
+	const float HalfFOVRad = FMath::DegreesToRadians(45.f); // overview FOV is fixed at 90
+	const float VisibleRadius = CurrentAlt * FMath::Tan(HalfFOVRad);
+
+	InstructorOverviewPanOffsetUnits.X += PanDeltaUv.X * (VisibleRadius * 2.f);
+	InstructorOverviewPanOffsetUnits.Y += PanDeltaUv.Y * (VisibleRadius * 2.f);
+
+	// Pan extent scales with zoom: zero at zoom 1 (sector already fits) and
+	// grows toward the full sector radius as the user zooms in, so they
+	// can still reach the corners + edges of the sector at high zoom
+	// instead of being trapped near the centre. - TripleA
+	const float SectorRadius = ExitRadiusNm * WorldUnitsPerNm;
+	const float MaxOffset = SectorRadius * FMath::Max(0.f, 1.f - 1.f / FMath::Max(0.001f, InstructorOverviewZoomLevel));
+	InstructorOverviewPanOffsetUnits.X = FMath::Clamp(InstructorOverviewPanOffsetUnits.X, -MaxOffset, MaxOffset);
+	InstructorOverviewPanOffsetUnits.Y = FMath::Clamp(InstructorOverviewPanOffsetUnits.Y, -MaxOffset, MaxOffset);
+}
+
+void AClearanceSimulationController::AddOverviewZoom(float ZoomDelta)
+{
+	// Min = 1.0 so the camera can never zoom out further than the default
+	// sector-fits-the-frame altitude. Zooming further out just shows empty
+	// terrain past ExitRadiusNm with no useful info. - TripleA
+	InstructorOverviewZoomLevel = FMath::Clamp(InstructorOverviewZoomLevel + ZoomDelta, 1.0f, 4.0f);
+
+	// Re-clamp the pan offset to the new zoom's allowed extent so zooming
+	// back out drags the camera toward centre instead of holding a corner
+	// that's no longer reachable. - TripleA
+	const float SectorRadius = ExitRadiusNm * WorldUnitsPerNm;
+	const float MaxOffset = SectorRadius * FMath::Max(0.f, 1.f - 1.f / FMath::Max(0.001f, InstructorOverviewZoomLevel));
+	InstructorOverviewPanOffsetUnits.X = FMath::Clamp(InstructorOverviewPanOffsetUnits.X, -MaxOffset, MaxOffset);
+	InstructorOverviewPanOffsetUnits.Y = FMath::Clamp(InstructorOverviewPanOffsetUnits.Y, -MaxOffset, MaxOffset);
+}
+
+void AClearanceSimulationController::ResetOverviewView()
+{
+	InstructorOverviewPanOffsetUnits = FVector2D::ZeroVector;
+	InstructorOverviewZoomLevel = 1.f;
+}
+
 TArray<FString> AClearanceSimulationController::GetApproachRunwayLabels() const
 {
 	TArray<FString> Out;
@@ -4437,11 +4483,14 @@ void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
 	{
 	case EClearanceCameraView::Overview:
 	{
-		// Strict top-down centred on the sector origin. Altitude tuned
-		// so the sector ring fills roughly 85% of the frame instead of
-		// floating in a sea of margin. Pitch -90 / Yaw 90 lays the
-		// view out north-up. - TripleA
-		TargetLoc = Origin + FVector(0.f, 0.f, ExitRadiusNm * S * 1.45f);
+		// Strict top-down centred on the sector origin, north-up. Default
+		// altitude tuned so the sector ring fills ~85% of the frame.
+		// Pan offset + zoom level are mutated by AddOverviewPan /
+		// AddOverviewZoom from UMG drag + scroll events. - TripleA
+		const float DefaultAlt = ExitRadiusNm * S * 1.45f;
+		const float ZoomedAlt = DefaultAlt / FMath::Max(0.001f, InstructorOverviewZoomLevel);
+		TargetLoc = Origin + FVector(InstructorOverviewPanOffsetUnits.X,
+			InstructorOverviewPanOffsetUnits.Y, ZoomedAlt);
 		TargetRot = FRotator(-90.f, 90.f, 0.f);
 		TargetFOV = 90.f;
 		break;

@@ -382,6 +382,26 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
 	float GetTowerYawDeg() const { return InstructorTowerYawDeg; }
 
+	// Pan the Overview camera by a normalized image-space delta (-1..1 of
+	// the camera-feed image). UMG hooks up OnMouseMove on Img_CameraFeed,
+	// computes (cursor - lastCursor) / imageSize, and pushes the value in
+	// here. C++ converts to world units using the current visible area so
+	// the drag feels 1:1 with the cursor regardless of zoom. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void AddOverviewPan(FVector2D PanDeltaUv);
+
+	// Zoom the Overview camera in (positive) or out (negative). Typical
+	// scroll-wheel delta is +/- 0.1 per notch. Internally clamped to a
+	// 0.3x-4.0x range of the default altitude. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void AddOverviewZoom(float ZoomDelta);
+
+	// Reset pan + zoom to default. Bound to a double-click on the
+	// camera-feed image (or an explicit reset button) so the instructor
+	// can snap back to the sector-centred default. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void ResetOverviewView();
+
 	// Approach view runway picker. The instructor clicks APPROACH to pop a
 	// selector, picks one of these labels, the camera frames that runway. - TripleA
 
@@ -806,6 +826,12 @@ private:
 	float InstructorPipCaptureAccum = 0.f;
 	FName InstructorPipFollowCallsign;
 	float InstructorTowerYawDeg = 0.f;
+	// Persisted pan + zoom state for the Overview camera, mutated by
+	// AddOverviewPan / AddOverviewZoom from UMG drag + scroll events.
+	// Persists across view switches so the instructor can leave Overview,
+	// come back, and find the picture they left. - TripleA
+	FVector2D InstructorOverviewPanOffsetUnits = FVector2D::ZeroVector;
+	float InstructorOverviewZoomLevel = 1.f;
 	// Which runway threshold the Approach view is framing. Re-clicking APPROACH
 	// while already in Approach mode advances to the next runway in the list so
 	// the instructor can cycle through parallel pairs (27R -> 27L -> 09L ...). - TripleA

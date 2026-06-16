@@ -132,8 +132,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceCommsRouter* GetCommsRouter() const { return CommsRouter; }
 
+	// Lazy-init so the panel - which runs on the client and may poll before
+	// BeginPlay has finished initialising the controller - always gets a
+	// valid recorder back. NewObject is idempotent under the if-guard. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
-	UClearanceSessionRecorder* GetRecorder() const { return Recorder; }
+	UClearanceSessionRecorder* GetRecorder();
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceDISEmitter* GetDISEmitter() const { return DISEmitter; }
@@ -302,6 +305,17 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
 	float GetReplayTime() const { return ReplayTime; }
+
+	// Frozen duration of the recording at the moment EnterReplay was called -
+	// stable maximum for the scrub bar (the client-side recorder's own
+	// GetDurationSeconds would keep ticking up forever even during replay). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	float GetReplayDuration() const { return ReplayDuration; }
+
+	// Seconds-into-the-recording for each "user went live" boundary - lets
+	// the scrub-bar widget paint a tick per seam. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	const TArray<float>& GetReplaySegmentSeams() const { return ReplaySegmentSeams; }
 
 	// --- Cameras ------------------------------------------------------------
 
@@ -772,10 +786,32 @@ private:
 	UPROPERTY()
 	TObjectPtr<class UClearanceScenarioRunner> ScenarioRunner;
 
+	// Replicated so the client-side instructor panel can poll them every paint
+	// for the scrub bar / play-pause icon / speed indicator without an RPC
+	// round-trip. Writes happen only on the server (via the Server_Inject*
+	// RPCs on the OperatorPC). - TripleA
+	UPROPERTY(Replicated)
 	bool bReplayMode = false;
+	UPROPERTY(Replicated)
 	bool bReplayPaused = false;
+	UPROPERTY(Replicated)
 	float ReplayTime = 0.f;          // seconds-into-the-recording we're posing the world to
+	UPROPERTY(Replicated)
 	float ReplaySpeed = 1.f;
+
+	// Frozen-at-EnterReplay duration of the recording, replicated so the
+	// scrub bar has a stable maximum. Client-side Recorder->GetDurationSeconds()
+	// keeps growing (or returns stale data during the RPC round-trip), so
+	// the UI binds to this instead. - TripleA
+	UPROPERTY(Replicated)
+	float ReplayDuration = 0.f;
+
+	// Timestamps (seconds-into-the-recording) where the user went Live then
+	// re-entered Replay. The scrub bar paints a small tick at each so the
+	// instructor can see the boundaries between session segments without
+	// scrubbing through to find them. - TripleA
+	UPROPERTY(Replicated)
+	TArray<float> ReplaySegmentSeams;
 
 	// Preset cameras spawned on session start. Free-cam is intentionally not exposed.
 	// Replicated so the instructor PIP on clients can resolve them - the

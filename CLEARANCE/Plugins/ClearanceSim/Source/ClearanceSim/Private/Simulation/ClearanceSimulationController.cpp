@@ -293,6 +293,17 @@ void AClearanceSimulationController::BeginPlay()
 		InstructorPipCapture->TextureTarget = InstructorPipRT;
 	}
 
+	// Recorder runs on EVERY instance (server + client) so the instructor
+	// panel - which lives on the client - can scrub through the same replay
+	// buffer the server has, without needing a server RPC just to read the
+	// snapshot count. Server records authoritative truth; client records
+	// what it received via replication. - TripleA
+	if (!Recorder)
+	{
+		Recorder = NewObject<UClearanceSessionRecorder>(this);
+		if (Recorder && bAutoStartRecording) { Recorder->StartRecording(); }
+	}
+
 	// Server-only: the simulation lives here. Clients receive the world via the
 	// replicated AirspaceManager + Controller state and only render. - TripleA
 	if (!HasAuthority()) { return; }
@@ -329,7 +340,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	Scoring = NewObject<UClearanceScoring>(this);
 	ConflictDetector = NewObject<UClearanceConflictDetector>(this);
 	CommsRouter = NewObject<UClearanceCommsRouter>(this);
-	Recorder = NewObject<UClearanceSessionRecorder>(this);
+	if (!Recorder) { Recorder = NewObject<UClearanceSessionRecorder>(this); }
 	DISEmitter = NewObject<UClearanceDISEmitter>(this);
 	DISReceiver = NewObject<UClearanceDISReceiver>(this);
 	Radar = NewObject<UClearanceRadar>(this);
@@ -547,6 +558,12 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, CameraFollow);
 	DOREPLIFETIME(AClearanceSimulationController, OperatorViewRotation);
 	DOREPLIFETIME(AClearanceSimulationController, OperatorViewLocation);
+	DOREPLIFETIME(AClearanceSimulationController, bReplayMode);
+	DOREPLIFETIME(AClearanceSimulationController, bReplayPaused);
+	DOREPLIFETIME(AClearanceSimulationController, ReplayTime);
+	DOREPLIFETIME(AClearanceSimulationController, ReplaySpeed);
+	DOREPLIFETIME(AClearanceSimulationController, ReplayDuration);
+	DOREPLIFETIME(AClearanceSimulationController, ReplaySegmentSeams);
 }
 
 void AClearanceSimulationController::PushNotification(const FString& Text, FColor Colour, float LifetimeSec)
@@ -641,6 +658,15 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 			UpdateVisuals();
 			UpdateFollowCamera();
 			DrawDebugView();
+
+			// Client-side snapshot capture: feeds the local recorder buffer
+			// with whatever airspace state the client received via replication
+			// this frame, so the panel's REPLAY tab can scrub through history
+			// without an RPC round-trip per click. - TripleA
+			if (Recorder && Recorder->IsRecording() && GetWorld())
+			{
+				Recorder->CaptureSnapshot(GetWorld()->GetTimeSeconds(), AirspaceManager->GetAllAircraftStates());
+			}
 		}
 		return;
 	}
@@ -652,8 +678,6 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 
 	if (bReplayMode)
 	{
-		// Replay: don't run the sim - pose the world to the recorded snapshot at the
-		// current replay time, then let UpdateVisuals draw it. - TripleA
 		if (!bReplayPaused && Recorder && AirspaceManager)
 		{
 			ReplayTime = FMath::Clamp(ReplayTime + DeltaTime * ReplaySpeed, 0.f, Recorder->GetDurationSeconds());
@@ -3254,6 +3278,16 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 	return EInstructionResult::Rejected_InvalidCallsign;
 }
 
+UClearanceSessionRecorder* AClearanceSimulationController::GetRecorder()
+{
+	if (!Recorder)
+	{
+		Recorder = NewObject<UClearanceSessionRecorder>(this);
+		if (Recorder) { Recorder->StartRecording(); }
+	}
+	return Recorder;
+}
+
 void AClearanceSimulationController::StartRecording()
 {
 	if (!Recorder) { return; }
@@ -3293,6 +3327,10 @@ void AClearanceSimulationController::EnterReplay()
 	bReplayMode = true;
 	bReplayPaused = false;
 	ReplayTime = 0.f;
+	// Freeze the recorded duration so the client UI has a stable scrub-bar
+	// maximum. Without this, the client's own recorder keeps capturing past
+	// EnterReplay and the duration value drifts. - TripleA
+	ReplayDuration = Recorder->GetDurationSeconds();
 	// Default replay speed = sim time scale, so the playback runs at the same pace
 	// the user actually saw live (otherwise a 10x sim plays back 10x slower). - TripleA
 	ReplaySpeed = FMath::Max(0.1f, SimulationTimeScale);
@@ -3318,6 +3356,19 @@ void AClearanceSimulationController::ResumeLive()
 	}
 	bReplayMode = false;
 	bReplayPaused = false;
+	// Resume the recording buffer where it left off. Calls the raw recorder
+	// directly so we don't go through the controller's StartRecording()
+	// wrapper, which would ClearRecording() and wipe the pre-replay history.
+	// The next EnterReplay() then sees the original + post-replay portion
+	// concatenated. - TripleA
+	if (Recorder)
+	{
+		// Tag the boundary between segments so the scrub bar can render a
+		// tick where this "Go Live" happened. Stored as seconds-into-the-
+		// recording so it stays valid even after the buffer keeps growing. - TripleA
+		ReplaySegmentSeams.Add(Recorder->GetDurationSeconds());
+		Recorder->StartRecording();
+	}
 	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("AAR: live")); }
 }
 

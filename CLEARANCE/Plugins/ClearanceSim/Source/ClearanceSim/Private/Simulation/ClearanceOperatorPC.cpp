@@ -295,3 +295,35 @@ void AClearanceOperatorPC::Server_InjectResetScenario_Implementation()
 	C->Server_InjectStopScenario();
 	C->Server_InjectLoadScenario(Loaded);
 }
+
+// --- AAR replay control ----------------------------------------------------
+
+bool AClearanceOperatorPC::Server_InjectEnterReplay_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectEnterReplay_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->EnterReplay(); }
+}
+
+bool AClearanceOperatorPC::Server_InjectResumeLive_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectResumeLive_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->ResumeLive(); }
+}
+
+bool AClearanceOperatorPC::Server_InjectSeekReplay_Validate(float TimeSeconds) { return true; }
+void AClearanceOperatorPC::Server_InjectSeekReplay_Implementation(float TimeSeconds)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->SeekReplay(TimeSeconds); }
+}
+
+bool AClearanceOperatorPC::Server_InjectSetReplayPaused_Validate(bool bInPaused) { return true; }
+void AClearanceOperatorPC::Server_InjectSetReplayPaused_Implementation(bool bInPaused)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->SetReplayPaused(bInPaused); }
+}
+
+bool AClearanceOperatorPC::Server_InjectSetReplaySpeed_Validate(float Multiplier) { return true; }
+void AClearanceOperatorPC::Server_InjectSetReplaySpeed_Implementation(float Multiplier)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->SetReplaySpeed(Multiplier); }
+}

@@ -77,6 +77,24 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectResetScenario();
 
+	// Replay control: client UI fires these so the SERVER's controller flips
+	// into replay mode and poses the world to the recording. The server then
+	// replicates the airspace back so the client sees the scrubbed traffic. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
+	void Server_InjectEnterReplay();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
+	void Server_InjectResumeLive();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
+	void Server_InjectSeekReplay(float TimeSeconds);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
+	void Server_InjectSetReplayPaused(bool bInPaused);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
+	void Server_InjectSetReplaySpeed(float Multiplier);
+
 	// Push the operator's full control rotation to the SimController so the
 	// instructor PIP can mirror it. Unreliable - we send it every ~30Hz so a
 	// dropped packet just leaves the instructor one frame behind. - TripleA

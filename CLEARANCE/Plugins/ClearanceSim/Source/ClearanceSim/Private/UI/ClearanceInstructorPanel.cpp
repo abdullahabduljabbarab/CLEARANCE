@@ -7,6 +7,7 @@
 #include "Scenario/ClearanceScenarioRunner.h"
 #include "Components/ScrollBox.h"
 #include "Components/Image.h"
+#include "Components/Slider.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "UObject/ConstructorHelpers.h"
@@ -141,6 +142,36 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 		FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
 			Result + 1, InWidgetStyle, bParentEnabled);
 		const_cast<UClearanceInstructorPanel*>(this)->BP_PaintCameraOverlay(Context, AllottedGeometry.GetLocalSize());
+	}
+
+	// Replay scrub-bar seam ticks. One vertical line over the slider track
+	// for each "Go Live" boundary, anchored on the slider's own paint geometry
+	// so it lines up with the track regardless of where the slider sits in
+	// the widget tree. No-op when the slider isn't bound or we're not in
+	// replay. - TripleA
+	if (CachedController && CachedController->IsInReplay() && Slider_Scrub)
+	{
+		const float Duration = CachedController->GetReplayDuration();
+		const TArray<float>& Seams = CachedController->GetReplaySegmentSeams();
+		if (Duration > KINDA_SMALL_NUMBER && Seams.Num() > 0)
+		{
+			const FGeometry& SliderGeo = Slider_Scrub->GetPaintSpaceGeometry();
+			const FVector2D SliderSize = SliderGeo.GetLocalSize();
+			if (SliderSize.X > 0.f && SliderSize.Y > 0.f)
+			{
+				const FSlateRect UnboundedCull(-1e7f, -1e7f, 1e7f, 1e7f);
+				FPaintContext SeamContext(SliderGeo, UnboundedCull, OutDrawElements,
+					Result + 2, InWidgetStyle, bParentEnabled);
+				const FLinearColor SeamColor(1.f, 0.78f, 0.2f, 0.85f); // amber
+				for (float Seam : Seams)
+				{
+					const float X = (Seam / Duration) * SliderSize.X;
+					UWidgetBlueprintLibrary::DrawLine(SeamContext,
+						FVector2D(X, 0.f), FVector2D(X, SliderSize.Y),
+						SeamColor, true, 2.f);
+				}
+			}
+		}
 	}
 
 	return Result;

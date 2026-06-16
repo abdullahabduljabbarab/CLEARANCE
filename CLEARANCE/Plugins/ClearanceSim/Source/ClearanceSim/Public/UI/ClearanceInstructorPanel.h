@@ -498,6 +498,13 @@ private:
 	UPROPERTY(Transient, BlueprintReadOnly, meta = (BindWidgetOptional, AllowPrivateAccess = "true"), Category = "Instructor|Camera")
 	TObjectPtr<class UImage> Img_CameraFeed;
 
+	// Optional bind for the replay scrub slider - so the native paint pass
+	// can read its geometry and draw seam tick marks directly over the track.
+	// Optional in case a derived BP renames it; paint is a no-op when not
+	// bound. - TripleA
+	UPROPERTY(Transient, BlueprintReadOnly, meta = (BindWidgetOptional, AllowPrivateAccess = "true"), Category = "Instructor|Replay")
+	TObjectPtr<class USlider> Slider_Scrub;
+
 	// Overview drag state. No UPROPERTY needed - internal only. - TripleA
 	bool bOverviewDragging = false;
 	FVector2D OverviewDragLastScreenPos = FVector2D::ZeroVector;

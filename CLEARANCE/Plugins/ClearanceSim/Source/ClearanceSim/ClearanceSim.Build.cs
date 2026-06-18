@@ -10,7 +10,9 @@ public class ClearanceSim : ModuleRules
 		{
 			"Core",
 			"CoreUObject",
-			"Engine"
+			"Engine",
+			"UMG",        // UUserWidget base class for the instructor panel
+			"SlateCore"   // FCanvasItem / FGeometry types the widget uses
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
@@ -21,7 +23,9 @@ public class ClearanceSim : ModuleRules
 			"HTTP",              // POST audio to the local whisper server
 			"Json",              // parse the transcription response
 			"Sockets",           // detect an already-running server
-			"Networking"
+			"Networking",
+			"OnlineSubsystem",        // Identity + Session interface for EOS sessions
+			"OnlineSubsystemUtils"    // helpers (BeaconHost, world-net plumbing)
 		});
 	}
 }

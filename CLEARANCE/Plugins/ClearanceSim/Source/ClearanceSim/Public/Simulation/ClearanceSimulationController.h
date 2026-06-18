@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "Templates/SubclassOf.h"
 #include "Core/CLEARANCETypes.h"
+#include "UI/ClearanceInstructorTypes.h"
 #include "ClearanceSimulationController.generated.h"
 
 class AClearanceAirspaceManager;
@@ -18,6 +19,8 @@ class UClearanceDISEmitter;
 class UClearanceDISReceiver;
 class UClearanceRadar;
 class ACameraActor;
+class USceneCaptureComponent2D;
+class UTextureRenderTarget2D;
 
 // Fixed instructor views. Free-cam is intentionally out so the player can't roam. - TripleA
 UENUM(BlueprintType)
@@ -27,7 +30,8 @@ enum class EClearanceCameraView : uint8
 	Overview    UMETA(DisplayName = "Sector overview"),
 	Tower       UMETA(DisplayName = "Tower (active runway threshold)"),
 	Approach    UMETA(DisplayName = "Far end of approach"),
-	Follow      UMETA(DisplayName = "Chase a chosen aircraft")
+	Follow      UMETA(DisplayName = "Chase a chosen aircraft"),
+	Operator    UMETA(DisplayName = "Operator POV (what the trainee sees)")
 };
 
 // Sub-angles for the Follow camera. - TripleA
@@ -69,6 +73,19 @@ struct FSpawnedAircraftVisual
 	TObjectPtr<AActor> Actor = nullptr;
 
 	float YawOffsetDeg = 0.f;
+};
+
+// One entry in the player-facing notification ring. Server pushes, replicates
+// down, client HUD draws the recent ones with a fade based on age. - TripleA
+USTRUCT(BlueprintType)
+struct FClearanceNotification
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Text;
+	UPROPERTY(BlueprintReadOnly) float ServerTimeAdded = 0.f;
+	UPROPERTY(BlueprintReadOnly) FColor Colour = FColor::White;
+	UPROPERTY(BlueprintReadOnly) float LifetimeSec = 6.f;
 };
 
 // The conductor. Creates and owns every system, binds them together with
@@ -115,8 +132,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceCommsRouter* GetCommsRouter() const { return CommsRouter; }
 
+	// Lazy-init so the panel - which runs on the client and may poll before
+	// BeginPlay has finished initialising the controller - always gets a
+	// valid recorder back. NewObject is idempotent under the if-guard. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
-	UClearanceSessionRecorder* GetRecorder() const { return Recorder; }
+	UClearanceSessionRecorder* GetRecorder();
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceDISEmitter* GetDISEmitter() const { return DISEmitter; }
@@ -139,8 +159,79 @@ public:
 	bool IsGCIModeEnabled() const { return bGCIMode; }
 
 	// Operator manually classifies a contact (e.g. after IFF interrogation or VID).
+	// bAsInstructor = true bypasses the mis-ID scoring penalty - the instructor
+	// reclassifying a contact via the inject panel isn't the operator making a
+	// call, it's god-mode scenario tuning. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Simulation|GCI")
-	void ClassifyAircraft(FName Callsign, EThreatClass NewClass);
+	void ClassifyAircraft(FName Callsign, EThreatClass NewClass, bool bAsInstructor = false);
+
+	// Inject an emergency on a named aircraft - used by the scenario runner to script
+	// scheduled emergencies. Mirrors the random-injection path: sets emergency type,
+	// squawk code, timestamp, and (for fuel) starting fuel. Comms-failure aircraft
+	// auto-fly the published lost-comms procedure on next tick. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
+	bool DeclareEmergencyOn(FName Callsign, EEmergencyType Kind);
+
+	// Reset an active emergency back to normal flight: clears ActiveEmergency,
+	// resets squawk to 1200 (civilian VFR default), drops EmergencyDetail. The
+	// aircraft's behaviour loop sees the cleared state next tick and stops the
+	// emergency procedure. Instructor god-mode use only. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
+	bool ClearEmergencyOn(FName Callsign);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Scenario")
+	class UClearanceScenarioRunner* GetScenarioRunner() const { return ScenarioRunner; }
+
+	// ----- Replicated voice / cockpit audio (Phase 6) -------------------------
+	// Server hits these to push pilot readbacks, mayday calls, GPWS alarms, and
+	// radio-static cues out to every peer. Each client has its own placed
+	// AClearanceVoiceOutput actor (with its own local Piper TTS server), so the
+	// payload is just the line + voice tag - each peer synthesises its own audio
+	// locally. Far cheaper than shipping PCM blobs and keeps every machine in
+	// sync with what the server "hears". - TripleA
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_PlayTTS(FName Callsign, const FString& Text, const FString& VoiceTag, bool bPanic);
+
+	// Cockpit cues that aren't synthesised lines - 0 = radio static (Duration =
+	// seconds), 1 = GPWS terrain alarm for the named callsign. - TripleA
+	UFUNCTION(NetMulticast, Unreliable)
+	void Multicast_PlayCockpitCue(FName Callsign, uint8 Kind, float Duration);
+
+	// ----- Instructor station server RPCs ------------------------------------
+	// Clients (instructor station) call these to mutate the authoritative sim.
+	// All inject paths route through here so the server stays the only writer. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectEmergency(FName Callsign, EEmergencyType Kind);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectClassify(FName Callsign, EThreatClass NewClass);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectScramble(FName BanditCallsign);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectSetWind(float DirectionDeg, float SpeedKts);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectSpawn();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectClearTraffic();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectLoadScenario(const FString& ScenarioName);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectStopScenario();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
+	void Server_InjectSetPaused(bool bNewPaused);
+
+	// Scenario sets this true on Start() to disable all placed RestrictedArea +
+	// ViolationZone checks for the duration of the scripted run. Stops level-
+	// placed zones from polluting a scenario that didn't author them. - TripleA
+	UPROPERTY(BlueprintReadWrite, Category = "Simulation|Scenario")
+	bool bZoneChecksSuspended = false;
 
 	// IFF interrogation - returns the contact's true class + squawk if its IFF is on.
 	// Returns Unknown / 0 / false otherwise.
@@ -215,6 +306,37 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
 	float GetReplayTime() const { return ReplayTime; }
 
+	// Frozen duration of the recording at the moment EnterReplay was called -
+	// stable maximum for the scrub bar (the client-side recorder's own
+	// GetDurationSeconds would keep ticking up forever even during replay). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	float GetReplayDuration() const { return ReplayDuration; }
+
+	// Seconds-into-the-recording for each "user went live" boundary - lets
+	// the scrub-bar widget paint a tick per seam. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	const TArray<float>& GetReplaySegmentSeams() const { return ReplaySegmentSeams; }
+
+	// ATC comms transcript - operator commands, pilot readbacks / refusals,
+	// system advisories. Populated automatically as the CommsRouter
+	// broadcasts instruction results. The panel's Performance > Transcript
+	// sub-tab binds to this. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	const TArray<FCommsTranscriptEntry>& GetTranscript() const { return Transcript; }
+
+	// Append a system line ("Mayday declared", "Conflict alert AAL101/DLH103",
+	// "Reclassifying UNK002 as Hostile" etc). Anything that isn't a direct
+	// operator/pilot exchange goes through here. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void LogTranscriptSystem(FName Callsign, const FString& Text);
+
+	// Append an operator (ATC) or pilot (aircraft) line directly - for paths
+	// that bypass the CommsRouter delegate (parser "say again", emergency
+	// declarations the pilot makes on the radio, crash mayday, voice readbacks
+	// etc). Speaker label is derived from Role inside Append. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void LogTranscriptLine(EClearanceCommsRole InRole, FName Callsign, const FString& Text);
+
 	// --- Cameras ------------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
@@ -229,8 +351,151 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
 	void CycleFollowAngle();
 
+	// --- Instructor PIP -----------------------------------------------------
+	// A SceneCapture that mirrors whichever preset camera is selected for the
+	// instructor's picture-in-picture feed. Independent of the operator's main
+	// view target - cycling the PIP doesn't disturb whatever the operator's
+	// looking at. - TripleA
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	UTextureRenderTarget2D* GetInstructorPipRT() const { return InstructorPipRT; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipView(EClearanceCameraView View);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void CycleInstructorPipView();
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	EClearanceCameraView GetInstructorPipView() const { return InstructorPipView; }
+
+	// Gate the SceneCapture render pass. SceneCapture is a full extra scene
+	// render so we keep it off until the instructor flips the panel to
+	// camera mode. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipEnabled(bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	bool IsInstructorPipEnabled() const { return bInstructorPipEnabled; }
+
+	// Projected screen-space labels for the camera-feed HUD overlay. Walks
+	// every aircraft, transforms its world position through the PIP capture's
+	// view-projection matrix, and emits a label for each one inside the
+	// frustum. UMG positions a widget at ScreenUV * ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FInstructorCameraLabel> GetCameraLabels() const;
+
+	// Projected world-space lines for the camera-feed HUD overlay - runway
+	// centerlines, approach corridors. Lines fully behind the camera are
+	// dropped; lines that straddle the near plane are clipped to it so the
+	// projection doesn't go off to infinity. UMG paints each entry between
+	// StartUV * ImageSize and EndUV * ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FInstructorCameraLine> GetCameraOverlayLines() const;
+
+	// Screen-space text labels for the camera-feed HUD overlay. Currently
+	// emits one runway designator (e.g. "36R") per threshold so both ends
+	// of every runway are marked. UMG paints each entry at ScreenUV *
+	// ImageSize. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FInstructorCameraText> GetCameraOverlayText() const;
+
+	// Aircraft the PIP follows in Follow mode. Per-instance state - each client
+	// (and the host) tracks its own target independently from the operator's
+	// main view, so the instructor can chase a contact without yanking the
+	// operator's camera off whatever they were watching. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipFollowCallsign(FName Callsign);
+
+	// Pan the Tower view left/right. A real ATC tower has 360-degree visibility
+	// so a fixed angle defeats the purpose - the instructor holds arrow
+	// buttons and the camera sweeps around the airfield. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void ApplyTowerYawDelta(float DeltaDeg);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	float GetTowerYawDeg() const { return InstructorTowerYawDeg; }
+
+	// Pan the Overview camera by a normalized image-space delta (-1..1 of
+	// the camera-feed image). UMG hooks up OnMouseMove on Img_CameraFeed,
+	// computes (cursor - lastCursor) / imageSize, and pushes the value in
+	// here. C++ converts to world units using the current visible area so
+	// the drag feels 1:1 with the cursor regardless of zoom. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void AddOverviewPan(FVector2D PanDeltaUv);
+
+	// Zoom the Overview camera in (positive) or out (negative). Typical
+	// scroll-wheel delta is +/- 0.1 per notch. Internally clamped to a
+	// 0.3x-4.0x range of the default altitude. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void AddOverviewZoom(float ZoomDelta);
+
+	// Reset pan + zoom to default. Bound to a double-click on the
+	// camera-feed image (or an explicit reset button) so the instructor
+	// can snap back to the sector-centred default. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void ResetOverviewView();
+
+	// Approach view runway picker. The instructor clicks APPROACH to pop a
+	// selector, picks one of these labels, the camera frames that runway. - TripleA
+
+	// Display strings for every runway in the airspace, e.g. "RWY 27R" /
+	// "RWY 27L" / "RWY 09L" / "RWY 09R". L / R / C suffixes are derived from
+	// each threshold's lateral offset from its same-heading siblings. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	TArray<FString> GetApproachRunwayLabels() const;
+
+	// Switch to Approach view AND select the runway at the given index. The
+	// index matches the order of GetApproachRunwayLabels. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipApproachRunway(int32 Index);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	int32 GetInstructorPipApproachRunwayIndex() const { return InstructorApproachRunwayIndex; }
+
+	// Crash-proof alternative to SetInstructorPipApproachRunway(int32). UMG
+	// designer puts 4 buttons, each calls this with a hardcoded label string
+	// like "RWY 27R" - no GetArrayItem, no dynamic generation, no index math.
+	// Silent no-op if the label doesn't match any runway. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void PickApproachRunwayByLabel(const FString& Label);
+
+	// Chase view sub-angle. Independent of the operator's main FollowAngle so
+	// cycling here doesn't yank the operator's main camera. Cycles Chase ->
+	// Cockpit -> Side -> Top -> Chase ... - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void CycleInstructorPipFollowAngleNext();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void CycleInstructorPipFollowAnglePrev();
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetInstructorPipFollowAngle(EClearanceFollowAngle Angle);
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	EClearanceFollowAngle GetInstructorPipFollowAngle() const { return InstructorPipFollowAngle; }
+
+	// Explicit operator view replication. The OperatorPC pushes its
+	// ControlRotation + view location at ~30Hz so the instructor PIP can
+	// mirror exactly what the operator sees, regardless of pawn class or
+	// rotation replication settings. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetOperatorViewRotation(FRotator NewRot);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")
+	void SetOperatorViewLocation(FVector NewLoc);
+
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceConflictDetector* GetConflictDetector() const { return ConflictDetector; }
+
+	// HUD pulls the latest readout/diagnostic text from these each frame. We stop
+	// writing to GEngine's on-screen-debug queue because PIE multi-window renders
+	// it inconsistently per viewport. - TripleA
+	UPROPERTY(BlueprintReadOnly, Category = "Simulation|HUD")
+	FString CurrentReadout;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Simulation|HUD")
+	FString CurrentDiagLine;
 
 	// Start automatically on BeginPlay (handy for testing - just press Play).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
@@ -286,9 +551,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
 	float SimulationTimeScale = 10.f;
 
-	// Spawning controls. For testing one aircraft, set MaxConcurrentAircraft = 1
-	// (no new plane spawns until the current one leaves) or untick bAutoSpawn and
-	// use the clearance.spawn console command.
+	// On by default for free-play sessions. Scenarios independently lock the
+	// spawner via bSpawnerScenarioLocked so this stays a clean user preference. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Spawning")
 	bool bAutoSpawn = true;
 
@@ -299,8 +563,116 @@ public:
 	int32 MaxConcurrentAircraft = 10;
 
 	// Optional: assign placed actors in the level; otherwise they're spawned.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Refs")
+	// Replicated so the client's controller can find the (also replicated) Manager
+	// without doing its own TActorIterator. Server sets it on spawn, clients OnRep. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_AirspaceManager, Category = "Simulation|Refs")
 	TObjectPtr<AClearanceAirspaceManager> AirspaceManager;
+
+	UFUNCTION()
+	void OnRep_AirspaceManager();
+
+	// ----- Replicated scenario state (Phase 3) ---------------------------------
+	// Server mirrors ScenarioRunner state into these every tick so the client's
+	// DrawDebugView can show the SCENARIO line without having a ScenarioRunner
+	// instance (it's server-only). - TripleA
+
+	UPROPERTY(Replicated)
+	bool bRepScenarioRunning = false;
+
+	UPROPERTY(Replicated)
+	FString RepScenarioName;
+
+	UPROPERTY(Replicated)
+	float RepScenarioElapsedSec = 0.f;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioFiredEvents = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioTotalEvents = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioFiredTriggers = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScenarioTotalTriggers = 0;
+
+	// ----- Replicated notification ring buffer (Phase 5) -----------------------
+	// Player-facing alerts (conflicts, scenario events, score deltas). The HUD
+	// reads this and draws the most recent N entries with fade-out. Server pushes
+	// via PushNotification, clients receive via replication. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FClearanceNotification> RepNotifications;
+
+	// Push a player-facing alert into the ring buffer. Server-only; replicates
+	// down. Trims oldest if buffer exceeds 12 entries. - TripleA
+	void PushNotification(const FString& Text, FColor Colour = FColor::White, float LifetimeSec = 6.f);
+
+	// ----- Replicated score state (Phase 4) ------------------------------------
+	// Mirror of UClearanceScoring counters so the client's SCORING line +
+	// main CLEARANCE line (score, eff) show server truth instead of zeroes. - TripleA
+
+	UPROPERTY(Replicated)
+	int32 RepScoreTotal = 0;
+
+	UPROPERTY(Replicated)
+	float RepScoreEfficiencyPct = 100.f;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreLandings = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreHandoffs = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreResolved = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreIntercepts = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreEmergencies = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreGoArounds = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreSepLoss = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreWake = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreTCAS = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreStrayed = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreMisID = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreViolated = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreCrashed = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepScoreBusted = 0;
+
+	UPROPERTY(Replicated)
+	float RepScoreNextSpawnSec = 0.f;
+
+	// Full ordered list of scored events, server-mirrored from Scoring->GetSessionLog
+	// in the same pass that updates the rep counters. Each entry carries TimeStamp +
+	// Type + AircraftA/B + Details so the Performance tab can render per-category
+	// "[mm:ss] CALLSIGN" rows under each counter. Replicated as a whole array; the
+	// session log is hundreds of entries at most so the bandwidth is trivial. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FIncidentRecord> RepScoringLog;
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	const TArray<FIncidentRecord>& GetScoringLog() const { return RepScoringLog; }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Refs")
 	TObjectPtr<AClearanceAircraftSpawner> Spawner;
@@ -326,6 +698,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Spawning")
 	void SetAutoSpawn(bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Spawning")
+	void SetSpawnerScenarioLocked(bool bLocked);
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Spawning")
 	bool SpawnOne();
@@ -412,6 +787,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
 
 private:
 	UPROPERTY()
@@ -438,26 +814,124 @@ private:
 	UPROPERTY()
 	TObjectPtr<UClearanceRadar> Radar;
 
+	UPROPERTY()
+	TObjectPtr<class UClearanceScenarioRunner> ScenarioRunner;
+
+	// Replicated so the client-side instructor panel can poll them every paint
+	// for the scrub bar / play-pause icon / speed indicator without an RPC
+	// round-trip. Writes happen only on the server (via the Server_Inject*
+	// RPCs on the OperatorPC). - TripleA
+	UPROPERTY(Replicated)
 	bool bReplayMode = false;
+	UPROPERTY(Replicated)
 	bool bReplayPaused = false;
+	UPROPERTY(Replicated)
 	float ReplayTime = 0.f;          // seconds-into-the-recording we're posing the world to
+	UPROPERTY(Replicated)
 	float ReplaySpeed = 1.f;
 
+	// Frozen-at-EnterReplay duration of the recording, replicated so the
+	// scrub bar has a stable maximum. Client-side Recorder->GetDurationSeconds()
+	// keeps growing (or returns stale data during the RPC round-trip), so
+	// the UI binds to this instead. - TripleA
+	UPROPERTY(Replicated)
+	float ReplayDuration = 0.f;
+
+	// Timestamps (seconds-into-the-recording) where the user went Live then
+	// re-entered Replay. The scrub bar paints a small tick at each so the
+	// instructor can see the boundaries between session segments without
+	// scrubbing through to find them. - TripleA
+	UPROPERTY(Replicated)
+	TArray<float> ReplaySegmentSeams;
+
+	// ATC comms transcript. Capped at the most recent N entries to keep the
+	// replication payload bounded; the panel UI shows the tail of this list
+	// in scrolling order. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FCommsTranscriptEntry> Transcript;
+
+private:
+	UFUNCTION()
+	void HandleInstructionResult(FName Callsign, FAircraftInstruction Instruction, EInstructionResult Result);
+
+	void AppendTranscriptEntry(EClearanceCommsRole InRole, FName Callsign, const FString& Text);
+
+public:
+
 	// Preset cameras spawned on session start. Free-cam is intentionally not exposed.
-	UPROPERTY()
+	// Replicated so the instructor PIP on clients can resolve them - the
+	// CameraActors themselves replicate (built-in), but the controller's
+	// pointers do not unless we ask. - TripleA
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraOverview;
-	UPROPERTY()
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraTower;
-	UPROPERTY()
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraApproach;
-	UPROPERTY()
+	UPROPERTY(Replicated)
 	TObjectPtr<ACameraActor> CameraFollow;
 	EClearanceCameraView CurrentCameraView = EClearanceCameraView::Default;
 	FName FollowTargetCallsign;
 	EClearanceFollowAngle FollowAngle = EClearanceFollowAngle::Chase;
 
+	// Instructor PIP feed. The capture component lives on the controller and
+	// teleports per-tick to whichever preset camera the instructor selected.
+	// One capture pass, four viewpoints. - TripleA
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<USceneCaptureComponent2D> InstructorPipCapture;
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UTextureRenderTarget2D> InstructorPipRT;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	FIntPoint InstructorPipResolution = FIntPoint(1024, 768);
+
+	// Throttle the SceneCapture - it's a second full scene render so it adds
+	// real GPU cost. 60Hz gives a smooth stream that matches the host's render
+	// rate; drop it to 30 if you need more headroom. 20 reads as choppy when
+	// the operator is actively looking around because each capture lands on a
+	// different rotation. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true", ClampMin = "1.0", ClampMax = "120.0"))
+	float InstructorPipCaptureRateHz = 60.f;
+
+	// Pawn class to look up for the Operator POV view. The PIP scans the world
+	// for any pawn of this class that isn't the local player's pawn and uses
+	// its first CameraComponent's world transform - that way the instructor
+	// sees exactly what the trainee sees (including their VR head tracking,
+	// once the HMD is wired). Leave null to fall back to any non-local pawn. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Camera|PIP", meta = (AllowPrivateAccess = "true"))
+	TSubclassOf<APawn> OperatorPawnClass;
+
+	EClearanceCameraView InstructorPipView = EClearanceCameraView::Tower;
+	bool bInstructorPipEnabled = false;
+	float InstructorPipCaptureAccum = 0.f;
+	FName InstructorPipFollowCallsign;
+	float InstructorTowerYawDeg = 0.f;
+	// Persisted pan + zoom state for the Overview camera, mutated by
+	// AddOverviewPan / AddOverviewZoom from UMG drag + scroll events.
+	// Persists across view switches so the instructor can leave Overview,
+	// come back, and find the picture they left. - TripleA
+	FVector2D InstructorOverviewPanOffsetUnits = FVector2D::ZeroVector;
+	float InstructorOverviewZoomLevel = 1.f;
+	// Which runway threshold the Approach view is framing. Re-clicking APPROACH
+	// while already in Approach mode advances to the next runway in the list so
+	// the instructor can cycle through parallel pairs (27R -> 27L -> 09L ...). - TripleA
+	int32 InstructorApproachRunwayIndex = 0;
+	EClearanceFollowAngle InstructorPipFollowAngle = EClearanceFollowAngle::Chase;
+
+	// Replicated operator viewpoint. Pushed from AClearanceOperatorPC::PlayerTick
+	// (either directly on the host or via Server RPC from a remote client) and
+	// auto-replicated out to every machine - including the instructor's, which
+	// reads it in UpdateInstructorPip's Operator case. - TripleA
+	UPROPERTY(Replicated)
+	FRotator OperatorViewRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(Replicated)
+	FVector OperatorViewLocation = FVector::ZeroVector;
+
 	void SpawnPresetCameras();
 	void UpdateFollowCamera();
+	void UpdateInstructorPip(float DeltaSeconds);
 	// Live world frozen on EnterReplay so ResumeLive can restore it. - TripleA
 	UPROPERTY()
 	FRecordedSnapshot PreReplayState;
@@ -472,6 +946,11 @@ private:
 
 	bool bSessionActive = false;
 	bool bPaused = false;
+
+	// Replicated so the instructor panel (which runs on the client in a host /
+	// client split) can read it via GetSessionTime() each paint without an RPC.
+	// Server-only writer (the Tick accumulator) - clients just observe. - TripleA
+	UPROPERTY(Replicated)
 	float SessionTime = 0.f;
 	bool bInitialised = false;
 
@@ -486,6 +965,11 @@ private:
 	// Joined fighters that have actually flown into their formation slot - from here
 	// they're glued to it; before, they fly themselves in via normal behaviour.
 	TSet<FName> SettledInFormation;
+
+	// Aircraft that have actually been inside the sector at least once. CheckExits
+	// only deregisters "stray" aircraft that LEFT - aircraft that spawned outside
+	// (scenario incoming traffic) get a free pass until they've actually entered. - TripleA
+	TSet<FName> EverEnteredSector;
 
 	// Monotonic counter so each SCRAMBLE allocates fresh VIPER### callsigns - two
 	// scrambles in the same session need different IDs or the second one's
@@ -530,6 +1014,21 @@ private:
 	void CrashAircraft(const FAircraftState& S, const FString& Reason);
 
 	void TickGCIIntercepts(float DeltaTime);
+
+	// Bandit reactive EW: hostiles (and military Unknowns) auto-jam when an
+	// interceptor closes inside 25nm, auto-drop chaff at 10nm. Makes every
+	// intercept run a sensor problem, not just a vectoring one. - TripleA
+	void TickBanditEW(float DeltaTime);
+
+	// Per-bandit cooldown timestamps so we don't toggle jamming every frame
+	// or spam chaff. Keyed by callsign. - TripleA
+	struct FBanditEWState
+	{
+		float LastJamToggleTime = -1000.f;
+		float LastChaffDropTime = -1000.f;
+		bool  bWasJammingAtIntercept = false;  // scoring bookkeeping
+	};
+	TMap<FName, FBanditEWState> BanditEWStates;
 
 	// Pair keys (sorted "A|B") that have had TCAS fire on them this encounter; while
 	// the pair is in here we suppress the resolution reward, because TCAS did the

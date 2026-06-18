@@ -33,7 +33,8 @@ enum class EInstructionType : uint8
 	Hold				UMETA(DisplayName = "Hold"),
 	ApproachClearance	UMETA(DisplayName = "Approach Clearance"),
 	TakeoffClearance	UMETA(DisplayName = "Takeoff Clearance"),
-	ExitSector			UMETA(DisplayName = "Exit Sector")
+	ExitSector			UMETA(DisplayName = "Exit Sector"),
+	DeclareTrackLost	UMETA(DisplayName = "Declare Track Lost")  // "no joy", EW disengage
 };
 
 /** Severity of a conflict / safety event. */
@@ -82,7 +83,7 @@ enum class EIncidentType : uint8
 	WakeEncounter			UMETA(DisplayName = "Wake Encounter"),
 	TCASResolutionAdvisory	UMETA(DisplayName = "TCAS Resolution Advisory"),
 	SuccessfulLanding		UMETA(DisplayName = "Successful Landing"),
-	SuccessfulDeparture		UMETA(DisplayName = "Successful Departure"),
+	SuccessfulHandoff		UMETA(DisplayName = "Successful Handoff"),
 	SuccessfulResolution	UMETA(DisplayName = "Successful Resolution"),
 	SuccessfulIntercept		UMETA(DisplayName = "Successful Intercept"),
 	// Operator declared a confirmed civilian (IFF on, not military) as hostile.
@@ -210,10 +211,23 @@ struct CLEARANCESIM_API FAircraftState
 	float MaxClimbRate = 0.f;		// feet per minute
 
 	// --- GCI / air-defence tagging ----------------------------------------
-	// What this contact actually IS (the truth). The operator's classification of a
-	// track lives elsewhere; this is what an IFF interrogation would resolve to.
+	// Operator-facing classification: what the trainee has identified the contact
+	// as. Starts at whatever the spawner / scenario sets (Unknown for bandits,
+	// matches TrueAffiliation for civilians + own forces) and changes when the
+	// operator calls Reclassify. Used by the operator scope, scoring mis-ID
+	// checks, and the player's interrogation workflow. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
-	EThreatClass ThreatClass = EThreatClass::Friendly;
+	EThreatClass ThreatClass = EThreatClass::Neutral;
+
+	// Ground truth - what the contact ACTUALLY is. Set once at spawn and never
+	// touched by Reclassify. Used by the instructor scope (god view) and any
+	// behaviour that needs to know the real disposition (bandit AI, voice line
+	// selection, scoring mis-ID detection). Civilians + own forces have
+	// TrueAffiliation == ThreatClass; bandits start with ThreatClass=Unknown
+	// and TrueAffiliation=Hostile so the instructor sees the truth while the
+	// operator has to work it out. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	EThreatClass TrueAffiliation = EThreatClass::Neutral;
 
 	// SSR / Mode A "squawk" code (octal, 0-7777). 1200 = VFR civilian default.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
@@ -294,6 +308,43 @@ struct CLEARANCESIM_API FAircraftState
 	// flies this heading, the outbound is the reciprocal.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hold")
 	float HoldInboundHeading = 0.f;
+
+	// Highest conflict alert this aircraft is involved in. Computed server-side
+	// by UClearanceConflictDetector and stamped into the state each tick so it
+	// rides the replication stream out to clients. The client doesn't run a
+	// detector of its own - it just colours the debug overlay from this. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Conflict")
+	EAlertLevel CurrentAlertLevel = EAlertLevel::None;
+
+	// Electronic warfare: when true, this aircraft is actively jamming. Each
+	// radar that paints it produces a degraded track (low confidence, big
+	// jitter) AND blankets neighbouring bearings from that radar with noise.
+	// Pairs with the fusion layer - one jammed sensor doesn't lose the picture
+	// when other sensors cover the same volume from a different angle. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	bool bJammingOn = false;
+};
+
+// One chaff cloud release. Sits in the world for a few seconds scattering
+// returns; every radar in line of sight reports it as a ghost track with
+// no transponder. Fusion can't eliminate it (every sensor sees it, that's
+// the point) but the lack of Mode C + static position betray it. - TripleA
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FChaffCloud
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	FVector PositionNm = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	float AltitudeFt = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	float DropSessionTime = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
+	float LifetimeSec = 12.f;
 };
 
 /** A single instruction targeted at one aircraft. */
@@ -418,6 +469,18 @@ struct CLEARANCESIM_API FRunwayInfo
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
 	float HeadingDeg = 270.f;
+
+	// Asphalt length in world units (UE cm), from the runway actor's mesh
+	// bounds. Used by camera-feed overlays to draw a centerline that
+	// matches the actual strip rather than a fixed-length guess. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	float LengthUnits = 0.f;
+
+	// Asphalt width, same source/units as LengthUnits. Lets the camera-feed
+	// overlay outline the strip as a rectangle instead of a single
+	// centerline. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	float WidthUnits = 0.f;
 };
 
 /** What the RADAR believes about one aircraft. Distinct from the truth held in the
@@ -454,6 +517,12 @@ struct CLEARANCESIM_API FRadarTrack
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
 	float Confidence = 0.f;                 // 0..1, fades with time since last paint
+
+	// What the radar saw on the LAST paint, before time-based fade. Lets
+	// EW pin a degraded read (jammed = 0.25, chaff ghost = 0.35) without
+	// the per-tick fade pass resetting it back to full. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	float PaintConfidence = 1.f;
 };
 
 /** One snapshot of the whole sector at a moment in time, captured by the recorder. */
@@ -524,8 +593,37 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnWakeTurbulenceAdvisory, FName,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnTCASResolutionAdvisory, FName, ClimberCallsign, FName, DescenderCallsign, float, ClimberTargetAltitudeFt, float, DescenderTargetAltitudeFt);
 
 // Comms Router
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInstructionResult, FName, Callsign, EInstructionResult, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnInstructionResult, FName, Callsign, FAircraftInstruction, Instruction, EInstructionResult, Result);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAdvisoryWarning, FString, Message, EAlertLevel, Level);
+
+// One line in the ATC comms transcript - operator command, pilot readback /
+// refusal, or system advisory. Persisted on the Controller and replicated to
+// the panel for the Performance > Transcript sub-tab. - TripleA
+UENUM(BlueprintType)
+enum class EClearanceCommsRole : uint8
+{
+	Operator	UMETA(DisplayName = "Operator"),
+	Pilot		UMETA(DisplayName = "Pilot"),
+	System		UMETA(DisplayName = "System")
+};
+
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FCommsTranscriptEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) float TimeSec = 0.f;
+	UPROPERTY(BlueprintReadOnly) EClearanceCommsRole Role = EClearanceCommsRole::Operator;
+	// Aircraft involved in the exchange (the same for both operator and pilot
+	// entries about the same instruction). Use Speaker for the UI label. - TripleA
+	UPROPERTY(BlueprintReadOnly) FName Callsign = NAME_None;
+	// Pre-computed display label for the speaker column: "ATC" for operator
+	// transmissions, the aircraft callsign for pilot transmissions, "SYS" for
+	// emergency / classification / advisory lines. Saves the UI from branching
+	// on Role to derive this. - TripleA
+	UPROPERTY(BlueprintReadOnly) FString Speaker;
+	UPROPERTY(BlueprintReadOnly) FString Text;
+};
 
 // Scoring
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnScoreUpdated, int32, NewScore);

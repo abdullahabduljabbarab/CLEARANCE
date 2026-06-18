@@ -11,6 +11,10 @@
 #include "Comms/ClearanceVoiceOutput.h"
 #include "Safety/ClearanceConflictDetector.h"
 #include "Safety/ClearanceRadarSite.h"
+#include "Scenario/ClearanceScenarioRunner.h"
+#include "Simulation/ClearanceOperatorPC.h"
+#include "Net/UnrealNetwork.h"
+#include "Components/LineBatchComponent.h"
 #include "Safety/ClearanceRadar.h"
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
@@ -18,6 +22,11 @@
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "ContentStreaming.h"
 #include "Kismet/GameplayStatics.h"
 #include "Core/ClearanceConstants.h"
 #include "DrawDebugHelpers.h"
@@ -46,6 +55,113 @@ namespace
 		const FString SB = B.ToString();
 		return (SA <= SB) ? (SA + TEXT("|") + SB) : (SB + TEXT("|") + SA);
 	}
+
+	// MIL-STD-2525C affiliation frame for an air track, drawn flat on the XY
+	// plane so it reads like an icon on the operator's top-down scope. Shape
+	// + colour both encode the threat class - shape is the strict standard
+	// (friend = rectangle, hostile = diamond, unknown = quatrefoil-ish, neutral
+	// = square), colour reinforces it for fast read. A short bearing vector
+	// extends from centre. Conflict level rings the symbol when present, the
+	// military modifier drops a small "+" below for combatant equipment. - TripleA
+	void DrawMIL2525CAir(UWorld* World, const FVector& Centre, float Size,
+		EThreatClass Threat, float HeadingDeg, bool bIsMilitary, EAlertLevel Alert)
+	{
+		if (!World) { return; }
+
+		FColor Frame;
+		switch (Threat)
+		{
+		case EThreatClass::Friendly: Frame = FColor(80, 200, 255);  break;  // cyan
+		case EThreatClass::Hostile:  Frame = FColor(255, 60, 60);   break;  // red
+		case EThreatClass::Unknown:  Frame = FColor(255, 220, 60);  break;  // amber
+		case EThreatClass::Neutral:  Frame = FColor(80, 255, 120);  break;  // green
+		default:                     Frame = FColor(220, 220, 220); break;
+		}
+
+		const float H = Size * 0.5f;
+		const float Thick = FMath::Max(20.f, Size * 0.04f);
+		auto L = [&](const FVector& A, const FVector& B)
+		{
+			DrawDebugLine(World, A, B, Frame, false, -1.f, 0, Thick);
+		};
+
+		switch (Threat)
+		{
+		case EThreatClass::Friendly:
+		{
+			const FVector W(H, 0, 0);
+			const FVector T(0, H * 0.65f, 0);
+			L(Centre - W + T, Centre + W + T);
+			L(Centre + W + T, Centre + W - T);
+			L(Centre + W - T, Centre - W - T);
+			L(Centre - W - T, Centre - W + T);
+			break;
+		}
+		case EThreatClass::Hostile:
+		{
+			const FVector N(0, H, 0);
+			const FVector E(H, 0, 0);
+			L(Centre + N, Centre + E);
+			L(Centre + E, Centre - N);
+			L(Centre - N, Centre - E);
+			L(Centre - E, Centre + N);
+			break;
+		}
+		case EThreatClass::Unknown:
+		{
+			// Octagonal stand-in for the 2525C four-lobe quatrefoil - cheap to
+			// draw with line primitives and still reads as "not square, not
+			// diamond, not rectangle" at a glance. - TripleA
+			const FVector Pts[] = {
+				Centre + FVector( H,           H * 0.4f,    0),
+				Centre + FVector( H * 0.4f,    H,           0),
+				Centre + FVector(-H * 0.4f,    H,           0),
+				Centre + FVector(-H,           H * 0.4f,    0),
+				Centre + FVector(-H,          -H * 0.4f,    0),
+				Centre + FVector(-H * 0.4f,   -H,           0),
+				Centre + FVector( H * 0.4f,   -H,           0),
+				Centre + FVector( H,          -H * 0.4f,    0),
+			};
+			for (int32 i = 0; i < 8; ++i) { L(Pts[i], Pts[(i + 1) % 8]); }
+			break;
+		}
+		case EThreatClass::Neutral:
+		{
+			const FVector W(H * 0.85f, 0, 0);
+			const FVector T(0, H * 0.85f, 0);
+			L(Centre - W + T, Centre + W + T);
+			L(Centre + W + T, Centre + W - T);
+			L(Centre + W - T, Centre - W - T);
+			L(Centre - W - T, Centre - W + T);
+			break;
+		}
+		default: break;
+		}
+
+		// Bearing vector - sticks out past the frame so it reads as motion.
+		const float Rad = FMath::DegreesToRadians(HeadingDeg);
+		const FVector Tip = Centre + FVector(FMath::Sin(Rad), FMath::Cos(Rad), 0) * H * 1.6f;
+		L(Centre, Tip);
+
+		// Conflict ring - circles the symbol with the alert colour when active.
+		if (Alert != EAlertLevel::None)
+		{
+			const FColor AlertCol = (Alert == EAlertLevel::Critical) ? FColor(255, 50, 50)
+				: (Alert == EAlertLevel::Warning) ? FColor(255, 140, 0)
+				:                                   FColor(255, 220, 60);
+			DrawDebugCircle(World, Centre, H * 1.4f, 24, AlertCol, false, -1.f, 0, Thick,
+				FVector(1, 0, 0), FVector(0, 1, 0), false);
+		}
+
+		// Military equipment modifier - small "+" below the frame.
+		if (bIsMilitary)
+		{
+			const float Below = -H * 1.15f;
+			const float Sz = H * 0.18f;
+			L(Centre + FVector(-Sz, Below, 0), Centre + FVector(Sz, Below, 0));
+			L(Centre + FVector(0, Below - Sz, 0), Centre + FVector(0, Below + Sz, 0));
+		}
+	}
 }
 
 AClearanceSimulationController::AClearanceSimulationController()
@@ -58,11 +174,139 @@ AClearanceSimulationController::AClearanceSimulationController()
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("SectorRoot"));
 	RootComponent = Root;
 	Root->SetMobility(EComponentMobility::Movable);
+
+	// Networked instructor station: the controller exists on clients as a stub so
+	// they can find it via TActorIterator and call replicated functions on it.
+	// All simulation work still happens server-side; clients just render. - TripleA
+	bReplicates = true;
+	bAlwaysRelevant = true;
+
+	// Instructor PIP capture. Sits on the controller and teleports per-tick to
+	// the active preset camera's transform - one component, four viewpoints. We
+	// disable bCaptureEveryFrame so it only renders when the instructor flips
+	// the panel to camera mode, and we manually CaptureScene() to throttle to
+	// the configured rate. - TripleA
+	InstructorPipCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("InstructorPipCapture"));
+	InstructorPipCapture->SetupAttachment(RootComponent);
+	InstructorPipCapture->bCaptureEveryFrame = false;
+	InstructorPipCapture->bCaptureOnMovement = false;
+	// Persist the renderer state across manual captures - without this, each
+	// CaptureScene call has to re-initialise transient render data and the
+	// first few frames after enable come back black or stale. - TripleA
+	InstructorPipCapture->bAlwaysPersistRenderingState = true;
+	// FinalToneCurveHDR is the closest match to what the main viewport
+	// renders - includes post-processing, tone mapping, exposure, and
+	// importantly the HDR pipeline so reflections / GI lookups produce the
+	// right colours. SCS_FinalColorLDR drops too much information. - TripleA
+	InstructorPipCapture->CaptureSource = ESceneCaptureSource::SCS_FinalToneCurveHDR;
+	InstructorPipCapture->FOVAngle = 80.f;
+	InstructorPipCapture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
+
+	// Quality overrides: SceneCapture defaults to a stripped render path for
+	// perf reasons (no TAA, no AntiAliasing, no Lumen GI, no SSR, biased LOD).
+	// Re-enable what's needed so aircraft look like proper meshes instead of
+	// Roblox blobs. Without these, the same mesh that renders fine in the
+	// main viewport ends up flat-shaded and reflection-less in the PIP. - TripleA
+	InstructorPipCapture->ShowFlags.SetAntiAliasing(true);
+	InstructorPipCapture->ShowFlags.SetTemporalAA(true);
+	InstructorPipCapture->ShowFlags.SetMotionBlur(false);   // off for scope clarity
+	InstructorPipCapture->ShowFlags.SetTonemapper(true);
+	InstructorPipCapture->ShowFlags.SetEyeAdaptation(true);
+	InstructorPipCapture->ShowFlags.SetBloom(true);
+	InstructorPipCapture->ShowFlags.SetAmbientOcclusion(true);
+	InstructorPipCapture->ShowFlags.SetLighting(true);
+	InstructorPipCapture->ShowFlags.SetReflectionEnvironment(true);
+	InstructorPipCapture->ShowFlags.SetScreenSpaceReflections(true);
+	InstructorPipCapture->ShowFlags.SetGlobalIllumination(true);
+	InstructorPipCapture->ShowFlags.SetLumenGlobalIllumination(true);
+	InstructorPipCapture->ShowFlags.SetLumenReflections(true);
+	InstructorPipCapture->ShowFlags.SetSkyLighting(true);
+	InstructorPipCapture->ShowFlags.SetDirectLighting(true);
+	InstructorPipCapture->ShowFlags.SetIndirectLightingCache(true);
+	InstructorPipCapture->ShowFlags.SetTexturedLightProfiles(true);
+	InstructorPipCapture->ShowFlags.SetVolumetricFog(true);
+
+	// Post-process volume contribution. Without this, post-process volumes in
+	// the level (like exposure curves and color grading) don't apply to the
+	// capture, so it looks washed out vs the main view. - TripleA
+	InstructorPipCapture->PostProcessBlendWeight = 1.f;
+
+	// LODDistanceFactor < 1 forces higher-detail LODs at the same distance.
+	// Aircraft meshes drop to low-poly potatoes pretty aggressively under the
+	// default 1.0 bias - 0.1 forces near-LOD-0 everywhere. Costs more but
+	// only one capture is running. - TripleA
+	InstructorPipCapture->LODDistanceFactor = 0.1f;
 }
 
 void AClearanceSimulationController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Force the high replication rate on every active SimulationController
+	// instance regardless of what the level-placed actor was serialised with.
+	// 100Hz NetUpdateFrequency means clients see aircraft state changes within
+	// ~10ms of the server applying them. - TripleA
+	SetNetUpdateFrequency(100.f);
+	SetMinNetUpdateFrequency(60.f);
+
+	// Force the PIP capture's quality settings here regardless of what got
+	// serialised on the level-placed component. The constructor sets sensible
+	// defaults but the level keeps whatever was saved when the actor was
+	// placed; re-applying in BeginPlay guarantees the live values match the
+	// latest code. - TripleA
+	if (InstructorPipCapture)
+	{
+		InstructorPipCapture->CaptureSource = ESceneCaptureSource::SCS_FinalToneCurveHDR;
+		InstructorPipCapture->bAlwaysPersistRenderingState = true;
+		InstructorPipCapture->LODDistanceFactor = 0.1f;
+		InstructorPipCapture->PostProcessBlendWeight = 1.f;
+		InstructorPipCapture->ShowFlags.SetAntiAliasing(true);
+		InstructorPipCapture->ShowFlags.SetTemporalAA(true);
+		InstructorPipCapture->ShowFlags.SetMotionBlur(false);
+		InstructorPipCapture->ShowFlags.SetTonemapper(true);
+		InstructorPipCapture->ShowFlags.SetEyeAdaptation(true);
+		InstructorPipCapture->ShowFlags.SetBloom(true);
+		InstructorPipCapture->ShowFlags.SetAmbientOcclusion(true);
+		InstructorPipCapture->ShowFlags.SetLighting(true);
+		InstructorPipCapture->ShowFlags.SetReflectionEnvironment(true);
+		InstructorPipCapture->ShowFlags.SetScreenSpaceReflections(true);
+		InstructorPipCapture->ShowFlags.SetGlobalIllumination(true);
+		InstructorPipCapture->ShowFlags.SetLumenGlobalIllumination(true);
+		InstructorPipCapture->ShowFlags.SetLumenReflections(true);
+		InstructorPipCapture->ShowFlags.SetSkyLighting(true);
+		InstructorPipCapture->ShowFlags.SetDirectLighting(true);
+		InstructorPipCapture->ShowFlags.SetIndirectLightingCache(true);
+		InstructorPipCapture->ShowFlags.SetTexturedLightProfiles(true);
+		InstructorPipCapture->ShowFlags.SetVolumetricFog(true);
+	}
+
+	// Allocate the PIP render target on every instance (host + clients). The RT
+	// is a per-machine resource; the capture only produces a texture where
+	// the panel actually wants to render it. - TripleA
+	if (InstructorPipCapture && !InstructorPipRT)
+	{
+		InstructorPipRT = NewObject<UTextureRenderTarget2D>(this, TEXT("InstructorPipRT"));
+		InstructorPipRT->InitAutoFormat(
+			FMath::Max(64, InstructorPipResolution.X),
+			FMath::Max(64, InstructorPipResolution.Y));
+		InstructorPipRT->UpdateResource();
+		InstructorPipCapture->TextureTarget = InstructorPipRT;
+	}
+
+	// Recorder runs on EVERY instance (server + client) so the instructor
+	// panel - which lives on the client - can scrub through the same replay
+	// buffer the server has, without needing a server RPC just to read the
+	// snapshot count. Server records authoritative truth; client records
+	// what it received via replication. - TripleA
+	if (!Recorder)
+	{
+		Recorder = NewObject<UClearanceSessionRecorder>(this);
+		if (Recorder && bAutoStartRecording) { Recorder->StartRecording(); }
+	}
+
+	// Server-only: the simulation lives here. Clients receive the world via the
+	// replicated AirspaceManager + Controller state and only render. - TripleA
+	if (!HasAuthority()) { return; }
 	InitialiseSystems();
 	if (bAutoStart)
 	{
@@ -96,7 +340,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	Scoring = NewObject<UClearanceScoring>(this);
 	ConflictDetector = NewObject<UClearanceConflictDetector>(this);
 	CommsRouter = NewObject<UClearanceCommsRouter>(this);
-	Recorder = NewObject<UClearanceSessionRecorder>(this);
+	if (!Recorder) { Recorder = NewObject<UClearanceSessionRecorder>(this); }
 	DISEmitter = NewObject<UClearanceDISEmitter>(this);
 	DISReceiver = NewObject<UClearanceDISReceiver>(this);
 	Radar = NewObject<UClearanceRadar>(this);
@@ -111,6 +355,9 @@ void AClearanceSimulationController::InitialiseSystems()
 		Radar->SitePositionNm        = FVector2D::ZeroVector; // sector origin
 		Radar->SiteName              = CentralRadarSiteName;
 	}
+
+	ScenarioRunner = NewObject<UClearanceScenarioRunner>(this);
+	if (ScenarioRunner) { ScenarioRunner->SetReferences(this, AirspaceManager); }
 
 	if (AirspaceManager)
 	{
@@ -135,12 +382,17 @@ void AClearanceSimulationController::InitialiseSystems()
 			// the touchdown points, the markers and everything else. - TripleA
 			FVector CentreW = It->GetActorLocation();
 			float LengthW = 1600.f; // fallback (~1.6nm) until a mesh is assigned
+			float WidthW  = 4500.f; // fallback ~45m strip
 			float TopZ = CentreW.Z;
 			FVector MeshCentre, MeshExtent;
 			if (It->GetRunwayBounds(MeshCentre, MeshExtent))
 			{
 				CentreW = MeshCentre;
 				LengthW = 2.f * (MeshExtent.X * FMath::Abs(Inbound.X) + MeshExtent.Y * FMath::Abs(Inbound.Y));
+				// Perpendicular to the heading - swaps the axis the projection
+				// reads. - TripleA
+				const FVector Perp(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
+				WidthW = 2.f * (MeshExtent.X * FMath::Abs(Perp.X) + MeshExtent.Y * FMath::Abs(Perp.Y));
 				TopZ = MeshCentre.Z + MeshExtent.Z;
 			}
 
@@ -149,12 +401,19 @@ void AClearanceSimulationController::InitialiseSystems()
 
 			// Landing on H, you cross the near threshold (behind the centre) and roll
 			// through; the reciprocal lands the other way from the far end. - TripleA
-			FRunwayInfo A; A.ThresholdNm = CentreNm - Inbound * HalfNm; A.HeadingDeg = H;
+			FRunwayInfo A;
+			A.ThresholdNm = CentreNm - Inbound * HalfNm;
+			A.HeadingDeg = H;
+			A.LengthUnits = LengthW;
+			A.WidthUnits  = WidthW;
 			RunwayInfos.Add(A);
 			if (It->bAllowReciprocal)
 			{
-				FRunwayInfo B; B.ThresholdNm = CentreNm + Inbound * HalfNm;
+				FRunwayInfo B;
+				B.ThresholdNm = CentreNm + Inbound * HalfNm;
 				B.HeadingDeg = FMath::Fmod(H + 180.f, 360.f);
+				B.LengthUnits = LengthW;
+				B.WidthUnits  = WidthW;
 				RunwayInfos.Add(B);
 			}
 			if (!bGroundSet) { GroundWorldZ = TopZ; bGroundSet = true; } // 0ft = top of the runway mesh
@@ -173,7 +432,14 @@ void AClearanceSimulationController::InitialiseSystems()
 
 	if (Spawner) { Spawner->SetReferences(AirspaceManager); }
 	if (ConflictDetector) { ConflictDetector->SetReferences(AirspaceManager); }
-	if (CommsRouter) { CommsRouter->SetReferences(AirspaceManager, Validator); }
+	if (CommsRouter)
+	{
+		CommsRouter->SetReferences(AirspaceManager, Validator);
+		// Subscribe to instruction results so the comms transcript can capture
+		// the operator command + auto-generate the pilot readback / refusal.
+		// AddUniqueDynamic so re-initialising doesn't double-up. - TripleA
+		CommsRouter->OnInstructionResult.AddUniqueDynamic(this, &AClearanceSimulationController::HandleInstructionResult);
+	}
 
 	BindDelegates();
 	SpawnPresetCameras();
@@ -222,7 +488,12 @@ void AClearanceSimulationController::StartSession()
 		Spawner->EntryRadiusNm = ExitRadiusNm;
 	}
 
-	SessionTime = 0.f;
+	// Intentionally NOT resetting SessionTime - it ticks from server BeginPlay
+	// so the HUD timer shows total elapsed PIE time, surviving multiple
+	// StartSession calls. Per-scenario timing relative to start is captured
+	// elsewhere (recorder, scoring incidents stamp themselves at the current
+	// SessionTime so durations come out correct regardless of absolute value).
+	// - TripleA
 	bPaused = false;
 	bSessionActive = true;
 	NextViperNumber = 1;
@@ -264,9 +535,187 @@ void AClearanceSimulationController::EndSession()
 	VisualActors.Empty();
 }
 
+void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AClearanceSimulationController, AirspaceManager);
+	DOREPLIFETIME(AClearanceSimulationController, bRepScenarioRunning);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioName);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioElapsedSec);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioFiredEvents);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioTotalEvents);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioFiredTriggers);
+	DOREPLIFETIME(AClearanceSimulationController, RepScenarioTotalTriggers);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreTotal);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreEfficiencyPct);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreLandings);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreHandoffs);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreResolved);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreIntercepts);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreEmergencies);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreGoArounds);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreSepLoss);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreWake);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreTCAS);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreStrayed);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreMisID);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreViolated);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreCrashed);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreBusted);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreNextSpawnSec);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoringLog);
+	DOREPLIFETIME(AClearanceSimulationController, SessionTime);
+	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
+	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
+	DOREPLIFETIME(AClearanceSimulationController, CameraTower);
+	DOREPLIFETIME(AClearanceSimulationController, CameraApproach);
+	DOREPLIFETIME(AClearanceSimulationController, CameraFollow);
+	DOREPLIFETIME(AClearanceSimulationController, OperatorViewRotation);
+	DOREPLIFETIME(AClearanceSimulationController, OperatorViewLocation);
+	DOREPLIFETIME(AClearanceSimulationController, bReplayMode);
+	DOREPLIFETIME(AClearanceSimulationController, bReplayPaused);
+	DOREPLIFETIME(AClearanceSimulationController, ReplayTime);
+	DOREPLIFETIME(AClearanceSimulationController, ReplaySpeed);
+	DOREPLIFETIME(AClearanceSimulationController, ReplayDuration);
+	DOREPLIFETIME(AClearanceSimulationController, ReplaySegmentSeams);
+	DOREPLIFETIME(AClearanceSimulationController, Transcript);
+}
+
+void AClearanceSimulationController::PushNotification(const FString& Text, FColor Colour, float LifetimeSec)
+{
+	// Server is the sole writer; clients receive via replication. Trim oldest to
+	// keep the buffer bounded - the HUD only draws the recent dozen anyway. - TripleA
+	if (!HasAuthority()) { return; }
+
+	FClearanceNotification N;
+	N.Text = Text;
+	N.ServerTimeAdded = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	N.Colour = Colour;
+	N.LifetimeSec = LifetimeSec;
+	RepNotifications.Add(N);
+
+	while (RepNotifications.Num() > 12)
+	{
+		RepNotifications.RemoveAt(0);
+	}
+
+	// Anything escalated to a HUD notification (conflicts, separation losses,
+	// intercept results, emergency advisories, scoring events) is by definition
+	// significant enough for the AAR transcript. Logged as System since these
+	// originate from the simulation, not a specific operator/pilot transmission.
+	// - TripleA
+	AppendTranscriptEntry(EClearanceCommsRole::System, NAME_None, Text);
+}
+
+// Multicast: pilot voice + mayday lines. Fires on the server and every
+// connected client. Each peer finds its own placed VoiceOutput actor (which
+// owns a local TTS server) and synthesises the line locally - no PCM ships
+// over the wire. Silent no-op on a peer that has no VoiceOutput placed. - TripleA
+void AClearanceSimulationController::Multicast_PlayTTS_Implementation(FName Callsign, const FString& Text, const FString& VoiceTag, bool bPanic)
+{
+	UWorld* World = GetWorld();
+	if (!World || Text.IsEmpty()) { return; }
+
+	// Single transcription point - anything voiced over the radio lands in the
+	// transcript. Server-only so peers don't duplicate. Lines with no callsign
+	// (system / controller voice, scenario broadcasts) get System role; aircraft
+	// lines get Pilot role. - TripleA
+	if (HasAuthority())
+	{
+		const EClearanceCommsRole TranscriptRole = Callsign.IsNone()
+			? EClearanceCommsRole::System
+			: EClearanceCommsRole::Pilot;
+		AppendTranscriptEntry(TranscriptRole, Callsign, Text);
+	}
+
+	for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+	{
+		if (!*It) { break; }
+		if (bPanic) { It->SpeakPanic(Callsign, Text, VoiceTag); }
+		else        { It->Speak(Callsign, Text, VoiceTag); }
+		break;
+	}
+}
+
+// Multicast: non-spoken cockpit cues - radio static (Kind=0), GPWS terrain
+// alarm start (Kind=1), GPWS stop on impact (Kind=2). Same lookup pattern as
+// Multicast_PlayTTS. - TripleA
+void AClearanceSimulationController::Multicast_PlayCockpitCue_Implementation(FName Callsign, uint8 Kind, float Duration)
+{
+	UWorld* World = GetWorld();
+	if (!World) { return; }
+	for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+	{
+		if (!*It) { break; }
+		switch (Kind)
+		{
+		case 0: It->PlayStatic(Duration > 0.f ? Duration : 1.f); break;
+		case 1: It->PlayGPWS(Callsign);                          break;
+		case 2: It->StopGPWS(Callsign);                          break;
+		default: break;
+		}
+		break;
+	}
+}
+
+void AClearanceSimulationController::OnRep_AirspaceManager()
+{
+	// Client-only: as soon as the replicated Manager ref arrives, bind the
+	// visual-spawning delegates so meshes appear when aircraft replicate in. - TripleA
+	if (HasAuthority() || !AirspaceManager) { return; }
+	AirspaceManager->OnAircraftRegistered.AddDynamic(this, &AClearanceSimulationController::HandleAircraftRegistered);
+	AirspaceManager->OnAircraftDeregistered.AddDynamic(this, &AClearanceSimulationController::HandleAircraftDeregistered);
+
+	// Any aircraft already replicated before this OnRep fired never sent us a
+	// register event - call the handler for each so meshes spawn retroactively. - TripleA
+	for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
+	{
+		HandleAircraftRegistered(S.Callsign);
+	}
+}
+
 void AClearanceSimulationController::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// Instructor PIP feed runs everywhere - host renders its own, each client
+	// renders its own. The RT is a per-machine resource so the capture has to
+	// happen wherever the panel wants to display it. - TripleA
+	UpdateInstructorPip(DeltaTime);
+
+
+	// Client-side render path: just paint the world from the replicated state.
+	// No sim mutations; the server is the only writer. - TripleA
+	if (!HasAuthority())
+	{
+		if (AirspaceManager) // replicated ref may take a tick or two to arrive
+		{
+			UpdateVisuals();
+			UpdateFollowCamera();
+			DrawDebugView();
+
+			// Client-side snapshot capture: feeds the local recorder buffer
+			// with whatever airspace state the client received via replication
+			// this frame, so the panel's REPLAY tab can scrub through history
+			// without an RPC round-trip per click. - TripleA
+			if (Recorder && Recorder->IsRecording() && GetWorld())
+			{
+				Recorder->CaptureSnapshot(GetWorld()->GetTimeSeconds(), AirspaceManager->GetAllAircraftStates());
+			}
+		}
+		return;
+	}
+
+	// SessionTime ticks pre-StartSession so the HUD shows elapsed time the
+	// moment the controller is alive on the server (instructor watches it
+	// count up while setting up a scenario, no "press start" friction).
+	// Frozen during in-sim pause and during replay - that's why the increment
+	// sits between those two gates and the bSessionActive gate, not below
+	// them. - TripleA
+	if (!bPaused && !bReplayMode)
+	{
+		SessionTime += DeltaTime;
+	}
 
 	if (!bSessionActive || bPaused)
 	{
@@ -275,8 +724,6 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 
 	if (bReplayMode)
 	{
-		// Replay: don't run the sim - pose the world to the recorded snapshot at the
-		// current replay time, then let UpdateVisuals draw it. - TripleA
 		if (!bReplayPaused && Recorder && AirspaceManager)
 		{
 			ReplayTime = FMath::Clamp(ReplayTime + DeltaTime * ReplaySpeed, 0.f, Recorder->GetDurationSeconds());
@@ -311,12 +758,85 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	}
 
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
-	SessionTime += SimDelta;
+
+	// Scenario runner advances on sim time so a 10x time-scaled session reaches
+	// scripted moments 10x faster - matches authoring intuition. - TripleA
+	if (ScenarioRunner && ScenarioRunner->IsRunning()) { ScenarioRunner->Tick(SimDelta, DeltaTime); }
+
+	// Phase 3: mirror ScenarioRunner state to replicated UPROPERTYs so clients
+	// see the SCENARIO readout line without needing a ScenarioRunner instance. - TripleA
+	if (ScenarioRunner)
+	{
+		bRepScenarioRunning      = ScenarioRunner->IsRunning();
+		RepScenarioName          = ScenarioRunner->GetLoadedName();
+		RepScenarioElapsedSec    = ScenarioRunner->GetElapsedSeconds();
+		RepScenarioFiredEvents   = ScenarioRunner->GetFiredEventCount();
+		RepScenarioTotalEvents   = ScenarioRunner->GetTotalEventCount();
+		RepScenarioFiredTriggers = ScenarioRunner->GetFiredTriggerCount();
+		RepScenarioTotalTriggers = ScenarioRunner->GetTotalTriggerCount();
+	}
+	else
+	{
+		bRepScenarioRunning = false;
+	}
+
+	// Phase 4: mirror Scoring state to replicated UPROPERTYs so clients see
+	// the SCORING line + main CLEARANCE score/eff with server truth. Per-incident
+	// counters aren't exposed as getters - tally them from the session log here
+	// (same loop the readout used to do client-side) and ship the totals. - TripleA
+	if (Scoring)
+	{
+		RepScoreTotal         = Scoring->GetCurrentScore();
+		RepScoreEfficiencyPct = Scoring->GetEfficiency() * 100.f;
+		RepScoreNextSpawnSec  = Scoring->GetCurrentSpawnInterval();
+
+		int32 nLand = 0, nHand = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0, nBust = 0;
+		for (const FIncidentRecord& R : Scoring->GetSessionLog())
+		{
+			switch (R.Type)
+			{
+			case EIncidentType::SuccessfulLanding:    ++nLand; break;
+			case EIncidentType::SuccessfulHandoff:    ++nHand; break;
+			case EIncidentType::SuccessfulResolution: ++nRes;  break;
+			case EIncidentType::SuccessfulIntercept:  ++nInt;  break;
+			case EIncidentType::GoAroundTriggered:    ++nGA;   break;
+			case EIncidentType::SeparationLoss:       ++nSep;  break;
+			case EIncidentType::UnresolvedExit:       ++nExit; break;
+			case EIncidentType::WakeEncounter:        ++nWake; break;
+			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
+			case EIncidentType::MisidentifiedCivilian: ++nMisID; break;
+			case EIncidentType::ViolationZoneBreached: ++nViol; break;
+			case EIncidentType::SuccessfulEmergencyHandling: ++nEmer; break;
+			case EIncidentType::AircraftCrashed:       ++nCrash; break;
+			case EIncidentType::RestrictedAirspaceBust: ++nBust; break;
+			default: break;
+			}
+		}
+		RepScoreLandings    = nLand;
+		RepScoreHandoffs    = nHand;
+		RepScoreResolved    = nRes;
+		RepScoreIntercepts  = nInt;
+		RepScoreEmergencies = nEmer;
+		RepScoreGoArounds   = nGA;
+		RepScoreSepLoss     = nSep;
+		RepScoreWake        = nWake;
+		RepScoreTCAS        = nTCAS;
+		RepScoreStrayed     = nExit;
+		RepScoreMisID       = nMisID;
+		RepScoreViolated    = nViol;
+		RepScoreCrashed     = nCrash;
+		RepScoreBusted      = nBust;
+
+		// Mirror the full ordered scoring log to clients. Cheap - one TArray copy
+		// per scoring update, log only grows on actual incidents. Performance tab
+		// reads from this to render per-category "[mm:ss] CALLSIGN" rows. - TripleA
+		RepScoringLog = Scoring->GetSessionLog();
+	}
 
 	// Violation zone check: any declared-hostile aircraft inside a protected zone
 	// fires a catastrophic ViolationZoneBreached incident (mirror of mis-ID). One-
 	// shot per (zone, aircraft) pair so a stuck hostile doesn't spam the score. - TripleA
-	if (AirspaceManager && GetWorld())
+	if (AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 	{
 		TArray<AClearanceViolationZone*> Zones;
 		for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
@@ -354,12 +874,15 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						Recorder->LogEvent(SessionTime, FString::Printf(
 							TEXT("VIOLATION - hostile %s breached %s"), *S.Callsign.ToString(), *Z->ZoneName.ToString()));
 					}
-					if (GEngine)
 					{
-						GEngine->AddOnScreenDebugMessage(102, 30.f, FColor::Red,
-							FString::Printf(TEXT("*** VIOLATION *** HOSTILE %s REACHED %s (-%d)"),
-								*S.Callsign.ToString(), *Z->ZoneName.ToString(),
-								Scoring ? Scoring->PenaltyViolationZoneBreached : 1000));
+						const FString NMsg = FString::Printf(TEXT("*** VIOLATION *** HOSTILE %s REACHED %s (-%d)"),
+							*S.Callsign.ToString(), *Z->ZoneName.ToString(),
+							Scoring ? Scoring->PenaltyViolationZoneBreached : 1000);
+						PushNotification(NMsg, FColor::Red, 30.f);
+						if (GEngine)
+						{
+							GEngine->AddOnScreenDebugMessage(102, 30.f, FColor::Red, NMsg);
+						}
 					}
 				}
 			}
@@ -371,7 +894,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	// One-shot per (area, aircraft) pair. NOT a doctrine failure (no -1000) - just
 	// a controller screw-up the operator should have prevented by vectoring around
 	// it. - TripleA
-	if (AirspaceManager && GetWorld())
+	if (AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 	{
 		TArray<AClearanceRestrictedArea*> Areas;
 		for (TActorIterator<AClearanceRestrictedArea> AIt(GetWorld()); AIt; ++AIt) { Areas.Add(*AIt); }
@@ -381,9 +904,10 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 			const float W = FMath::Max(1.f, WorldUnitsPerNm);
 			for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
 			{
-				// Only civilian friendly traffic - military, hostiles, hijacks etc
-				// are handled by other paths (or are LEGITIMATELY in the area).
-				if (S.bIsMilitary || S.bIsExternal || S.ThreatClass != EThreatClass::Friendly) { continue; }
+				// Only civilian traffic - military, hostiles, hijacks etc are
+				// handled by other paths (or are LEGITIMATELY in the area).
+				// Civilians are Neutral per MIL-STD-2525C affiliation. - TripleA
+				if (S.bIsMilitary || S.bIsExternal || S.ThreatClass != EThreatClass::Neutral) { continue; }
 				if (S.ActiveEmergency != EEmergencyType::None) { continue; }
 				for (AClearanceRestrictedArea* A : Areas)
 				{
@@ -405,12 +929,15 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						Recorder->LogEvent(SessionTime, FString::Printf(
 							TEXT("AIRSPACE BUST - %s entered %s"), *S.Callsign.ToString(), *A->AreaName.ToString()));
 					}
-					if (GEngine)
 					{
-						GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor(255, 140, 0),
-							FString::Printf(TEXT("AIRSPACE BUST: %s entered %s (-%d)"),
-								*S.Callsign.ToString(), *A->AreaName.ToString(),
-								Scoring ? Scoring->PenaltyRestrictedAirspaceBust : 150));
+						const FString NMsg = FString::Printf(TEXT("AIRSPACE BUST: %s entered %s (-%d)"),
+							*S.Callsign.ToString(), *A->AreaName.ToString(),
+							Scoring ? Scoring->PenaltyRestrictedAirspaceBust : 150);
+						PushNotification(NMsg, FColor(255, 140, 0), 6.f);
+						if (GEngine)
+						{
+							GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor(255, 140, 0), NMsg);
+						}
 					}
 				}
 			}
@@ -521,15 +1048,18 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 
 					if (Recorder)
 					{
-						Recorder->LogEvent(SessionTime, FString::Printf(TEXT("EMERGENCY - %s declared %s (sq %d)"),
-							*S.Callsign.ToString(), *UEnum::GetValueAsString(S.ActiveEmergency), NewSquawk));
+						Recorder->LogEvent(SessionTime, FString::Printf(TEXT("EMERGENCY - %s declared %s"),
+							*S.Callsign.ToString(), *UEnum::GetDisplayValueAsText(S.ActiveEmergency).ToString()));
 					}
-					if (GEngine)
 					{
 						const FColor Col = (S.ActiveEmergency == EEmergencyType::Hijack) ? FColor::Red : FColor::Yellow;
-						GEngine->AddOnScreenDebugMessage(-1, 8.f, Col,
-							FString::Printf(TEXT("EMERGENCY: %s SQUAWK %d (%s)"),
-								*S.Callsign.ToString(), NewSquawk, *UEnum::GetValueAsString(S.ActiveEmergency)));
+						const FString NMsg = FString::Printf(TEXT("EMERGENCY: %s %s"),
+							*S.Callsign.ToString(), *UEnum::GetDisplayValueAsText(S.ActiveEmergency).ToString());
+						PushNotification(NMsg, Col, 8.f);
+						if (GEngine)
+						{
+							GEngine->AddOnScreenDebugMessage(-1, 8.f, Col, NMsg);
+						}
 					}
 
 					// Audio cue via any placed VoiceOutput:
@@ -538,36 +1068,37 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 					//   Hijack           -> very brief static (pilot keyed mic and was cut off)
 					// The static cue for hijack is a small concession to gameplay over
 					// strict doctrine; pure silence is more authentic but leaves the
-					// player wondering if anything happened. - TripleA
-					if (GetWorld())
+					// player wondering if anything happened. Routed through the
+					// multicast so every peer hears the declaration, not just whichever
+					// machine the server-side iterator happened to land on. - TripleA
+					switch (S.ActiveEmergency)
 					{
-						for (TActorIterator<AClearanceVoiceOutput> VoIt(GetWorld()); VoIt; ++VoIt)
-						{
-							if (!*VoIt) { break; }
-							switch (S.ActiveEmergency)
-							{
-							case EEmergencyType::GeneralMayday:
-								VoIt->Speak(S.Callsign,
-									S.EmergencyDetail.IsEmpty()
-										? FString::Printf(TEXT("Mayday, mayday, mayday, %s, declaring emergency, request immediate landing"), *S.Callsign.ToString())
-										: FString::Printf(TEXT("Mayday, mayday, mayday, %s, %s, request immediate landing"), *S.Callsign.ToString(), *S.EmergencyDetail),
-									FString());
-								break;
-							case EEmergencyType::FuelLow:
-								VoIt->Speak(S.Callsign,
-									FString::Printf(TEXT("Mayday, mayday, mayday, %s, fuel emergency, request immediate landing"), *S.Callsign.ToString()),
-									FString());
-								break;
-							case EEmergencyType::CommsFailure:
-								VoIt->PlayStatic(2.0f);
-								break;
-							case EEmergencyType::Hijack:
-								VoIt->PlayStatic(0.6f);
-								break;
-							default: break;
-							}
-							break;
-						}
+					case EEmergencyType::GeneralMayday:
+						Multicast_PlayTTS(S.Callsign,
+							S.EmergencyDetail.IsEmpty()
+								? FString::Printf(TEXT("Mayday, mayday, mayday, %s, declaring emergency, request immediate landing"), *S.Callsign.ToString())
+								: FString::Printf(TEXT("Mayday, mayday, mayday, %s, %s, request immediate landing"), *S.Callsign.ToString(), *S.EmergencyDetail),
+							FString(), false);
+						break;
+					case EEmergencyType::FuelLow:
+						Multicast_PlayTTS(S.Callsign,
+							FString::Printf(TEXT("Mayday, mayday, mayday, %s, fuel emergency, request immediate landing"), *S.Callsign.ToString()),
+							FString(), false);
+						break;
+					case EEmergencyType::CommsFailure:
+						// No spoken transmission (radio failure) - just the cockpit static
+						// cue. Manually log a System line so the trainee sees the
+						// squawk change in the transcript. - TripleA
+						Multicast_PlayCockpitCue(S.Callsign, 0, 2.0f);
+						LogTranscriptLine(EClearanceCommsRole::System, S.Callsign, FString::Printf(TEXT("[radio silence - comms failure suspected, %s squawking 7600]"), *S.Callsign.ToString()));
+						break;
+					case EEmergencyType::Hijack:
+						// Same - no TTS, just a brief carrier blip. Manual log so the
+						// squawk change is visible. - TripleA
+						Multicast_PlayCockpitCue(S.Callsign, 0, 0.6f);
+						LogTranscriptLine(EClearanceCommsRole::System, S.Callsign, FString::Printf(TEXT("[brief carrier - %s squawking 7500]"), *S.Callsign.ToString()));
+						break;
+					default: break;
 					}
 					continue;
 				}
@@ -629,11 +1160,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						if (NewBit != 0 && GetWorld())
 						{
 							Mask |= NewBit;
-							for (TActorIterator<AClearanceVoiceOutput> VoIt(GetWorld()); VoIt; ++VoIt)
-							{
-								if (*VoIt) { VoIt->Speak(Cs, Line, FString()); }
-								break;
-							}
+							Multicast_PlayTTS(Cs, Line, FString(), false);
 						}
 					}
 				}
@@ -677,6 +1204,80 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	if (Radar && Radar->IsEnabled()) { Radar->Tick(DeltaTime); }
 
 	UpdateFollowCamera();
+}
+
+// Hostiles (and military Unknowns) react to closing friendly interceptors:
+// jammer on at 25nm, chaff at 10nm with an 8s reload, jammer off if everyone
+// disengages out past 40nm. Cooldowns are wall-clock so a tight intercept
+// chain doesn't trigger ten cycles in a row. - TripleA
+void AClearanceSimulationController::TickBanditEW(float DeltaTime)
+{
+	if (!AirspaceManager) { return; }
+
+	const TArray<FAircraftState> All = AirspaceManager->GetAllAircraftStates();
+
+	TArray<FVector> InterceptorPositions;
+	for (const FAircraftState& A : All)
+	{
+		if (A.ThreatClass == EThreatClass::Friendly && A.bIsMilitary && A.bUnderGCIControl)
+		{
+			InterceptorPositions.Add(A.Position);
+		}
+	}
+	if (InterceptorPositions.Num() == 0) { return; }
+
+	constexpr float JamOnRangeNm    = 25.f;
+	constexpr float ChaffRangeNm    = 10.f;
+	constexpr float JamOffRangeNm   = 40.f;
+	constexpr float JamCooldownSec  =  5.f;
+	constexpr float ChaffReloadSec  =  8.f;
+	const float Now = SessionTime;
+
+	for (const FAircraftState& B : All)
+	{
+		const bool bEligible = (B.ThreatClass == EThreatClass::Hostile)
+			|| (B.ThreatClass == EThreatClass::Unknown && B.bIsMilitary);
+		if (!bEligible) { continue; }
+
+		float ClosestNm = TNumericLimits<float>::Max();
+		for (const FVector& P : InterceptorPositions)
+		{
+			const float D = FVector::Dist2D(B.Position, P);
+			if (D < ClosestNm) { ClosestNm = D; }
+		}
+
+		FBanditEWState& Tac = BanditEWStates.FindOrAdd(B.Callsign);
+
+		if (!B.bJammingOn && ClosestNm <= JamOnRangeNm
+			&& (Now - Tac.LastJamToggleTime) > JamCooldownSec)
+		{
+			FAircraftState U = B;
+			U.bJammingOn = true;
+			AirspaceManager->RequestStateUpdate(U);
+			Tac.LastJamToggleTime = Now;
+			PushNotification(
+				FString::Printf(TEXT("EW: %s lit up jammers"), *B.Callsign.ToString()),
+				FColor(255, 80, 80), 5.f);
+		}
+		else if (B.bJammingOn && ClosestNm > JamOffRangeNm
+			&& (Now - Tac.LastJamToggleTime) > JamCooldownSec * 2.f)
+		{
+			FAircraftState U = B;
+			U.bJammingOn = false;
+			AirspaceManager->RequestStateUpdate(U);
+			Tac.LastJamToggleTime = Now;
+		}
+
+		if (ClosestNm <= ChaffRangeNm
+			&& (Now - Tac.LastChaffDropTime) > ChaffReloadSec)
+		{
+			AirspaceManager->DropChaff(B.Position, B.Altitude);
+			Tac.LastChaffDropTime = Now;
+			PushNotification(
+				FString::Printf(TEXT("EW: %s released chaff"), *B.Callsign.ToString()),
+				FColor(255, 220, 80), 4.f);
+		}
+	}
 }
 
 void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
@@ -853,7 +1454,10 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 					const float MergeT   = FMath::Clamp((DistNm - 0.3f) / 0.9f, 0.f, 1.f);
 					const float AltOff   = SlotRejoinAltFt[SlotIdx] * MergeT;
 					const float SlowT    = FMath::Clamp((DistNm - 0.3f) / 0.3f, 0.f, 1.f);
-					const float PursueKt = 640.f;
+					// Stays in supersonic-dash territory all the way to the slot - the lerp
+					// only bleeds it off inside the last 0.6nm. Matches the spawn-speed
+					// bump to 900 kts so wingmen don't fall behind. - TripleA
+					const float PursueKt = 900.f;
 					const float SlotKt   = FMath::Max(B.Speed, 200.f);
 
 					FS.TargetHeading  = HeadingToSlot;
@@ -886,18 +1490,23 @@ void AClearanceSimulationController::SetGCIModeEnabled(bool bInEnabled)
 	}
 }
 
-void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatClass NewClass)
+void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatClass NewClass, bool bAsInstructor)
 {
 	if (!AirspaceManager) { return; }
 	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
 	if (!S.bIsValid) { return; }
 
-	// CATASTROPHIC DOCTRINE FAILURE: declaring a confirmed civilian (IFF on AND
-	// non-military) as hostile. Vincennes / KAL-007 territory. Mark the incident,
-	// hit the score, lock further scrambles for the session. The classification
-	// still goes through - the player committed to it - but the consequences are
-	// permanent and unmistakable. - TripleA
-	if (NewClass == EThreatClass::Hostile && S.bIFFOperational && !S.bIsMilitary &&
+	// CATASTROPHIC DOCTRINE FAILURE: declaring a truly civilian contact as
+	// hostile. Vincennes / KAL-007 territory. Reads ground truth (TrueAffiliation)
+	// not the operator's belief so a bandit faking civilian IFF wouldn't make
+	// the correct Hostile call count as a misID. The classification still goes
+	// through - the player committed to it - but the consequences are permanent
+	// and unmistakable.
+	// Skipped when bAsInstructor is true: the instructor reclassifying via the
+	// inject panel is god-mode scenario shaping, not the trainee committing a
+	// doctrinal call. - TripleA
+	if (!bAsInstructor &&
+		NewClass == EThreatClass::Hostile && S.TrueAffiliation == EThreatClass::Neutral &&
 		S.ThreatClass != EThreatClass::Hostile)
 	{
 		if (Scoring)
@@ -920,6 +1529,13 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	}
 
 	S.ThreatClass = NewClass;
+	if (bAsInstructor)
+	{
+		// God-view shaping: the instructor is rewriting the ground truth, not
+		// just nudging the operator picture. The truth scope reads
+		// TrueAffiliation so the symbol on it has to follow this. - TripleA
+		S.TrueAffiliation = NewClass;
+	}
 	// Hostile contacts lock out of civilian ATC immediately.
 	S.bUnderGCIControl = (NewClass == EThreatClass::Hostile);
 	AirspaceManager->RequestStateUpdate(S);
@@ -933,6 +1549,169 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	}
 }
 
+bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergencyType Kind)
+{
+	if (!AirspaceManager || Kind == EEmergencyType::None) { return false; }
+	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+	if (!S.bIsValid) { return false; }
+	if (S.ActiveEmergency != EEmergencyType::None) { return false; } // already emergency
+
+	int32 NewSquawk = S.SquawkCode;
+	switch (Kind)
+	{
+	case EEmergencyType::GeneralMayday:
+		S.ActiveEmergency = EEmergencyType::GeneralMayday;
+		NewSquawk = 7700;
+		S.EmergencyDetail = TEXT("scripted mayday");
+		break;
+	case EEmergencyType::CommsFailure:
+		S.ActiveEmergency = EEmergencyType::CommsFailure;
+		NewSquawk = 7600;
+		break;
+	case EEmergencyType::Hijack:
+		S.ActiveEmergency = EEmergencyType::Hijack;
+		NewSquawk = 7500;
+		break;
+	case EEmergencyType::FuelLow:
+		S.ActiveEmergency = EEmergencyType::FuelLow;
+		S.FuelRemainingMinutes = FuelEmergencyMinutes;
+		break;
+	default:
+		return false;
+	}
+	S.SquawkCode = NewSquawk;
+	S.EmergencyDeclaredAtSeconds = SessionTime;
+
+	// 7600 follows the same lost-comms auto-procedure as the randomly-injected path:
+	// turn for the active runway, descend to pattern altitude, FlightPhase=Approach. - TripleA
+	if (S.ActiveEmergency == EEmergencyType::CommsFailure)
+	{
+		const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+		if (Env.ActiveRunwayHeading >= 0.f)
+		{
+			const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+			const FVector2D Here(S.Position.X, S.Position.Y);
+			const float HRad = FMath::DegreesToRadians(Env.ActiveRunwayHeading);
+			const FVector2D Loc(FMath::Sin(HRad), FMath::Cos(HRad));
+			const FVector2D Gate = Threshold - Loc * 10.f;
+			const FVector2D Toward = (Gate - Here).GetSafeNormal();
+			S.TargetHeading = FMath::RadiansToDegrees(FMath::Atan2(Toward.X, Toward.Y));
+			if (S.TargetHeading < 0.f) { S.TargetHeading += 360.f; }
+			S.TargetAltitude = 3000.f;
+			S.FlightPhase = EFlightPhase::Approach;
+		}
+	}
+
+	AirspaceManager->RequestStateUpdate(S);
+	if (Recorder)
+	{
+		Recorder->LogEvent(SessionTime, FString::Printf(
+			TEXT("EMERGENCY (scripted) - %s declared %d squawk %d"),
+			*Callsign.ToString(), (int32)Kind, NewSquawk));
+	}
+	return true;
+}
+
+bool AClearanceSimulationController::ClearEmergencyOn(FName Callsign)
+{
+	if (!AirspaceManager) { return false; }
+	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
+	if (!S.bIsValid || S.ActiveEmergency == EEmergencyType::None) { return false; }
+
+	S.ActiveEmergency = EEmergencyType::None;
+	S.SquawkCode = 1200;            // VFR / civilian default
+	S.EmergencyDetail.Empty();
+	S.EmergencyDeclaredAtSeconds = 0.f;
+	AirspaceManager->RequestStateUpdate(S);
+	return true;
+}
+
+// ============================================================================
+// Instructor station - server-side RPCs called by client console / UMG. Each is
+// a thin wrapper around the existing single-machine API; all sim writes stay
+// authoritative server-side. - TripleA
+// ============================================================================
+
+bool AClearanceSimulationController::Server_InjectEmergency_Validate(FName Callsign, EEmergencyType Kind)
+{
+	return Callsign != NAME_None;
+}
+void AClearanceSimulationController::Server_InjectEmergency_Implementation(FName Callsign, EEmergencyType Kind)
+{
+	DeclareEmergencyOn(Callsign, Kind);
+}
+
+bool AClearanceSimulationController::Server_InjectClassify_Validate(FName Callsign, EThreatClass NewClass)
+{
+	return Callsign != NAME_None;
+}
+void AClearanceSimulationController::Server_InjectClassify_Implementation(FName Callsign, EThreatClass NewClass)
+{
+	ClassifyAircraft(Callsign, NewClass);
+}
+
+bool AClearanceSimulationController::Server_InjectScramble_Validate(FName BanditCallsign)
+{
+	return BanditCallsign != NAME_None;
+}
+void AClearanceSimulationController::Server_InjectScramble_Implementation(FName BanditCallsign)
+{
+	ScrambleInterceptors(BanditCallsign);
+}
+
+bool AClearanceSimulationController::Server_InjectSetWind_Validate(float DirectionDeg, float SpeedKts)
+{
+	return SpeedKts >= 0.f && SpeedKts <= 200.f;
+}
+void AClearanceSimulationController::Server_InjectSetWind_Implementation(float DirectionDeg, float SpeedKts)
+{
+	SetWind(DirectionDeg, SpeedKts);
+}
+
+bool AClearanceSimulationController::Server_InjectSpawn_Validate() { return true; }
+void AClearanceSimulationController::Server_InjectSpawn_Implementation()
+{
+	SpawnOne();
+}
+
+bool AClearanceSimulationController::Server_InjectClearTraffic_Validate() { return true; }
+void AClearanceSimulationController::Server_InjectClearTraffic_Implementation()
+{
+	ClearTraffic();
+}
+
+bool AClearanceSimulationController::Server_InjectLoadScenario_Validate(const FString& ScenarioName)
+{
+	return !ScenarioName.IsEmpty();
+}
+void AClearanceSimulationController::Server_InjectLoadScenario_Implementation(const FString& ScenarioName)
+{
+	if (!ScenarioRunner) { return; }
+	const FString Name = ScenarioName.EndsWith(TEXT(".json")) ? ScenarioName : ScenarioName + TEXT(".json");
+	const FString Path = FPaths::ProjectPluginsDir() / TEXT("ClearanceSim/Scenarios") / Name;
+	FString Err;
+	if (!ScenarioRunner->LoadFromFile(Path, Err))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Instructor] scenario load failed: %s"), *Err);
+		return;
+	}
+	SetSpawnerScenarioLocked(true); // pre-clear safety - matches the console path
+	ClearTraffic();
+	ScenarioRunner->Start();
+}
+
+bool AClearanceSimulationController::Server_InjectStopScenario_Validate() { return true; }
+void AClearanceSimulationController::Server_InjectStopScenario_Implementation()
+{
+	if (ScenarioRunner) { ScenarioRunner->Stop(); }
+}
+
+bool AClearanceSimulationController::Server_InjectSetPaused_Validate(bool bNewPaused) { return true; }
+void AClearanceSimulationController::Server_InjectSetPaused_Implementation(bool bNewPaused)
+{
+	bPaused = bNewPaused;
+}
+
 bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass& OutClass, int32& OutSquawk)
 {
 	OutClass = EThreatClass::Unknown;
@@ -944,19 +1723,34 @@ bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass
 	// A hostile contact may have its IFF off; interrogation returns nothing. - TripleA
 	if (!S.bIFFOperational)
 	{
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red,
-			FString::Printf(TEXT("IFF %s: NO RESPONSE"), *Callsign.ToString())); }
+		{
+			const FString NMsg = FString::Printf(TEXT("IFF %s: NO RESPONSE"), *Callsign.ToString());
+			PushNotification(NMsg, FColor::Red, 4.f);
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red, NMsg); }
+		}
+		// Audible "dead air" cue - short static burst so the operator hears the silence,
+		// not just reads it. Routes through any placed VoiceOutput. - TripleA
+		if (GetWorld())
+		{
+			for (TActorIterator<AClearanceVoiceOutput> VIt(GetWorld()); VIt; ++VIt)
+			{
+				if (*VIt) { VIt->PlayStatic(0.8f); break; }
+			}
+		}
 		return false;
 	}
 	OutClass = S.ThreatClass;
 	OutSquawk = S.SquawkCode;
-	if (GEngine)
 	{
 		const TCHAR* L = OutClass == EThreatClass::Friendly ? TEXT("FRIENDLY")
 			: OutClass == EThreatClass::Hostile ? TEXT("HOSTILE")
 			: OutClass == EThreatClass::Neutral ? TEXT("NEUTRAL") : TEXT("UNKNOWN");
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green,
-			FString::Printf(TEXT("IFF %s: squawk %04d  %s"), *Callsign.ToString(), OutSquawk, L));
+		const FString NMsg = FString::Printf(TEXT("IFF %s: squawk %04d  %s"), *Callsign.ToString(), OutSquawk, L);
+		PushNotification(NMsg, FColor::Green, 4.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, NMsg);
+		}
 	}
 	return true;
 }
@@ -1000,9 +1794,10 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 	}
 	if (TimeToIntercept <= 0.f)
 	{
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red,
-			FString::Printf(TEXT("INTERCEPT %s -> %s: no solution (too slow)"),
-				*FighterCallsign.ToString(), *TargetCallsign.ToString())); }
+		const FString NMsg = FString::Printf(TEXT("INTERCEPT %s -> %s: no solution (too slow)"),
+			*FighterCallsign.ToString(), *TargetCallsign.ToString());
+		PushNotification(NMsg, FColor::Red, 4.f);
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red, NMsg); }
 		return false;
 	}
 
@@ -1026,11 +1821,15 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 	const bool bFirstTime = !ActiveIntercepts.Contains(FighterCallsign);
 	ActiveIntercepts.Add(FighterCallsign, TargetCallsign);
 
-	if (bFirstTime && GEngine)
+	if (bFirstTime)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan,
-			FString::Printf(TEXT("INTERCEPT %s -> %s  vector %03.0f  ETA %.0fs"),
-				*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept));
+		const FString NMsg = FString::Printf(TEXT("INTERCEPT %s -> %s  vector %03.0f  ETA %.0fs"),
+			*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept);
+		PushNotification(NMsg, FColor::Cyan, 5.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, NMsg);
+		}
 	}
 	return true;
 }
@@ -1048,57 +1847,59 @@ void AClearanceSimulationController::BeginCrash(const FAircraftState& InState, c
 	// then acceptance / last words ("tell them I love them"). We fire an
 	// initial line now and schedule a final/acceptance line ~15s real later -
 	// the half-duplex queue handles spacing. Same voice for both so it sounds
-	// like one pilot, not two. - TripleA
+	// like one pilot, not two. Voice tag is chosen on the server then passed
+	// through the multicast so every peer renders the same pilot. - TripleA
 	if (UWorld* W = GetWorld())
 	{
+		static const TCHAR* PanicLines[] = {
+			TEXT("Oh God, oh God, oh God. We're going down. We're losing her. We're losing her."),
+			TEXT("Oh shit, oh shit, oh shit. We're out of control. I can't hold it. I can't hold it."),
+			TEXT("Mayday, mayday, mayday. We're going down. Pull up. Pull up. Oh God."),
+			TEXT("She's not responding. She's not responding. We're going in. We're going in."),
+			TEXT("Climb! Why won't she climb! We're going to die. We're going to die."),
+			TEXT("I have control. I have control. No, I can't. I can't hold her."),
+			TEXT("Terrain. Terrain. Pull up. Pull up. Oh no no no."),
+			TEXT("Captain. Captain. We're going to crash. We're going to crash."),
+		};
+
+		// Lock the voice tag on the server's VoiceOutput; the tag string is the
+		// only thing the multicast needs to keep every peer in sync. - TripleA
+		FString Voice;
 		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
 		{
-			if (!*VoIt) { break; }
-
-			static const TCHAR* PanicLines[] = {
-				TEXT("Oh God, oh God, oh God. We're going down. We're losing her. We're losing her."),
-				TEXT("Oh shit, oh shit, oh shit. We're out of control. I can't hold it. I can't hold it."),
-				TEXT("Mayday, mayday, mayday. We're going down. Pull up. Pull up. Oh God."),
-				TEXT("She's not responding. She's not responding. We're going in. We're going in."),
-				TEXT("Climb! Why won't she climb! We're going to die. We're going to die."),
-				TEXT("I have control. I have control. No, I can't. I can't hold her."),
-				TEXT("Terrain. Terrain. Pull up. Pull up. Oh no no no."),
-				TEXT("Captain. Captain. We're going to crash. We're going to crash."),
-			};
-			// Lock the voice for both lines so it's clearly the same pilot.
-			const FString Voice = VoIt->PickVoiceForCallsign(S.Callsign);
-			const int32 P = FMath::RandRange(0, UE_ARRAY_COUNT(PanicLines) - 1);
-			VoIt->SpeakPanic(S.Callsign, PanicLines[P], Voice);
-
-			// GPWS cockpit alarm runs UNDER the pilot's voice, in parallel - bypasses
-			// the half-duplex queue. Mirrors a real CVR where you hear the airframe
-			// shouting "TERRAIN, PULL UP" while the crew panics. Tracked by callsign
-			// so we can stop it on impact. - TripleA
-			VoIt->PlayGPWS(S.Callsign);
-
-			TWeakObjectPtr<AClearanceVoiceOutput> WeakVO(*VoIt);
-			const FName Cs = S.Callsign;
-			FTimerHandle& Handle = PendingPanicTimers.FindOrAdd(Cs);
-			W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
-				[WeakVO, Cs, Voice]()
-				{
-					if (!WeakVO.IsValid()) { return; }
-					static const TCHAR* FinalLines[] = {
-						TEXT("Goodbye. Goodbye. I love you. I love you all."),
-						TEXT("I love you. Tell my family I love them. Tell them I love them."),
-						TEXT("I'm sorry. I'm sorry. I tried. I tried."),
-						TEXT("Mama. Mama. I'm sorry. I love you, mama."),
-						TEXT("Honey. Honey, I love you. Tell the kids I love them."),
-						TEXT("God forgive me. God forgive us all."),
-						TEXT("It's over. It's over. I love you."),
-						TEXT("Brace. Brace. Brace for impact."),
-					};
-					const int32 Fi = FMath::RandRange(0, UE_ARRAY_COUNT(FinalLines) - 1);
-					WeakVO->SpeakPanic(Cs, FinalLines[Fi], Voice);
-				}), 14.f, false);
-
+			if (*VoIt) { Voice = VoIt->PickVoiceForCallsign(S.Callsign); }
 			break;
 		}
+
+		const int32 P = FMath::RandRange(0, UE_ARRAY_COUNT(PanicLines) - 1);
+		Multicast_PlayTTS(S.Callsign, PanicLines[P], Voice, /*bPanic*/ true);
+
+		// GPWS cockpit alarm runs UNDER the pilot's voice, in parallel - bypasses
+		// the half-duplex queue. Mirrors a real CVR where you hear the airframe
+		// shouting "TERRAIN, PULL UP" while the crew panics. Tracked by callsign
+		// so we can stop it on impact. - TripleA
+		Multicast_PlayCockpitCue(S.Callsign, 1, 0.f);
+
+		const FName Cs = S.Callsign;
+		TWeakObjectPtr<AClearanceSimulationController> WeakSelf(this);
+		FTimerHandle& Handle = PendingPanicTimers.FindOrAdd(Cs);
+		W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
+			[WeakSelf, Cs, Voice]()
+			{
+				if (!WeakSelf.IsValid()) { return; }
+				static const TCHAR* FinalLines[] = {
+					TEXT("Goodbye. Goodbye. I love you. I love you all."),
+					TEXT("I love you. Tell my family I love them. Tell them I love them."),
+					TEXT("I'm sorry. I'm sorry. I tried. I tried."),
+					TEXT("Mama. Mama. I'm sorry. I love you, mama."),
+					TEXT("Honey. Honey, I love you. Tell the kids I love them."),
+					TEXT("God forgive me. God forgive us all."),
+					TEXT("It's over. It's over. I love you."),
+					TEXT("Brace. Brace. Brace for impact."),
+				};
+				const int32 Fi = FMath::RandRange(0, UE_ARRAY_COUNT(FinalLines) - 1);
+				WeakSelf->Multicast_PlayTTS(Cs, FinalLines[Fi], Voice, /*bPanic*/ true);
+			}), 14.f, false);
 	}
 }
 
@@ -1173,11 +1974,8 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 			W->GetTimerManager().ClearTimer(*Pending);
 			PendingPanicTimers.Remove(S.Callsign);
 		}
-		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
-		{
-			if (*VoIt) { VoIt->StopGPWS(S.Callsign); }
-			break;
-		}
+		// Mirror the GPWS start: every peer started it, every peer needs to stop. - TripleA
+		Multicast_PlayCockpitCue(S.Callsign, 2, 0.f);
 	}
 
 	if (Scoring)
@@ -1193,36 +1991,36 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 	Site.SessionSeconds = SessionTime;
 	Site.Callsign = S.Callsign;
 	CrashSites.Add(Site);
-	if (GEngine)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red,
-			FString::Printf(TEXT("*** CRASH *** %s - %s (-%d)"),
-				*S.Callsign.ToString(), *Reason,
-				Scoring ? Scoring->PenaltyAircraftCrashed : 500));
+		const FString NMsg = FString::Printf(TEXT("*** CRASH *** %s - %s (-%d)"),
+			*S.Callsign.ToString(), *Reason,
+			Scoring ? Scoring->PenaltyAircraftCrashed : 500);
+		PushNotification(NMsg, FColor::Red, 30.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red, NMsg);
+		}
 	}
 
 	// Controller's deadpan "Lost contact" on the en_US voice, ~1.5s after impact
-	// so the listener hears the silence first. - TripleA
+	// so the listener hears the silence first. Multicast so every peer hears the
+	// same call instead of only whichever machine the server happens to be. - TripleA
 	if (UWorld* W = GetWorld())
 	{
-		for (TActorIterator<AClearanceVoiceOutput> VoIt(W); VoIt; ++VoIt)
-		{
-			if (!*VoIt) { break; }
-			const FName Cs = S.Callsign;
-			TWeakObjectPtr<AClearanceVoiceOutput> WeakVO(*VoIt);
-			FTimerHandle Handle;
-			W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
-				[WeakVO, Cs]()
+		const FName Cs = S.Callsign;
+		TWeakObjectPtr<AClearanceSimulationController> WeakSelf(this);
+		FTimerHandle Handle;
+		W->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(
+			[WeakSelf, Cs]()
+			{
+				if (WeakSelf.IsValid())
 				{
-					if (WeakVO.IsValid())
-					{
-						WeakVO->Speak(NAME_None,
-							FString::Printf(TEXT("Lost contact, %s"), *Cs.ToString()),
-							TEXT("en-US-EricNeural"));  // deadpan controller voice
-					}
-				}), 1.5f, false);
-			break;
-		}
+					WeakSelf->Multicast_PlayTTS(NAME_None,
+						FString::Printf(TEXT("Lost contact, %s"), *Cs.ToString()),
+						TEXT("en-US-EricNeural"),  // deadpan controller voice
+						/*bPanic*/ false);
+				}
+			}), 1.5f, false);
 	}
 
 	if (AirspaceManager) { AirspaceManager->DeregisterAircraft(S.Callsign); }
@@ -1306,16 +2104,20 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 	// tight angular fan. Random angles around the whole ring put fighters on
 	// opposite sides of the sector - by the time #1 arrives, #2 and #3 are still
 	// crossing the whole map and the engagement breaks down. - TripleA
-	const float R = FMath::Max(10.f, ExitRadiusNm);
+	// Spawn the 3-ship at the sector boundary on the same bearing from origin as
+	// the bandit - the edge closest to the contact, reading as "the alert flight
+	// just crossed into our airspace." Head-on closure with the inbound bandit
+	// closes any meaningful gap at fighter speeds. - TripleA
+	const float SpawnR = FMath::Max(10.f, ExitRadiusNm);
 	const float BanditBearingDeg = FMath::Fmod(
 		FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X, Bandit.Position.Y)) + 360.f, 360.f);
-	const float FanDeg = 8.f; // total angular spread across the 3-ship at the boundary
+	const float FanDeg = 8.f;
 	int32 Launched = 0;
 	for (int32 i = 0; i < 3; ++i)
 	{
 		const float ADeg = FMath::Fmod(BanditBearingDeg + (i - 1) * (FanDeg * 0.5f) + 360.f, 360.f);
 		const float ARad = FMath::DegreesToRadians(ADeg);
-		const FVector Pos(R * FMath::Sin(ARad), R * FMath::Cos(ARad), 0.f);
+		const FVector Pos(SpawnR * FMath::Sin(ARad), SpawnR * FMath::Cos(ARad), 0.f);
 
 		const float Inbound = FMath::RadiansToDegrees(FMath::Atan2(Bandit.Position.X - Pos.X, Bandit.Position.Y - Pos.Y));
 		const float Hdg = FMath::Fmod(Inbound + 360.f, 360.f);
@@ -1324,15 +2126,20 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 		FAircraftState V;
 		V.Callsign         = FName(*FString::Printf(TEXT("VIPER%02d"), Num));
 		V.Position         = Pos;
-		V.Altitude         = Bandit.Altitude; // match co-altitude on arrival so vertical join-up actually fires
+		V.Altitude         = Bandit.Altitude;
 		V.Heading          = Hdg;
-		V.Speed            = 620.f;
+		// Supersonic intercept dash - real alert-flight doctrine. F-22/F-35 dash at
+		// ~M1.3 (~900 kts true) on scramble; F-16 closer to M1.1. The 620 default
+		// was subsonic cruise and made every intercept feel anaemic. - TripleA
+		V.Speed            = 900.f;
+		V.TargetSpeed      = 900.f;
 		V.WakeCategory     = EWakeCategory::Medium;
 		V.FlightPhase      = EFlightPhase::Enroute;
 		V.ThreatClass      = EThreatClass::Friendly;
 		V.SquawkCode       = 2200 + Num;
 		V.bIFFOperational  = true;
 		V.bIsMilitary      = true;
+		V.bUnderGCIControl = true; // skip the civilian safety net for the formation + the engagement
 		if (!AirspaceManager->RegisterAircraft(V)) { continue; }
 		if (VectorIntercept(V.Callsign, BanditCallsign)) { ++Launched; }
 	}
@@ -1354,7 +2161,11 @@ void AClearanceSimulationController::SetRadarEnabled(bool bInEnabled)
 void AClearanceSimulationController::StepSimulation(float DeltaTime)
 {
 	// The authoritative tick order from the architecture doc.
-	if (Spawner) { Spawner->TickSpawning(DeltaTime); }            // 1. entry
+	// Skip the spawner entirely while a scenario is running so it physically
+	// cannot inject random traffic - no flag-juggling, no races. Resume the
+	// instant the scenario stops. - TripleA
+	const bool bScenarioRunning = ScenarioRunner && ScenarioRunner->IsRunning();
+	if (Spawner && !bScenarioRunning) { Spawner->TickSpawning(DeltaTime); } // 1. entry
 
 	for (const TPair<FName, TObjectPtr<UClearanceAircraftBehaviour>>& Pair : BehaviourMap)
 	{
@@ -1363,9 +2174,27 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 
 	if (ConflictDetector) { ConflictDetector->DetectConflicts(); } // 5. monitor (6-8 fire via delegates)
 
+	// 5b. Stamp the highest current alert level onto each aircraft's state so
+	// the replication stream carries it down to clients. They have no detector
+	// of their own and were drawing every aircraft in safe-green. - TripleA
+	if (AirspaceManager && ConflictDetector)
+	{
+		for (const FAircraftState& A : AirspaceManager->GetAllAircraftStates())
+		{
+			const EAlertLevel L = ConflictDetector->GetAlertLevelFor(A.Callsign);
+			if (A.CurrentAlertLevel != L)
+			{
+				FAircraftState Updated = A;
+				Updated.CurrentAlertLevel = L;
+				AirspaceManager->RequestStateUpdate(Updated);
+			}
+		}
+	}
+
 	TickGCIIntercepts(DeltaTime);                                  // join-up + escort
+	TickBanditEW(DeltaTime);                                       // hostiles react to closing interceptors
 	TickCrashingAircraft(DeltaTime);                               // drop falling aircraft to the ground
-	CheckExits();                                                  // landings / departures / strays
+	CheckExits();                                                  // landings / handoffs / strays
 
 	UpdateVisuals();
 	DrawDebugView();
@@ -1563,6 +2392,29 @@ void AClearanceSimulationController::DrawDebugView()
 		return;
 	}
 
+	// The instructor / client-peer window doesn't want world-space DrawDebug
+	// primitives bleeding through its UMG scope. Skip the whole pass on any
+	// non-authority world. The operator (listen-server / authority) window
+	// still gets the full debug layer for its free-cam view.
+	//
+	// Note: SceneCaptureComponent2D doesn't render DrawDebugLine primitives by
+	// default (LineBatcher isn't in the capture render path), so ungating this
+	// gate does not feed debug into the instructor PIP - it just re-introduces
+	// the bleed-through. Doing it "properly" means replacing the DrawDebug
+	// calls with billboard / mesh actors that render via the normal scene
+	// pass; that's a separate task. - TripleA
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// Wipe persistent debug strings + lines at the top of every frame. UE's
+	// DrawDebugString stores text on the PlayerController's HUD via AddDebugText
+	// with broken duration semantics. FlushDebugStrings iterates PCs and calls
+	// RemoveAllDebugStrings on each HUD - that's the supported clear path. - TripleA
+	FlushDebugStrings(World);
+	FlushPersistentDebugLines(World);
+
 	const FVector Origin = GetActorLocation();
 	const float S = WorldUnitsPerNm;
 
@@ -1577,7 +2429,7 @@ void AClearanceSimulationController::DrawDebugView()
 		DrawDebugCircle(World, CrW, 0.5f * S, 32, FColor(200, 30, 30), false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
 		DrawDebugCircle(World, CrW, 0.25f * S, 24, FColor(120, 20, 20), false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
 		DrawDebugString(World, CrW + FVector(0, 0, 0.8f * S),
-			FString::Printf(TEXT("WRECK %s"), *Cr.Callsign.ToString()), nullptr, FColor(220, 60, 60), 0.f, true, 1.0f);
+			FString::Printf(TEXT("WRECK %s"), *Cr.Callsign.ToString()), nullptr, FColor(220, 60, 60), 0.05f, true, 1.0f);
 	}
 
 	// Protected violation zones - pulsing red circles on the ground. Stand out
@@ -1595,7 +2447,7 @@ void AClearanceSimulationController::DrawDebugView()
 			const FVector C(ZIt->GetActorLocation().X, ZIt->GetActorLocation().Y, GroundWorldZ);
 			DrawDebugCircle(World, C, ZIt->RadiusNm * S, 48, ZoneCol, false, -1.f, 0, 120.f, FVector(1,0,0), FVector(0,1,0), false);
 			DrawDebugString(World, C + FVector(0, 0, 1.5f * S),
-				FString::Printf(TEXT("[%s]"), *ZIt->ZoneName.ToString()), nullptr, ZoneCol, 0.f, true, 1.3f);
+				FString::Printf(TEXT("[%s]"), *ZIt->ZoneName.ToString()), nullptr, ZoneCol, 0.05f, true, 1.3f);
 		}
 	}
 
@@ -1611,7 +2463,7 @@ void AClearanceSimulationController::DrawDebugView()
 			DrawDebugCircle(World, C, AIt->RadiusNm * S, 48, AreaCol, false, -1.f, 0, 80.f, FVector(1,0,0), FVector(0,1,0), false);
 			DrawDebugCircle(World, C, AIt->RadiusNm * S * 0.95f, 48, AreaCol, false, -1.f, 0, 40.f, FVector(1,0,0), FVector(0,1,0), false);
 			DrawDebugString(World, C + FVector(0, 0, 1.2f * S),
-				FString::Printf(TEXT("[%s]"), *AIt->AreaName.ToString()), nullptr, AreaLabel, 0.f, true, 1.2f);
+				FString::Printf(TEXT("[%s]"), *AIt->AreaName.ToString()), nullptr, AreaLabel, 0.05f, true, 1.2f);
 		}
 	}
 
@@ -1625,7 +2477,7 @@ void AClearanceSimulationController::DrawDebugView()
 		const float Rad = SIt->Radar->RangeNm * S;
 		DrawDebugCircle(World, C, Rad, 64, SIt->CoverageColour, false, -1.f, 0, 60.f, FVector(1,0,0), FVector(0,1,0), false);
 		DrawDebugString(World, C + FVector(0, 0, 1.f * S),
-			FString::Printf(TEXT("RDR %s"), *SIt->SiteName.ToString()), nullptr, SIt->CoverageColour, 0.f, true, 1.1f);
+			FString::Printf(TEXT("RDR %s"), *SIt->SiteName.ToString()), nullptr, SIt->CoverageColour, 0.05f, true, 1.1f);
 	}
 
 	// Compass rose: a tick + heading number every 30deg around the boundary, cardinals
@@ -1647,11 +2499,24 @@ void AClearanceSimulationController::DrawDebugView()
 		case 270: Label = TEXT("W 270"); break;
 		default:  Label = FString::Printf(TEXT("%03d"), Deg); break;
 		}
-		DrawDebugString(World, Edge + FVector(0, 0, 2.f * S), Label, nullptr, FColor::Cyan, 0.f, true, 1.3f);
+		DrawDebugString(World, Edge + FVector(0, 0, 2.f * S), Label, nullptr, FColor::Cyan, 0.05f, true, 1.3f);
 	}
 
 	const TArray<FAircraftState> States = AirspaceManager->GetAllAircraftStates();
 	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+
+	// One-off draw-pass diagnostic so I can confirm both server and client worlds
+	// are reaching DrawDebugView. Distinct keys per role so the calls don't
+	// overwrite each other in the shared GEngine queue. - TripleA
+	{
+		FString AllCallsigns;
+		for (const FAircraftState& A : States) { AllCallsigns += FString::Printf(TEXT(" %s"), *A.Callsign.ToString()); }
+		const FString DiagLine = FString::Printf(TEXT("[Draw %s] States.Num=%d %s"),
+			HasAuthority() ? TEXT("SRV") : TEXT("CLI"),
+			AirspaceManager ? AirspaceManager->GetAircraftCount() : -1,
+			*AllCallsigns);
+		CurrentDiagLine = DiagLine;
+	}
 
 	// Approach corridor + glidepath for EVERY runway threshold the manager knows
 	// about, not just the wind-active one. The active runway draws white; the others
@@ -1749,7 +2614,7 @@ void AClearanceSimulationController::DrawDebugView()
 				const float TickHalf = FMath::Max(WMin * 0.25f, 200.f);
 				DrawDebugLine(World, Pt + RightDir * TickHalf, Pt - RightDir * TickHalf, LineCol, false, -1.f, 0, LineThick);
 				DrawDebugString(World, Pt + FVector(0, 0, 0.6f * S),
-					FString::Printf(TEXT("%.0fnm"), D), nullptr, LineCol, 0.f, true, 0.9f);
+					FString::Printf(TEXT("%.0fnm"), D), nullptr, LineCol, 0.05f, true, 0.9f);
 			}
 		}
 
@@ -1931,13 +2796,13 @@ void AClearanceSimulationController::DrawDebugView()
 		// parallel runways get the L/C/R suffix per ICAO. - TripleA
 		if (const FString* L1 = Labels.Find({ *It, false }))
 		{
-			DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), *L1, nullptr, FColor::Yellow, 0.f, true, 1.2f);
+			DrawDebugString(World, E1 + FVector(0, 0, 1.5f * S), *L1, nullptr, FColor::Yellow, 0.05f, true, 1.2f);
 		}
 		if (It->bAllowReciprocal)
 		{
 			if (const FString* L2 = Labels.Find({ *It, true }))
 			{
-				DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), *L2, nullptr, FColor::Yellow, 0.f, true, 1.2f);
+				DrawDebugString(World, E2 + FVector(0, 0, 1.5f * S), *L2, nullptr, FColor::Yellow, 0.05f, true, 1.2f);
 			}
 		}
 	}
@@ -1971,40 +2836,29 @@ void AClearanceSimulationController::DrawDebugView()
 
 	FString Readout = FString::Printf(TEXT("CLEARANCE  |  t=%.0fs  |  score=%d  |  eff=%.0f%%  |  traffic=%d  |  wind %03.0f/%.0fkt  |  active rwy %03.0f%s\n"),
 		SessionTime,
-		Scoring ? Scoring->GetCurrentScore() : 0,
-		Scoring ? Scoring->GetEfficiency() * 100.f : 100.f,
+		RepScoreTotal,
+		RepScoreEfficiencyPct,
 		States.Num(),
 		Env.WindDirection, Env.WindSpeed, Env.ActiveRunwayHeading,
 		*AARTag);
 
-	// Scoring breakdown, tallied from the session log so we can see what's adding up.
-	if (Scoring)
+	// Scoring breakdown - read from replicated fields (server mirrors Scoring state
+	// + per-incident tallies, client gets it via replication). - TripleA
+	Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +handoff %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
+		RepScoreTotal,
+		RepScoreLandings, RepScoreHandoffs, RepScoreResolved, RepScoreIntercepts, RepScoreEmergencies,
+		RepScoreGoArounds, RepScoreSepLoss, RepScoreWake, RepScoreTCAS, RepScoreStrayed, RepScoreMisID, RepScoreViolated, RepScoreCrashed, RepScoreBusted,
+		RepScoreNextSpawnSec);
+
+	// Read from replicated fields (server mirrors ScenarioRunner state, client gets it via replication). - TripleA
+	if (bRepScenarioRunning)
 	{
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0, nBust = 0;
-		for (const FIncidentRecord& R : Scoring->GetSessionLog())
-		{
-			switch (R.Type)
-			{
-			case EIncidentType::SuccessfulLanding:    ++nLand; break;
-			case EIncidentType::SuccessfulDeparture:  ++nDep;  break;
-			case EIncidentType::SuccessfulResolution: ++nRes;  break;
-			case EIncidentType::SuccessfulIntercept:  ++nInt;  break;
-			case EIncidentType::GoAroundTriggered:    ++nGA;   break;
-			case EIncidentType::SeparationLoss:       ++nSep;  break;
-			case EIncidentType::UnresolvedExit:       ++nExit; break;
-			case EIncidentType::WakeEncounter:        ++nWake; break;
-			case EIncidentType::TCASResolutionAdvisory: ++nTCAS; break;
-			case EIncidentType::MisidentifiedCivilian: ++nMisID; break;
-			case EIncidentType::ViolationZoneBreached: ++nViol; break;
-			case EIncidentType::SuccessfulEmergencyHandling: ++nEmer; break;
-			case EIncidentType::AircraftCrashed:       ++nCrash; break;
-			case EIncidentType::RestrictedAirspaceBust: ++nBust; break;
-			default: break;
-			}
-		}
-		Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
-			Scoring->GetCurrentScore(),
-			nLand, nDep, nRes, nInt, nEmer, nGA, nSep, nWake, nTCAS, nExit, nMisID, nViol, nCrash, nBust, Scoring->GetCurrentSpawnInterval());
+		Readout += FString::Printf(TEXT("SCENARIO  %s  |  T+%02d:%02d  |  events %d/%d  triggers %d/%d\n"),
+			*RepScenarioName,
+			FMath::FloorToInt(RepScenarioElapsedSec / 60.f),
+			FMath::FloorToInt(RepScenarioElapsedSec) % 60,
+			RepScenarioFiredEvents,  RepScenarioTotalEvents,
+			RepScenarioFiredTriggers, RepScenarioTotalTriggers);
 	}
 
 	// Radar runs as a pure sensor logic layer: it ticks, tracks, and produces what the
@@ -2067,7 +2921,11 @@ void AClearanceSimulationController::DrawDebugView()
 			{
 				const FRadarTrack& Trk = Pair.Value;
 				const int32 Seen = Sightings[Pair.Key];
-				const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(Trk.TruthCallsign) : EAlertLevel::None;
+				// Read the alert from the (replicated) state, not the local detector,
+				// so client windows show the same conflict colouring. - TripleA
+				const EAlertLevel Alert = AirspaceManager
+					? AirspaceManager->GetAircraftState(Trk.TruthCallsign).CurrentAlertLevel
+					: EAlertLevel::None;
 				const FString IdLabel = Trk.bHasSecondary ? Trk.DisplayCallsign.ToString() : FString(TEXT("PRI"));
 				Readout += FString::Printf(TEXT("RDR %s [%d/%d]  hdg %3.0f  alt %5.0f  spd %3.0f  conf %.0f%%%s\n"),
 					*IdLabel, Seen, Radars.Num(), Trk.Heading, Trk.Altitude, Trk.Speed,
@@ -2076,29 +2934,60 @@ void AClearanceSimulationController::DrawDebugView()
 		}
 	}
 
+	// Chaff clouds - low-confidence ghost contacts drawn as fading amber rings
+	// where each cloud was dropped. The radar paints them as ghost tracks; the
+	// scope shows the physical cloud here too so the operator can correlate. - TripleA
+	if (AirspaceManager)
+	{
+		const float NowS = World->GetTimeSeconds();
+		for (const FChaffCloud& Cloud : AirspaceManager->GetActiveChaffClouds())
+		{
+			const float Age = NowS - Cloud.DropSessionTime;
+			const float Frac = FMath::Clamp(Age / FMath::Max(0.1f, Cloud.LifetimeSec), 0.f, 1.f);
+			const FVector ChaffPos(
+				Origin.X + Cloud.PositionNm.X * S,
+				Origin.Y + Cloud.PositionNm.Y * S,
+				GroundWorldZ + AltitudeToWorldZOffset(Cloud.AltitudeFt));
+			const FColor ChaffCol(255, static_cast<uint8>(220 * (1.f - Frac * 0.7f)), 60, 255);
+			DrawDebugCircle(World, ChaffPos, 1200.f - 800.f * Frac, 16, ChaffCol,
+				false, -1.f, 0, 60.f, FVector(1, 0, 0), FVector(0, 1, 0), false);
+			DrawDebugString(World, ChaffPos + FVector(0, 0, 800),
+				TEXT("CHAFF"), nullptr, ChaffCol, 0.05f, true, 0.9f);
+		}
+	}
+
 	{
 		for (const FAircraftState& A : States)
 		{
-			const EAlertLevel Alert = ConflictDetector ? ConflictDetector->GetAlertLevelFor(A.Callsign) : EAlertLevel::None;
+			// Read from state, not the local detector - the field is set by the
+			// server's detector and replicates down. - TripleA
+			const EAlertLevel Alert = A.CurrentAlertLevel;
 			const FColor C = ColourFor(Alert);
 
-			// Spheres are the fallback for any aircraft with no spawned mesh; modelled
-			// aircraft skip them so the model isn't buried in a debug blob.
-			if (!VisualActors.Contains(A.Callsign))
-			{
-				const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + AltitudeToWorldZOffset(A.Altitude));
-				DrawDebugSphere(World, P, 500.f, 10, C, false, -1.f, 0, 40.f);
+			// MIL-STD-2525C tactical symbol drawn for every aircraft regardless
+			// of whether a 3D mesh exists. The symbol carries the threat read
+			// at a glance for the operator's top-down scope; the mesh is for
+			// the "out the tower window" view we'll wire later. - TripleA
+			const FVector P(Origin.X + A.Position.X * S, Origin.Y + A.Position.Y * S, GroundWorldZ + AltitudeToWorldZOffset(A.Altitude));
+			DrawMIL2525CAir(World, P, 1600.f, A.ThreatClass, A.Heading, A.bIsMilitary, Alert);
 
-				const float HeadingRad = FMath::DegreesToRadians(A.Heading);
-				const FVector Dir(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
-				DrawDebugLine(World, P, P + Dir * 2200.f, C, false, -1.f, 0, 60.f);
+			// Jamming indicator - jaggy lightning-bolt mark from the aircraft so
+			// the operator can spot the jammer even when its own track is degraded
+			// in the radar feed. - TripleA
+			if (A.bJammingOn)
+			{
+				const float Wedge = 600.f;
+				DrawDebugLine(World, P + FVector(-Wedge, Wedge, 0), P + FVector(0, Wedge * 0.4f, 0), FColor::Red, false, -1.f, 0, 50.f);
+				DrawDebugLine(World, P + FVector(0, Wedge * 0.4f, 0), P + FVector(-Wedge * 0.3f, -Wedge * 0.3f, 0), FColor::Red, false, -1.f, 0, 50.f);
+				DrawDebugLine(World, P + FVector(-Wedge * 0.3f, -Wedge * 0.3f, 0), P + FVector(Wedge, -Wedge, 0), FColor::Red, false, -1.f, 0, 50.f);
+				DrawDebugString(World, P + FVector(0, 0, 1400),
+					TEXT("JAM"), nullptr, FColor::Red, 0.05f, true, 1.0f);
 			}
 
-			// Float the callsign + current>target heading over each aircraft, so you can
-			// pick one out and see where it's pointing vs where you've sent it. - TripleA
+			// Float the callsign + current>target heading over each aircraft. - TripleA
 			DrawDebugString(World, WorldPositionFor(A) + FVector(0, 0, 1.2f * S),
 				FString::Printf(TEXT("%s  hdg %03.0f>%03.0f"), *A.Callsign.ToString(), A.Heading, A.TargetHeading),
-				nullptr, C, 0.f, true, 1.1f);
+				nullptr, C, 0.05f, true, 1.1f);
 
 			// In GCI mode prefix the line with a NATO-style threat tag so the operator can
 			// see classification at a glance. - TripleA
@@ -2148,10 +3037,10 @@ void AClearanceSimulationController::DrawDebugView()
 		}
 	}
 
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(7, 0.f, FColor::White, Readout);
-	}
+	// Main HUD readout. GEngine queue is shared across PIE windows and renders
+	// inconsistently per viewport; stash on the controller so the HUD can pull
+	// it into the right canvas. - TripleA
+	CurrentReadout = Readout;
 }
 
 void AClearanceSimulationController::CheckExits()
@@ -2167,6 +3056,12 @@ void AClearanceSimulationController::CheckExits()
 	for (const FAircraftState& State : AirspaceManager->GetAllAircraftStates())
 	{
 		const float Dist = FVector2D(State.Position.X, State.Position.Y).Size();
+
+		// Flag entry the first time an aircraft is inside the sector. The exit-as-
+		// stray check below is gated on this so aircraft spawned outside the boundary
+		// (scenario incoming traffic) aren't instant-deregistered before they get to
+		// fly in. - TripleA
+		if (Dist <= ExitRadiusNm) { EverEnteredSector.Add(State.Callsign); }
 
 		// GCI-controlled aircraft leaving: a flight (bandit + 1-3 fighters) shares one
 		// bandit key. Credit Successful Intercept once per bandit and deregister the
@@ -2205,18 +3100,42 @@ void AClearanceSimulationController::CheckExits()
 			if (bAnyJoined && !BanditCs.IsNone() && !InterceptCredited.Contains(BanditCs))
 			{
 				InterceptCredited.Add(BanditCs);
+
+				// EW bonus: if this bandit was actively jamming when we caught
+				// it, the operator held the track through the jam - real skill,
+				// real payoff. - TripleA
+				const FAircraftState BanditAtKill = AirspaceManager->GetAircraftState(BanditCs);
+				const bool bThroughEW = BanditAtKill.bIsValid && BanditAtKill.bJammingOn;
+
 				if (Scoring)
 				{
-					Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None,
-						FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector"), Fighters.Num(), *BanditCs.ToString()));
+					const FString Detail = bThroughEW
+						? FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector (jammer active - EW bonus)"), Fighters.Num(), *BanditCs.ToString())
+						: FString::Printf(TEXT("GCI: %d-ship escort of %s out of sector"), Fighters.Num(), *BanditCs.ToString());
+					Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None, Detail);
+					if (bThroughEW)
+					{
+						// Mirrors a SuccessfulIntercept entry to double the points without
+						// inventing a new incident type. Cheap, accurate to the logic. - TripleA
+						Scoring->LogIncident(EIncidentType::SuccessfulIntercept, BanditCs, NAME_None,
+							FString::Printf(TEXT("EW bonus for %s"), *BanditCs.ToString()));
+					}
 				}
-				if (GEngine)
 				{
-					GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green,
-						FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
-							Fighters.Num(), *BanditCs.ToString(),
-							Scoring ? Scoring->PointsIntercept : 0));
+					const int32 Base  = Scoring ? Scoring->PointsIntercept : 0;
+					const int32 Total = bThroughEW ? Base * 2 : Base;
+					const FString NMsg = bThroughEW
+						? FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out through EW  (+%d)"),
+							Fighters.Num(), *BanditCs.ToString(), Total)
+						: FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
+							Fighters.Num(), *BanditCs.ToString(), Total);
+					PushNotification(NMsg, FColor::Green, 5.f);
+					if (GEngine)
+					{
+						GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green, NMsg);
+					}
 				}
+				BanditEWStates.Remove(BanditCs); // tidy
 				AirspaceManager->DeregisterAircraft(BanditCs);
 				for (const FName& F : Fighters) { AirspaceManager->DeregisterAircraft(F); }
 				for (const FName& F : Fighters) { ActiveIntercepts.Remove(F); JoinedIntercepts.Remove(F); SettledInFormation.Remove(F); }
@@ -2246,16 +3165,25 @@ void AClearanceSimulationController::CheckExits()
 				if (State.ActiveEmergency != EEmergencyType::None)
 				{
 					Scoring->LogIncident(EIncidentType::SuccessfulEmergencyHandling, State.Callsign, NAME_None,
-						FString::Printf(TEXT("Emergency %s safely landed"), *UEnum::GetValueAsString(State.ActiveEmergency)));
+						FString::Printf(TEXT("Emergency %s safely landed"), *UEnum::GetDisplayValueAsText(State.ActiveEmergency).ToString()));
 				}
 			}
 			AirspaceManager->DeregisterAircraft(State.Callsign);
 		}
-		else if (Dist > ExitRadiusNm)
+		else if (Dist > ExitRadiusNm && EverEnteredSector.Contains(State.Callsign))
 		{
-			// Cleared to leave = a clean departure; drifting out otherwise is a miss.
-			// An emergency aircraft drifting out unhandled is a catastrophic loss. - TripleA
+			// Cleared to leave = a clean handoff to the next sector; drifting out otherwise is a miss.
+			// An emergency aircraft drifting out unhandled is a catastrophic loss.
+			// Non-civilian contacts (hostile / unknown / military) exiting are GCI's
+			// problem and don't count as "strayed". Civilians are Neutral per
+			// MIL-STD-2525C affiliation. Only fires if the aircraft was actually
+			// inside at some point - protects scenario incoming traffic from being
+			// insta-killed at spawn. - TripleA
+			const bool bNonCivilian = (State.ThreatClass != EThreatClass::Neutral)
+			                         || State.bIsMilitary || State.bUnderGCIControl;
+
 			EIncidentType Outcome;
+			bool bLogIncident = true;
 			if (State.ActiveEmergency != EEmergencyType::None && State.FlightPhase != EFlightPhase::Exiting)
 			{
 				Outcome = EIncidentType::AircraftCrashed;
@@ -2264,13 +3192,19 @@ void AClearanceSimulationController::CheckExits()
 			{
 				Outcome = (State.ActiveEmergency != EEmergencyType::None)
 					? EIncidentType::SuccessfulEmergencyHandling
-					: EIncidentType::SuccessfulDeparture;
+					: EIncidentType::SuccessfulHandoff;
+			}
+			else if (bNonCivilian)
+			{
+				// GCI contact left the sector under its own steam - no civilian scoring event.
+				bLogIncident = false;
+				Outcome = EIncidentType::UnresolvedExit; // unused
 			}
 			else
 			{
 				Outcome = EIncidentType::UnresolvedExit;
 			}
-			if (Scoring) { Scoring->LogIncident(Outcome, State.Callsign, NAME_None, TEXT("Left sector")); }
+			if (bLogIncident && Scoring) { Scoring->LogIncident(Outcome, State.Callsign, NAME_None, TEXT("Left sector")); }
 			AirspaceManager->DeregisterAircraft(State.Callsign);
 		}
 	}
@@ -2280,12 +3214,15 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 {
 	// Civilian ATC can't command anything under air defence control, and can't
 	// command external (federated) aircraft either - those belong to whichever
-	// peer sim is publishing them. NORDO contacts (IFF off, not declared friendly)
-	// also reject silently - the non-response is the operator's clue. - TripleA
+	// peer sim is publishing them. NORDO contacts (IFF off, not friendly OR
+	// neutral) also reject silently - the non-response is the operator's clue
+	// they're dealing with an unknown / hostile. - TripleA
 	if (AirspaceManager)
 	{
 		const FAircraftState Target = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
-		if (Target.bIsValid && !Target.bIFFOperational && Target.ThreatClass != EThreatClass::Friendly)
+		if (Target.bIsValid && !Target.bIFFOperational
+			&& Target.ThreatClass != EThreatClass::Friendly
+			&& Target.ThreatClass != EThreatClass::Neutral)
 		{
 			if (GEngine)
 			{
@@ -2344,13 +3281,68 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 	if (Recorder)
 	{
 		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("INSTR %s %s %.0f"),
-			*UEnum::GetValueAsString(Instruction.Type), *Instruction.TargetCallsign.ToString(), Instruction.TargetValue));
+			*UEnum::GetDisplayValueAsText(Instruction.Type).ToString(), *Instruction.TargetCallsign.ToString(), Instruction.TargetValue));
 	}
+
+	// Operator-side "no joy" / "track lost" - drops the contact without the
+	// strayed penalty IF EW (jamming or active chaff near the contact) plausibly
+	// caused the loss. Without EW it scores as a normal unresolved-exit so the
+	// operator can't just dismiss difficult contacts for free. - TripleA
+	if (Instruction.Type == EInstructionType::DeclareTrackLost && AirspaceManager)
+	{
+		const FAircraftState S = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
+		if (!S.bIsValid) { return EInstructionResult::Rejected_InvalidCallsign; }
+
+		bool bEWPresent = S.bJammingOn;
+		if (!bEWPresent)
+		{
+			for (const FChaffCloud& C : AirspaceManager->GetActiveChaffClouds())
+			{
+				const float DistNm = FVector::Dist2D(S.Position, C.PositionNm);
+				if (DistNm < 3.f) { bEWPresent = true; break; }
+			}
+		}
+
+		if (Scoring)
+		{
+			if (bEWPresent)
+			{
+				Scoring->LogIncident(EIncidentType::SuccessfulIntercept, Instruction.TargetCallsign, NAME_None,
+					FString::Printf(TEXT("track lost to EW - %s released"), *Instruction.TargetCallsign.ToString()));
+			}
+			else
+			{
+				Scoring->LogIncident(EIncidentType::UnresolvedExit, Instruction.TargetCallsign, NAME_None,
+					FString::Printf(TEXT("track declared lost without EW - %s dropped"), *Instruction.TargetCallsign.ToString()));
+			}
+		}
+
+		PushNotification(
+			bEWPresent
+				? FString::Printf(TEXT("%s released (EW - no penalty)"), *Instruction.TargetCallsign.ToString())
+				: FString::Printf(TEXT("%s dropped (no EW - counted as strayed)"), *Instruction.TargetCallsign.ToString()),
+			bEWPresent ? FColor(80, 200, 255) : FColor(255, 140, 60), 5.f);
+
+		BanditEWStates.Remove(Instruction.TargetCallsign);
+		AirspaceManager->DeregisterAircraft(Instruction.TargetCallsign);
+		return EInstructionResult::Accepted;
+	}
+
 	if (CommsRouter)
 	{
 		return CommsRouter->IssueInstruction(Instruction);
 	}
 	return EInstructionResult::Rejected_InvalidCallsign;
+}
+
+UClearanceSessionRecorder* AClearanceSimulationController::GetRecorder()
+{
+	if (!Recorder)
+	{
+		Recorder = NewObject<UClearanceSessionRecorder>(this);
+		if (Recorder) { Recorder->StartRecording(); }
+	}
+	return Recorder;
 }
 
 void AClearanceSimulationController::StartRecording()
@@ -2392,6 +3384,10 @@ void AClearanceSimulationController::EnterReplay()
 	bReplayMode = true;
 	bReplayPaused = false;
 	ReplayTime = 0.f;
+	// Freeze the recorded duration so the client UI has a stable scrub-bar
+	// maximum. Without this, the client's own recorder keeps capturing past
+	// EnterReplay and the duration value drifts. - TripleA
+	ReplayDuration = Recorder->GetDurationSeconds();
 	// Default replay speed = sim time scale, so the playback runs at the same pace
 	// the user actually saw live (otherwise a 10x sim plays back 10x slower). - TripleA
 	ReplaySpeed = FMath::Max(0.1f, SimulationTimeScale);
@@ -2417,6 +3413,19 @@ void AClearanceSimulationController::ResumeLive()
 	}
 	bReplayMode = false;
 	bReplayPaused = false;
+	// Resume the recording buffer where it left off. Calls the raw recorder
+	// directly so we don't go through the controller's StartRecording()
+	// wrapper, which would ClearRecording() and wipe the pre-replay history.
+	// The next EnterReplay() then sees the original + post-replay portion
+	// concatenated. - TripleA
+	if (Recorder)
+	{
+		// Tag the boundary between segments so the scrub bar can render a
+		// tick where this "Go Live" happened. Stored as seconds-into-the-
+		// recording so it stays valid even after the buffer keeps growing. - TripleA
+		ReplaySegmentSeams.Add(Recorder->GetDurationSeconds());
+		Recorder->StartRecording();
+	}
 	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("AAR: live")); }
 }
 
@@ -2441,6 +3450,189 @@ void AClearanceSimulationController::SetReplayPaused(bool bInPaused)
 void AClearanceSimulationController::SetReplaySpeed(float Multiplier)
 {
 	ReplaySpeed = FMath::Max(0.05f, Multiplier);
+}
+
+// --- Comms transcript ------------------------------------------------------
+
+namespace
+{
+	// Phraseology renderers for the comms transcript. Map each
+	// EInstructionType / value pair onto a short ATC-style line. Not full
+	// ICAO phraseology (e.g. "two seven zero" instead of "270"), but readable
+	// at a glance and matches what the player would actually say. - TripleA
+	FString FormatHeading(int32 Hdg)
+	{
+		return FString::Printf(TEXT("%03d"), ((Hdg % 360) + 360) % 360);
+	}
+
+	FString FormatAltitude(int32 AltFt)
+	{
+		if (AltFt >= 18000)
+		{
+			return FString::Printf(TEXT("FL%03d"), FMath::RoundToInt(AltFt / 100.f));
+		}
+		return FString::Printf(TEXT("%d ft"), AltFt);
+	}
+
+	FString RenderOperatorPhraseology(const FAircraftInstruction& Inst)
+	{
+		const FString Callsign = Inst.TargetCallsign.ToString();
+		switch (Inst.Type)
+		{
+		case EInstructionType::HeadingChange:
+		{
+			const TCHAR* Dir = (Inst.TurnDirection < 0) ? TEXT("left ") : (Inst.TurnDirection > 0) ? TEXT("right ") : TEXT("");
+			return FString::Printf(TEXT("%s, turn %sheading %s"), *Callsign, Dir, *FormatHeading(FMath::RoundToInt(Inst.TargetValue)));
+		}
+		case EInstructionType::AltitudeChange:
+		{
+			const TCHAR* Exp = Inst.bExpedite ? TEXT(", expedite") : TEXT("");
+			return FString::Printf(TEXT("%s, climb / descend %s%s"), *Callsign, *FormatAltitude(FMath::RoundToInt(Inst.TargetValue)), Exp);
+		}
+		case EInstructionType::SpeedChange:
+			return FString::Printf(TEXT("%s, speed %d knots"), *Callsign, FMath::RoundToInt(Inst.TargetValue));
+		case EInstructionType::Hold:
+			return FString::Printf(TEXT("%s, hold present position"), *Callsign);
+		case EInstructionType::ApproachClearance:
+			return FString::Printf(TEXT("%s, cleared ILS approach"), *Callsign);
+		case EInstructionType::TakeoffClearance:
+			return FString::Printf(TEXT("%s, cleared for takeoff"), *Callsign);
+		case EInstructionType::ExitSector:
+			return FString::Printf(TEXT("%s, contact next sector, frequency change approved"), *Callsign);
+		case EInstructionType::DeclareTrackLost:
+			return FString::Printf(TEXT("%s, no joy, breaking off"), *Callsign);
+		default:
+			return Callsign;
+		}
+	}
+
+	FString RenderPilotReadback(const FAircraftInstruction& Inst)
+	{
+		const FString Callsign = Inst.TargetCallsign.ToString();
+		switch (Inst.Type)
+		{
+		case EInstructionType::HeadingChange:
+		{
+			const TCHAR* Dir = (Inst.TurnDirection < 0) ? TEXT("left ") : (Inst.TurnDirection > 0) ? TEXT("right ") : TEXT("");
+			return FString::Printf(TEXT("%sheading %s, %s"), Dir, *FormatHeading(FMath::RoundToInt(Inst.TargetValue)), *Callsign);
+		}
+		case EInstructionType::AltitudeChange:
+		{
+			const TCHAR* Exp = Inst.bExpedite ? TEXT(" expedite") : TEXT("");
+			return FString::Printf(TEXT("%s%s, %s"), *FormatAltitude(FMath::RoundToInt(Inst.TargetValue)), Exp, *Callsign);
+		}
+		case EInstructionType::SpeedChange:
+			return FString::Printf(TEXT("speed %d knots, %s"), FMath::RoundToInt(Inst.TargetValue), *Callsign);
+		case EInstructionType::Hold:
+			return FString::Printf(TEXT("holding present position, %s"), *Callsign);
+		case EInstructionType::ApproachClearance:
+			return FString::Printf(TEXT("cleared ILS approach, %s"), *Callsign);
+		case EInstructionType::TakeoffClearance:
+			return FString::Printf(TEXT("cleared for takeoff, %s"), *Callsign);
+		case EInstructionType::ExitSector:
+			return FString::Printf(TEXT("frequency change approved, %s"), *Callsign);
+		case EInstructionType::DeclareTrackLost:
+			return FString::Printf(TEXT("roger, %s"), *Callsign);
+		default:
+			return Callsign;
+		}
+	}
+
+	FString RenderPilotRefusal(const FAircraftInstruction& Inst, EInstructionResult Result)
+	{
+		const FString Callsign = Inst.TargetCallsign.ToString();
+		switch (Result)
+		{
+		case EInstructionResult::Rejected_PhysicallyImpossible:
+			return FString::Printf(TEXT("unable, %s"), *Callsign);
+		case EInstructionResult::Rejected_ConflictAdvisory:
+			return FString::Printf(TEXT("negative, traffic, %s"), *Callsign);
+		case EInstructionResult::Rejected_AircraftExited:
+			return FString::Printf(TEXT("out of sector, %s"), *Callsign);
+		default:
+			return FString();
+		}
+	}
+}
+
+void AClearanceSimulationController::HandleInstructionResult(FName Callsign, FAircraftInstruction Instruction, EInstructionResult Result)
+{
+	UE_LOG(LogTemp, Warning, TEXT("[Transcript] HandleInstructionResult fired: %s result=%s auth=%d"),
+		*Callsign.ToString(),
+		*UEnum::GetDisplayValueAsText(Result).ToString(),
+		HasAuthority() ? 1 : 0);
+
+	// Operator's outbound transmission - always logged. Operator's voice is the
+	// trainee themselves (typed / spoken into the parser), so it never goes
+	// through Multicast_PlayTTS like the pilot voice does. Has to be logged
+	// here explicitly. - TripleA
+	AppendTranscriptEntry(EClearanceCommsRole::Operator, Callsign, RenderOperatorPhraseology(Instruction));
+
+	// Pilot readbacks / refusals for the Accepted / Rejected_PhysicallyImpossible
+	// / Rejected_ConflictAdvisory / Rejected_AircraftExited cases all run through
+	// the parser's assembled SpeakOut -> Multicast_PlayTTS path, which now
+	// auto-logs to transcript at the source. No per-instruction Pilot log here
+	// (would double-up with the TTS log). - TripleA
+	switch (Result)
+	{
+	case EInstructionResult::Rejected_NoResponse:
+		// Deliberate silence - NORDO contact. No TTS, no parser readback, so log
+		// a System line so the trainee can see they got nothing back. - TripleA
+		AppendTranscriptEntry(EClearanceCommsRole::System, Callsign, FString::Printf(TEXT("[no response from %s]"), *Callsign.ToString()));
+		break;
+	case EInstructionResult::Rejected_InvalidCallsign:
+		AppendTranscriptEntry(EClearanceCommsRole::System, Callsign, FString::Printf(TEXT("Unknown callsign %s"), *Callsign.ToString()));
+		break;
+	default:
+		break;
+	}
+}
+
+void AClearanceSimulationController::LogTranscriptSystem(FName Callsign, const FString& Text)
+{
+	AppendTranscriptEntry(EClearanceCommsRole::System, Callsign, Text);
+}
+
+void AClearanceSimulationController::LogTranscriptLine(EClearanceCommsRole InRole, FName Callsign, const FString& Text)
+{
+	AppendTranscriptEntry(InRole, Callsign, Text);
+}
+
+void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole InRole, FName Callsign, const FString& Text)
+{
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transcript] Append SKIPPED - not authority. Role=%d cs=%s text=%s"),
+			static_cast<int32>(InRole), *Callsign.ToString(), *Text);
+		return;
+	}
+	if (Text.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transcript] Append SKIPPED - empty text. Role=%d cs=%s"),
+			static_cast<int32>(InRole), *Callsign.ToString());
+		return;
+	}
+	UE_LOG(LogTemp, Display, TEXT("[Transcript] Appending: [%s] cs=%s text='%s' (total now %d)"),
+		InRole == EClearanceCommsRole::Operator ? TEXT("OP") : (InRole == EClearanceCommsRole::Pilot ? TEXT("PILOT") : TEXT("SYS")),
+		*Callsign.ToString(), *Text, Transcript.Num() + 1);
+
+	const FString SpeakerLabel = (InRole == EClearanceCommsRole::Operator) ? FString(TEXT("ATC"))
+	                          : (InRole == EClearanceCommsRole::Pilot)    ? Callsign.ToString()
+	                          :                                             FString(TEXT("SYS"));
+	FCommsTranscriptEntry Entry;
+	Entry.TimeSec = SessionTime;
+	Entry.Role = InRole;
+	Entry.Callsign = Callsign;
+	Entry.Speaker = SpeakerLabel;
+	Entry.Text = Text;
+	Transcript.Add(MoveTemp(Entry));
+	// Cap the replicated buffer to the last 500 entries - keeps net cost
+	// bounded and the panel's scroll list only renders the tail. - TripleA
+	constexpr int32 MaxTranscript = 500;
+	if (Transcript.Num() > MaxTranscript)
+	{
+		Transcript.RemoveAt(0, Transcript.Num() - MaxTranscript);
+	}
 }
 
 bool AClearanceSimulationController::StartDIS(const FString& Host, int32 Port)
@@ -2532,6 +3724,7 @@ void AClearanceSimulationController::SpawnPresetCameras()
 
 	// FOLLOW: position updated per-tick in UpdateFollowCamera.
 	CameraFollow = World->SpawnActor<ACameraActor>(Origin, FRotator::ZeroRotator);
+
 }
 
 void AClearanceSimulationController::SetCameraView(EClearanceCameraView View, FName FollowCallsign)
@@ -2645,6 +3838,1176 @@ void AClearanceSimulationController::CycleFollowAngle()
 	UpdateFollowCamera();
 }
 
+void AClearanceSimulationController::SetInstructorPipView(EClearanceCameraView View)
+{
+	// Default isn't a preset transform - the operator's pawn isn't useful as
+	// a PIP source - so fall back to Tower in that case. - TripleA
+	InstructorPipView = (View == EClearanceCameraView::Default)
+		? EClearanceCameraView::Tower
+		: View;
+}
+
+void AClearanceSimulationController::CycleInstructorPipView()
+{
+	switch (InstructorPipView)
+	{
+	case EClearanceCameraView::Tower:    InstructorPipView = EClearanceCameraView::Follow;   break;
+	case EClearanceCameraView::Follow:   InstructorPipView = EClearanceCameraView::Approach; break;
+	case EClearanceCameraView::Approach: InstructorPipView = EClearanceCameraView::Overview; break;
+	case EClearanceCameraView::Overview: InstructorPipView = EClearanceCameraView::Tower;    break;
+	default:                              InstructorPipView = EClearanceCameraView::Tower;    break;
+	}
+}
+
+void AClearanceSimulationController::SetInstructorPipEnabled(bool bEnabled)
+{
+	bInstructorPipEnabled = bEnabled;
+	// Reset the throttle so the first frame after re-enable captures immediately
+	// instead of waiting up to a full interval. - TripleA
+	InstructorPipCaptureAccum = 1.f / FMath::Max(1.f, InstructorPipCaptureRateHz);
+}
+
+void AClearanceSimulationController::SetInstructorPipFollowCallsign(FName Callsign)
+{
+	InstructorPipFollowCallsign = Callsign;
+}
+
+void AClearanceSimulationController::ApplyTowerYawDelta(float DeltaDeg)
+{
+	InstructorTowerYawDeg = FMath::Fmod(InstructorTowerYawDeg + DeltaDeg, 360.f);
+	if (InstructorTowerYawDeg < 0.f) { InstructorTowerYawDeg += 360.f; }
+}
+
+void AClearanceSimulationController::AddOverviewPan(FVector2D PanDeltaUv)
+{
+	// Convert normalized image-space delta into world units based on the
+	// area currently visible at the active zoom level. 1:1 drag means
+	// when the cursor moves N% of the image, the camera shifts N% of the
+	// visible ground. - TripleA
+	const float DefaultAlt = ExitRadiusNm * WorldUnitsPerNm * 1.45f;
+	const float CurrentAlt = DefaultAlt / FMath::Max(0.001f, InstructorOverviewZoomLevel);
+	const float HalfFOVRad = FMath::DegreesToRadians(45.f); // overview FOV is fixed at 90
+	const float VisibleRadius = CurrentAlt * FMath::Tan(HalfFOVRad);
+
+	InstructorOverviewPanOffsetUnits.X += PanDeltaUv.X * (VisibleRadius * 2.f);
+	InstructorOverviewPanOffsetUnits.Y += PanDeltaUv.Y * (VisibleRadius * 2.f);
+
+	// Pan extent scales with zoom: zero at zoom 1 (sector already fits) and
+	// grows toward the full sector radius as the user zooms in, so they
+	// can still reach the corners + edges of the sector at high zoom
+	// instead of being trapped near the centre. - TripleA
+	const float SectorRadius = ExitRadiusNm * WorldUnitsPerNm;
+	const float MaxOffset = SectorRadius * FMath::Max(0.f, 1.f - 1.f / FMath::Max(0.001f, InstructorOverviewZoomLevel));
+	InstructorOverviewPanOffsetUnits.X = FMath::Clamp(InstructorOverviewPanOffsetUnits.X, -MaxOffset, MaxOffset);
+	InstructorOverviewPanOffsetUnits.Y = FMath::Clamp(InstructorOverviewPanOffsetUnits.Y, -MaxOffset, MaxOffset);
+}
+
+void AClearanceSimulationController::AddOverviewZoom(float ZoomDelta)
+{
+	// Min = 1.0 so the camera can never zoom out further than the default
+	// sector-fits-the-frame altitude. Zooming further out just shows empty
+	// terrain past ExitRadiusNm with no useful info. - TripleA
+	InstructorOverviewZoomLevel = FMath::Clamp(InstructorOverviewZoomLevel + ZoomDelta, 1.0f, 4.0f);
+
+	// Re-clamp the pan offset to the new zoom's allowed extent so zooming
+	// back out drags the camera toward centre instead of holding a corner
+	// that's no longer reachable. - TripleA
+	const float SectorRadius = ExitRadiusNm * WorldUnitsPerNm;
+	const float MaxOffset = SectorRadius * FMath::Max(0.f, 1.f - 1.f / FMath::Max(0.001f, InstructorOverviewZoomLevel));
+	InstructorOverviewPanOffsetUnits.X = FMath::Clamp(InstructorOverviewPanOffsetUnits.X, -MaxOffset, MaxOffset);
+	InstructorOverviewPanOffsetUnits.Y = FMath::Clamp(InstructorOverviewPanOffsetUnits.Y, -MaxOffset, MaxOffset);
+}
+
+void AClearanceSimulationController::ResetOverviewView()
+{
+	InstructorOverviewPanOffsetUnits = FVector2D::ZeroVector;
+	InstructorOverviewZoomLevel = 1.f;
+}
+
+TArray<FString> AClearanceSimulationController::GetApproachRunwayLabels() const
+{
+	TArray<FString> Out;
+	if (!AirspaceManager) { return Out; }
+	const TArray<FRunwayInfo>& All = AirspaceManager->GetAllRunways();
+
+	// Bucket the runways by base designator (heading rounded to nearest 10),
+	// then for each group with siblings, project the threshold onto the
+	// "right" vector relative to landing direction and tag L / R / C from
+	// rightmost to leftmost. Single-runway designators get no suffix. - TripleA
+	const int32 N = All.Num();
+	TArray<int32> Designator;
+	Designator.SetNum(N);
+	for (int32 i = 0; i < N; ++i)
+	{
+		int32 D = FMath::RoundToInt(All[i].HeadingDeg / 10.f);
+		if (D <= 0) { D = 36; }
+		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
+		Designator[i] = D;
+	}
+
+	for (int32 i = 0; i < N; ++i)
+	{
+		const FRunwayInfo& Me = All[i];
+		const int32 MyDes = Designator[i];
+
+		TArray<int32> Group;
+		for (int32 j = 0; j < N; ++j)
+		{
+			if (Designator[j] == MyDes) { Group.Add(j); }
+		}
+
+		FString Suffix;
+		if (Group.Num() > 1)
+		{
+			// Right vector when facing the landing direction.
+			const float Rad = FMath::DegreesToRadians(Me.HeadingDeg);
+			const FVector2D RightDir(FMath::Cos(Rad), -FMath::Sin(Rad));
+			const float MyProj = FVector2D::DotProduct(Me.ThresholdNm, RightDir);
+			int32 MoreRight = 0, MoreLeft = 0;
+			for (int32 j : Group)
+			{
+				if (j == i) { continue; }
+				const float P = FVector2D::DotProduct(All[j].ThresholdNm, RightDir);
+				if (P > MyProj) { ++MoreRight; }
+				if (P < MyProj) { ++MoreLeft; }
+			}
+			if (Group.Num() == 2)
+			{
+				Suffix = (MoreRight == 0) ? TEXT("R") : TEXT("L");
+			}
+			else
+			{
+				if (MoreLeft == 0)       { Suffix = TEXT("L"); }
+				else if (MoreRight == 0) { Suffix = TEXT("R"); }
+				else                     { Suffix = TEXT("C"); }
+			}
+		}
+
+		Out.Add(FString::Printf(TEXT("RWY %02d%s"), MyDes, *Suffix));
+	}
+	return Out;
+}
+
+void AClearanceSimulationController::SetInstructorPipApproachRunway(int32 Index)
+{
+	if (!AirspaceManager) { return; }
+	const int32 N = AirspaceManager->GetAllRunways().Num();
+	if (N <= 0) { return; }
+	InstructorApproachRunwayIndex = FMath::Clamp(Index, 0, N - 1);
+	InstructorPipView = EClearanceCameraView::Approach;
+	UE_LOG(LogTemp, Warning, TEXT("[PIP] SetApproachRunway: this=%p auth=%d storedIdx=%d totalRunways=%d"),
+		this, HasAuthority() ? 1 : 0, InstructorApproachRunwayIndex, N);
+}
+
+void AClearanceSimulationController::PickApproachRunwayByLabel(const FString& Label)
+{
+	const TArray<FString> Labels = GetApproachRunwayLabels();
+	const int32 Idx = Labels.IndexOfByPredicate([&Label](const FString& S) { return S == Label; });
+	UE_LOG(LogTemp, Warning, TEXT("[PIP] PickByLabel: requested='%s' available=[%s] foundIdx=%d"),
+		*Label, *FString::Join(Labels, TEXT(", ")), Idx);
+	if (Idx == INDEX_NONE) { return; }
+	SetInstructorPipApproachRunway(Idx);
+}
+
+void AClearanceSimulationController::SetInstructorPipFollowAngle(EClearanceFollowAngle Angle)
+{
+	InstructorPipFollowAngle = Angle;
+}
+
+void AClearanceSimulationController::CycleInstructorPipFollowAngleNext()
+{
+	switch (InstructorPipFollowAngle)
+	{
+	case EClearanceFollowAngle::Chase:   InstructorPipFollowAngle = EClearanceFollowAngle::Cockpit; break;
+	case EClearanceFollowAngle::Cockpit: InstructorPipFollowAngle = EClearanceFollowAngle::Side;    break;
+	case EClearanceFollowAngle::Side:    InstructorPipFollowAngle = EClearanceFollowAngle::Top;     break;
+	case EClearanceFollowAngle::Top:     InstructorPipFollowAngle = EClearanceFollowAngle::Chase;   break;
+	}
+}
+
+void AClearanceSimulationController::CycleInstructorPipFollowAnglePrev()
+{
+	switch (InstructorPipFollowAngle)
+	{
+	case EClearanceFollowAngle::Chase:   InstructorPipFollowAngle = EClearanceFollowAngle::Top;     break;
+	case EClearanceFollowAngle::Top:     InstructorPipFollowAngle = EClearanceFollowAngle::Side;    break;
+	case EClearanceFollowAngle::Side:    InstructorPipFollowAngle = EClearanceFollowAngle::Cockpit; break;
+	case EClearanceFollowAngle::Cockpit: InstructorPipFollowAngle = EClearanceFollowAngle::Chase;   break;
+	}
+}
+
+void AClearanceSimulationController::SetOperatorViewRotation(FRotator NewRot)
+{
+	OperatorViewRotation = NewRot;
+}
+
+void AClearanceSimulationController::SetOperatorViewLocation(FVector NewLoc)
+{
+	OperatorViewLocation = NewLoc;
+}
+
+TArray<FInstructorCameraLabel> AClearanceSimulationController::GetCameraLabels() const
+{
+	TArray<FInstructorCameraLabel> Out;
+	if (!AirspaceManager || !InstructorPipCapture || !InstructorPipRT) { return Out; }
+
+	const FVector ViewLocation = InstructorPipCapture->GetComponentLocation();
+	const FRotator ViewRotation = InstructorPipCapture->GetComponentRotation();
+	const FVector ViewForward = ViewRotation.Vector();
+	const float FOVDegrees = InstructorPipCapture->FOVAngle;
+	const int32 Width = InstructorPipRT->SizeX;
+	const int32 Height = InstructorPipRT->SizeY;
+	if (Width <= 0 || Height <= 0) { return Out; }
+
+	// FLookFromMatrix needs an up vector that isn't parallel to forward, or
+	// the X-axis derivation (Up x Forward) is zero and the matrix breaks.
+	// Top-down chase view has forward = (0,0,-1) which is parallel to
+	// world up - that produced wrong labels for every aircraft in the Top
+	// sub-angle. Using the camera's OWN local up axis (which is the
+	// rotation applied to +Z) is guaranteed perpendicular to its forward
+	// for any valid rotation, including straight down. - TripleA
+	const FVector ViewUp = ViewRotation.RotateVector(FVector::UpVector);
+	const FMatrix ViewMatrix = FLookFromMatrix(ViewLocation, ViewForward, ViewUp);
+
+	const float HalfFOVRad = FMath::DegreesToRadians(FOVDegrees * 0.5f);
+	const FMatrix ProjMatrix = FPerspectiveMatrix(
+		HalfFOVRad,
+		static_cast<float>(Width),
+		static_cast<float>(Height),
+		GNearClippingPlane);
+
+	const FMatrix ViewProj = ViewMatrix * ProjMatrix;
+
+	for (const FAircraftState& State : AirspaceManager->GetAllAircraftStates())
+	{
+		if (!State.bIsValid) { continue; }
+		const FVector WorldPos = WorldPositionFor(State);
+
+		// Skip behind camera via dot product against forward (faster than
+		// trusting Clip.W which can be unreliable for near-parallel cases). - TripleA
+		if (FVector::DotProduct(WorldPos - ViewLocation, ViewForward) <= 0.f) { continue; }
+
+		const FPlane Clip = ViewProj.TransformFVector4(FVector4(WorldPos, 1.f));
+		if (Clip.W <= KINDA_SMALL_NUMBER) { continue; }
+
+		const float NDC_X = Clip.X / Clip.W;
+		const float NDC_Y = Clip.Y / Clip.W;
+		const float UV_X = (NDC_X + 1.f) * 0.5f;
+		// Flip Y so 0 = top edge (UMG convention). - TripleA
+		const float UV_Y = 1.f - (NDC_Y + 1.f) * 0.5f;
+
+		FInstructorCameraLabel Label;
+		Label.Callsign = State.Callsign;
+		Label.ScreenUV = FVector2D(UV_X, UV_Y);
+		Label.ThreatClass = State.TrueAffiliation;
+		Label.FlightLevel = FMath::RoundToInt(State.Altitude / 100.f);
+		// Heading wrapped to 0..360 and rounded; speed rounded to whole kt
+		// for a clean readout. - TripleA
+		const float HdgWrapped = FMath::Fmod(FMath::Fmod(State.Heading, 360.f) + 360.f, 360.f);
+		Label.HeadingDeg = FMath::RoundToInt(HdgWrapped);
+		Label.SpeedKts = FMath::RoundToInt(State.Speed);
+		Out.Add(Label);
+	}
+
+	return Out;
+}
+
+TArray<FInstructorCameraLine> AClearanceSimulationController::GetCameraOverlayLines() const
+{
+	TArray<FInstructorCameraLine> Out;
+	if (!AirspaceManager || !InstructorPipCapture || !InstructorPipRT) { return Out; }
+
+	const FVector ViewLocation = InstructorPipCapture->GetComponentLocation();
+	const FRotator ViewRotation = InstructorPipCapture->GetComponentRotation();
+	const FVector ViewForward = ViewRotation.Vector();
+	const FVector ViewUp = ViewRotation.RotateVector(FVector::UpVector);
+	const float FOVDegrees = InstructorPipCapture->FOVAngle;
+	const int32 Width = InstructorPipRT->SizeX;
+	const int32 Height = InstructorPipRT->SizeY;
+	if (Width <= 0 || Height <= 0) { return Out; }
+
+	const FMatrix ViewMatrix = FLookFromMatrix(ViewLocation, ViewForward, ViewUp);
+	const float HalfFOVRad = FMath::DegreesToRadians(FOVDegrees * 0.5f);
+	const FMatrix ProjMatrix = FPerspectiveMatrix(HalfFOVRad,
+		static_cast<float>(Width), static_cast<float>(Height), GNearClippingPlane);
+	const FMatrix ViewProj = ViewMatrix * ProjMatrix;
+
+	// Anything closer than this along the camera forward axis is treated as
+	// behind the near plane. Bigger than the actual GNearClippingPlane to
+	// keep the W division well-conditioned (a point that's technically in
+	// front but only by a few cm projects to ridiculous UVs). - TripleA
+	constexpr float NearClipDist = 1000.f; // 10 m
+
+	auto ProjectToUV = [&](const FVector& WorldPos, FVector2D& OutUV) -> bool
+	{
+		if (FVector::DotProduct(WorldPos - ViewLocation, ViewForward) < NearClipDist) { return false; }
+		const FPlane Clip = ViewProj.TransformFVector4(FVector4(WorldPos, 1.f));
+		if (Clip.W <= KINDA_SMALL_NUMBER) { return false; }
+		OutUV.X = (Clip.X / Clip.W + 1.f) * 0.5f;
+		OutUV.Y = 1.f - (Clip.Y / Clip.W + 1.f) * 0.5f;
+		return true;
+	};
+
+	// Liang-Barsky line clip slightly inside [0, 1] - a 1.5% inset on each
+	// side absorbs line thickness (a 3 px line at the very edge would
+	// otherwise extend ~1.5 px past the image boundary because Slate
+	// strokes are centred on the endpoint). Returns false if the segment
+	// misses the image entirely. - TripleA
+	auto ClipUV = [](FVector2D& P1, FVector2D& P2) -> bool
+	{
+		constexpr float Inset = 0.015f;
+		constexpr float Xmin = Inset, Xmax = 1.f - Inset;
+		constexpr float Ymin = Inset, Ymax = 1.f - Inset;
+
+		const float Dx = P2.X - P1.X;
+		const float Dy = P2.Y - P1.Y;
+
+		float Tin = 0.f, Tout = 1.f;
+		const float P[4] = {-Dx, Dx, -Dy, Dy};
+		const float Q[4] = {P1.X - Xmin, Xmax - P1.X, P1.Y - Ymin, Ymax - P1.Y};
+
+		for (int32 i = 0; i < 4; ++i)
+		{
+			if (FMath::Abs(P[i]) < KINDA_SMALL_NUMBER)
+			{
+				if (Q[i] < 0.f) { return false; }
+				continue;
+			}
+			const float U = Q[i] / P[i];
+			if (P[i] < 0.f) { Tin = FMath::Max(Tin, U); }
+			else { Tout = FMath::Min(Tout, U); }
+		}
+
+		if (Tin > Tout) { return false; }
+
+		const FVector2D Original = P1;
+		P1 = Original + FVector2D(Tin * Dx, Tin * Dy);
+		P2 = Original + FVector2D(Tout * Dx, Tout * Dy);
+		return true;
+	};
+
+	// Project a line segment. World-space clip against the near plane so
+	// both endpoints sit at >= NearClipDist before they hit ProjectToUV,
+	// then UV-space Liang-Barsky clip so the segment is bounded to the
+	// visible image (plus a one-viewport pad) - lines crossing the camera
+	// view are kept regardless of how far their far end projects to. - TripleA
+	auto AddLine = [&](FVector A, FVector B, const FLinearColor& Color, float Thickness)
+	{
+		const float DotA = FVector::DotProduct(A - ViewLocation, ViewForward);
+		const float DotB = FVector::DotProduct(B - ViewLocation, ViewForward);
+		if (DotA < NearClipDist && DotB < NearClipDist) { return; }
+
+		if (DotA < NearClipDist)
+		{
+			const float T = (NearClipDist - DotA) / (DotB - DotA);
+			A = A + FMath::Clamp(T, 0.f, 1.f) * (B - A);
+		}
+		else if (DotB < NearClipDist)
+		{
+			const float T = (NearClipDist - DotB) / (DotA - DotB);
+			B = B + FMath::Clamp(T, 0.f, 1.f) * (A - B);
+		}
+
+		FVector2D StartUV, EndUV;
+		if (!ProjectToUV(A, StartUV) || !ProjectToUV(B, EndUV)) { return; }
+		if (!ClipUV(StartUV, EndUV)) { return; }
+
+		FInstructorCameraLine Line;
+		Line.StartUV = StartUV;
+		Line.EndUV = EndUV;
+		Line.Color = Color;
+		Line.Thickness = Thickness;
+		Out.Add(Line);
+	};
+
+	const FVector Origin = GetActorLocation();
+	const float S = WorldUnitsPerNm;
+
+	// Approach corridor extends from threshold all the way out to the
+	// top-of-descent. 100 nm on a 3° slope reaches ~31,800 ft - matches
+	// where arrival traffic spawns, so the glide line actually meets the
+	// sky instead of dying just above the runway. - TripleA
+	constexpr float ApproachLengthNm = 100.f;
+
+	// Runway outline pulses too - gentle, narrow alpha range so it always
+	// reads as the primary structural element. Corridor + glide-slope use
+	// a wider/deeper pulse so they feel like secondary guidance overlays.
+	// Same sine source so they breathe in sync. Tick marks + dashed
+	// centerline stay steady - they're reference paint, not guides. - TripleA
+	const float NowSec = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f);
+	const float Pulse01 = 0.5f + 0.5f * FMath::Sin(NowSec * 2.f * PI * 0.7f); // 0..1 @ 0.7 Hz
+	const float RunwayAlpha   = 0.65f + 0.30f * Pulse01;   // 0.65–0.95
+	const float ApproachAlpha = 0.20f + 0.40f * Pulse01;   // 0.20–0.60
+
+	const FLinearColor RunwayColor(0.16f, 0.86f, 1.f, RunwayAlpha);
+	const FLinearColor CenterDashColor(1.f, 1.f, 1.f, 0.95f);
+	// Magenta for the descent guides - VFR sectional convention for
+	// controlled airspace, and the complementary contrast against warm
+	// golden-hour skies keeps the lines readable when orange got eaten
+	// by the sunset. - TripleA
+	const FLinearColor ApproachLineColor(1.0f, 0.18f, 0.85f, ApproachAlpha);
+	const FLinearColor ApproachTickColor(1.0f, 0.18f, 0.85f, 0.55f);
+	const FLinearColor GlideLineColor   (0.85f, 0.20f, 1.0f, ApproachAlpha);
+	const FLinearColor GlideTickColor   (0.85f, 0.20f, 1.0f, 0.55f);
+
+	// Suppress on Overview (top-down map - the guides clutter without
+	// adding info) and Chase (riding the aircraft - the line would streak
+	// across the frame). Everything else - Tower, Approach, Operator -
+	// gets the guides. - TripleA
+	const bool bShowApproachGuides =
+		(InstructorPipView != EClearanceCameraView::Overview) &&
+		(InstructorPipView != EClearanceCameraView::Follow);
+
+	// Runway outline rectangle reads as a tactical-map element - useful
+	// from above (Overview, Chase) but in the first-person 3D views
+	// (Tower, Approach, Operator) the asphalt is already obvious from the
+	// mesh and the cyan box looks like a debug overlay. Same logic for
+	// the dashed centreline against the Operator view: the player is
+	// looking at real painted markings, no need to overdraw them. - TripleA
+	const bool bShowRunwayOutline =
+		(InstructorPipView != EClearanceCameraView::Tower) &&
+		(InstructorPipView != EClearanceCameraView::Approach) &&
+		(InstructorPipView != EClearanceCameraView::Operator);
+	const bool bShowRunwayCenterline =
+		(InstructorPipView != EClearanceCameraView::Operator);
+
+	// Wind picks the landing end - only that runway gets the corridor /
+	// glide-slope / fix labels, the reciprocal end stays clean. Updates
+	// live when the instructor changes wind because GetActiveRunway()
+	// is recalculated on each SetWind call. - TripleA
+	const float ActiveRwyHdg = AirspaceManager->GetActiveRunway();
+
+	for (const FRunwayInfo& Rwy : AirspaceManager->GetAllRunways())
+	{
+		const FVector ThrW(Origin.X + Rwy.ThresholdNm.X * S,
+			Origin.Y + Rwy.ThresholdNm.Y * S, GroundWorldZ);
+
+		const float RadHeading = FMath::DegreesToRadians(Rwy.HeadingDeg);
+		const FVector InboundDir(FMath::Sin(RadHeading), FMath::Cos(RadHeading), 0.f);
+		const FVector RightDir(FMath::Cos(RadHeading), -FMath::Sin(RadHeading), 0.f);
+		// Fallbacks if the runway has no mesh bounds yet - rather than draw
+		// a zero-sized rectangle, ship something visible. - TripleA
+		const float RwyLen = (Rwy.LengthUnits > 0.f) ? Rwy.LengthUnits : 30000.f;
+		const float RwyWid = (Rwy.WidthUnits  > 0.f) ? Rwy.WidthUnits  : 4500.f;
+		const float HalfW  = RwyWid * 0.5f;
+
+		// Four corners of the runway rectangle, near edge then far. - TripleA
+		const FVector NL = ThrW - RightDir * HalfW;
+		const FVector NR = ThrW + RightDir * HalfW;
+		const FVector FL = NL + InboundDir * RwyLen;
+		const FVector FR = NR + InboundDir * RwyLen;
+
+		// Depth-aware occlusion only runs on Overview - that's the view
+		// where "see through terrain" actually reads as a bug. Chase wants
+		// the rectangle to act as a persistent HUD element regardless of
+		// the aircraft fuselage / ridges sitting between camera and asphalt
+		// (line-tracing there just makes the outline pop in and out). - TripleA
+		const bool bDepthOcclude = (InstructorPipView == EClearanceCameraView::Overview);
+		auto SegmentVisible = [&](const FVector& A, const FVector& B) -> bool
+		{
+			if (!bDepthOcclude || !GetWorld()) { return true; }
+			const FVector Mid = (A + B) * 0.5f;
+			FHitResult Hit;
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(InstructorRunwayOverlayVis), false);
+			Params.AddIgnoredActor(this);
+			if (!GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, Mid, ECC_Visibility, Params))
+			{
+				return true;
+			}
+			const float DistMid = FVector::Distance(ViewLocation, Mid);
+			const float DistHit = FVector::Distance(ViewLocation, Hit.ImpactPoint);
+			return DistHit >= DistMid - 200.f;
+		};
+		if (bShowRunwayOutline)
+		{
+			if (SegmentVisible(NL, NR)) { AddLine(NL, NR, RunwayColor, 3.f); } // near edge (threshold bar)
+			if (SegmentVisible(FL, FR)) { AddLine(FL, FR, RunwayColor, 3.f); } // far edge
+			if (SegmentVisible(NL, FL)) { AddLine(NL, FL, RunwayColor, 3.f); } // left edge
+			if (SegmentVisible(NR, FR)) { AddLine(NR, FR, RunwayColor, 3.f); } // right edge
+		}
+
+		// Dashed centerline. ICAO Annex 14 spec: 30m stripe + 20m gap. Evenly
+		// re-tile across whatever length the runway actually is so the pattern
+		// always fits, instead of clipping the last stripe mid-paint. - TripleA
+		if (bShowRunwayCenterline)
+		{
+			constexpr float DashLen = 3000.f; // 30 m
+			constexpr float GapLen  = 2000.f; // 20 m
+			const int32 DashCount = FMath::Max(1, FMath::FloorToInt(RwyLen / (DashLen + GapLen)));
+			const float Cycle = RwyLen / static_cast<float>(DashCount);
+			const float DashFrac = DashLen / (DashLen + GapLen);
+			const float DashLenAdj = Cycle * DashFrac;
+			const float Margin = (Cycle - DashLenAdj) * 0.5f; // start the first dash off the threshold by half a gap
+			for (int32 i = 0; i < DashCount; ++i)
+			{
+				const float StartT = Margin + i * Cycle;
+				const float EndT   = StartT + DashLenAdj;
+				AddLine(ThrW + InboundDir * StartT, ThrW + InboundDir * EndT, CenterDashColor, 2.f);
+			}
+		}
+
+		if (!bShowApproachGuides) { continue; }
+		// Skip the reciprocal end - wind says this isn't the landing
+		// direction. Heading-equality tolerance handles the 360<->0 wrap. - TripleA
+		const float HdgDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(Rwy.HeadingDeg, ActiveRwyHdg));
+		if (HdgDelta > 0.5f) { continue; }
+
+		const FVector AppEnd = ThrW - InboundDir * (ApproachLengthNm * S);
+		AddLine(ThrW, AppEnd, ApproachLineColor, 2.f);
+
+		// Range tick marks perpendicular to the corridor at standard ILS
+		// fix distances - 1 / 3 / 5 / 10 nm. Gives the instructor a quick
+		// "how far out is he?" reference without a separate readout. - TripleA
+		const float TickHalfWid = 1500.f; // 15 m to either side of centerline
+		const float RangeNm[] = {1.f, 3.f, 5.f, 10.f, 20.f, 50.f, 100.f};
+		for (float R : RangeNm)
+		{
+			if (R > ApproachLengthNm) { continue; }
+			const FVector TickCentre = ThrW - InboundDir * (R * S);
+			const FVector TickL = TickCentre - RightDir * TickHalfWid;
+			const FVector TickR = TickCentre + RightDir * TickHalfWid;
+			AddLine(TickL, TickR, ApproachTickColor, 1.5f);
+		}
+
+		// 3° glide-slope from the threshold extending back along the
+		// approach. Standard ILS slope - 31,800 ft at 100 nm. World Z runs
+		// through AltitudeToWorldZOffset so the line tracks the same
+		// exaggerated-altitude curve aircraft do - a plane on the slope
+		// sits ON the line, not far above it. Drawn as multiple segments
+		// so the non-linear power curve renders smoothly instead of as a
+		// straight line that diverges from the true profile. - TripleA
+		constexpr float GlideSlopeDeg = 3.f;
+		constexpr int32 GlideSegments = 24;
+		constexpr float FtPerNm = 6076.12f;
+		const float GlideTan = FMath::Tan(FMath::DegreesToRadians(GlideSlopeDeg));
+		FVector GlidePrev = ThrW;
+		for (int32 i = 1; i <= GlideSegments; ++i)
+		{
+			const float SegFrac = static_cast<float>(i) / static_cast<float>(GlideSegments);
+			const float DistNm = SegFrac * ApproachLengthNm;
+			const float DistUnits = DistNm * S;
+			const float AltFt = DistNm * FtPerNm * GlideTan;
+			const float WorldZ = AltitudeToWorldZOffset(AltFt);
+			const FVector GlidePoint(
+				ThrW.X - InboundDir.X * DistUnits,
+				ThrW.Y - InboundDir.Y * DistUnits,
+				ThrW.Z + WorldZ);
+			AddLine(GlidePrev, GlidePoint, GlideLineColor, 2.f);
+			GlidePrev = GlidePoint;
+		}
+
+		// Altitude ticks on the glide slope at the same ranges as the
+		// horizontal corridor ticks - little horizontal bars across the
+		// slope at each ATC reference distance, perpendicular to the
+		// runway's right axis (same orientation as the ground tick
+		// marks), so the instructor reads "10 nm out the aircraft should
+		// be at this altitude" straight off the line. Labels come from
+		// GetCameraOverlayText using the same range table. - TripleA
+		const float AltTickHalfWid = 1500.f; // 15 m bar each side
+		for (float R : RangeNm)
+		{
+			if (R > ApproachLengthNm) { continue; }
+			const float DistUnits = R * S;
+			const float AltFt = R * FtPerNm * GlideTan;
+			const float WorldZ = AltitudeToWorldZOffset(AltFt);
+			const FVector TickCentre(
+				ThrW.X - InboundDir.X * DistUnits,
+				ThrW.Y - InboundDir.Y * DistUnits,
+				ThrW.Z + WorldZ);
+			const FVector TickL = TickCentre - RightDir * AltTickHalfWid;
+			const FVector TickR = TickCentre + RightDir * AltTickHalfWid;
+			AddLine(TickL, TickR, GlideTickColor, 1.5f);
+		}
+	}
+
+	// Restricted + protected airspace zones - rendered as ground-level
+	// circles so the instructor can see hostile no-fly bubbles and
+	// civilian avoid areas overlaid on the camera feed. Colours follow
+	// MIL-STD-2525 affiliation: red for protected (hostile-must-not-
+	// reach), amber for restricted (civilian-must-avoid). Same gentle
+	// pulse as the runway so they read as airspace structure rather
+	// than debug draws. Shown on every camera view - tactical
+	// boundaries you always want visible. - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		const FLinearColor ProtectedColor (1.f, 0.18f, 0.18f, 0.40f + 0.45f * Pulse01);
+		const FLinearColor RestrictedColor(1.f, 0.72f, 0.05f, 0.40f + 0.45f * Pulse01);
+		constexpr int32 ZoneSegments = 36;
+
+		auto DrawZone = [&](const FVector& Centre, float RadiusW, const FLinearColor& Color)
+		{
+			if (RadiusW <= 0.f) { return; }
+			FVector PrevPt(Centre.X + RadiusW, Centre.Y, Centre.Z);
+			for (int32 i = 1; i <= ZoneSegments; ++i)
+			{
+				const float Theta = (static_cast<float>(i) / ZoneSegments) * 2.f * PI;
+				const FVector NextPt(
+					Centre.X + RadiusW * FMath::Cos(Theta),
+					Centre.Y + RadiusW * FMath::Sin(Theta),
+					Centre.Z);
+				AddLine(PrevPt, NextPt, Color, 2.f);
+				PrevPt = NextPt;
+			}
+		};
+
+		// Wireframe-cylinder rendering: ground ring + ceiling ring + four
+		// vertical spokes at the cardinal points. Communicates that the
+		// zone is an airspace volume, not just a painted line on the dirt.
+		// Skipped on Overview - from straight above the ceiling ring lands
+		// on top of the ground ring and just reads as two overlapping
+		// circles. Ceiling sits at FL500 worth of world Z (passes through
+		// the same altitude curve aircraft use) so the column reaches the
+		// top of the airspace anything realistic can fly in. - TripleA
+		const bool bDrawColumn = (InstructorPipView != EClearanceCameraView::Overview);
+		const float ZoneCeilingZ = AltitudeToWorldZOffset(50000.f);
+
+		auto DrawZoneShape = [&](const FVector& GroundCentre, float RadiusW, const FLinearColor& Color)
+		{
+			if (RadiusW <= 0.f) { return; }
+			DrawZone(GroundCentre, RadiusW, Color);
+			if (!bDrawColumn) { return; }
+			const FVector CeilingCentre(GroundCentre.X, GroundCentre.Y, GroundCentre.Z + ZoneCeilingZ);
+			DrawZone(CeilingCentre, RadiusW, Color);
+			for (int32 i = 0; i < 4; ++i)
+			{
+				const float Theta = static_cast<float>(i) * (PI * 0.5f);
+				const FVector SpokeBase(
+					GroundCentre.X + RadiusW * FMath::Cos(Theta),
+					GroundCentre.Y + RadiusW * FMath::Sin(Theta),
+					GroundCentre.Z);
+				const FVector SpokeTop(SpokeBase.X, SpokeBase.Y, SpokeBase.Z + ZoneCeilingZ);
+				AddLine(SpokeBase, SpokeTop, Color, 1.5f);
+			}
+		};
+
+		for (TActorIterator<AClearanceViolationZone> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			DrawZoneShape(FVector(Loc.X, Loc.Y, GroundWorldZ), It->RadiusNm * S, ProtectedColor);
+		}
+		for (TActorIterator<AClearanceRestrictedArea> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			DrawZoneShape(FVector(Loc.X, Loc.Y, GroundWorldZ), It->RadiusNm * S, RestrictedColor);
+		}
+	}
+
+	// Sector boundary - the outer edge of the instructor's controlled
+	// airspace at ExitRadiusNm. Drawn as a ring on the ground in a
+	// tactical green so it's distinct from runway cyan / zone red. Same
+	// gentle pulse as the rest of the structural overlays. Heading
+	// labels around the perimeter come from GetCameraOverlayText. - TripleA
+	if (ExitRadiusNm > 0.f)
+	{
+		const FLinearColor SectorRingColor(0.30f, 0.90f, 0.55f, 0.30f + 0.35f * Pulse01);
+		constexpr int32 SectorSegments = 72;
+		const float SectorRadiusW = ExitRadiusNm * S;
+		FVector PrevPt(Origin.X + SectorRadiusW, Origin.Y, GroundWorldZ);
+		for (int32 i = 1; i <= SectorSegments; ++i)
+		{
+			const float Theta = (static_cast<float>(i) / SectorSegments) * 2.f * PI;
+			const FVector NextPt(
+				Origin.X + SectorRadiusW * FMath::Cos(Theta),
+				Origin.Y + SectorRadiusW * FMath::Sin(Theta),
+				GroundWorldZ);
+			AddLine(PrevPt, NextPt, SectorRingColor, 2.f);
+			PrevPt = NextPt;
+		}
+	}
+
+	return Out;
+}
+
+TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayText() const
+{
+	TArray<FInstructorCameraText> Out;
+	if (!AirspaceManager || !InstructorPipCapture || !InstructorPipRT) { return Out; }
+
+	const FVector ViewLocation = InstructorPipCapture->GetComponentLocation();
+	const FRotator ViewRotation = InstructorPipCapture->GetComponentRotation();
+	const FVector ViewForward = ViewRotation.Vector();
+	const FVector ViewUp = ViewRotation.RotateVector(FVector::UpVector);
+	const float FOVDegrees = InstructorPipCapture->FOVAngle;
+	const int32 Width = InstructorPipRT->SizeX;
+	const int32 Height = InstructorPipRT->SizeY;
+	if (Width <= 0 || Height <= 0) { return Out; }
+
+	const FMatrix ViewMatrix = FLookFromMatrix(ViewLocation, ViewForward, ViewUp);
+	const float HalfFOVRad = FMath::DegreesToRadians(FOVDegrees * 0.5f);
+	const FMatrix ProjMatrix = FPerspectiveMatrix(HalfFOVRad,
+		static_cast<float>(Width), static_cast<float>(Height), GNearClippingPlane);
+	const FMatrix ViewProj = ViewMatrix * ProjMatrix;
+
+	auto ProjectToUV = [&](const FVector& WorldPos, FVector2D& OutUV) -> bool
+	{
+		if (FVector::DotProduct(WorldPos - ViewLocation, ViewForward) < 1000.f) { return false; }
+		const FPlane Clip = ViewProj.TransformFVector4(FVector4(WorldPos, 1.f));
+		if (Clip.W <= KINDA_SMALL_NUMBER) { return false; }
+		OutUV.X = (Clip.X / Clip.W + 1.f) * 0.5f;
+		OutUV.Y = 1.f - (Clip.Y / Clip.W + 1.f) * 0.5f;
+		return true;
+	};
+
+	const TArray<FRunwayInfo>& All = AirspaceManager->GetAllRunways();
+	const int32 N = All.Num();
+
+	// Bucket runways by base designator (heading rounded to nearest 10) so
+	// parallels get L/C/R suffixes - identical convention to
+	// GetApproachRunwayLabels so the on-camera text and the picker buttons
+	// agree. - TripleA
+	TArray<int32> Designator;
+	Designator.SetNum(N);
+	for (int32 i = 0; i < N; ++i)
+	{
+		int32 D = FMath::RoundToInt(All[i].HeadingDeg / 10.f);
+		if (D <= 0) { D = 36; }
+		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
+		Designator[i] = D;
+	}
+
+	const FVector Origin = GetActorLocation();
+	const float S = WorldUnitsPerNm;
+	// Pure white for the runway designator - matches real-world runway
+	// paint, sits cleanly in the cyan + orange palette without competing,
+	// and the drop-shadow in DrawCameraOverlayText keeps it legible over
+	// sky or asphalt. - TripleA
+	const FLinearColor TextColor(1.0f, 1.0f, 1.0f, 0.95f);
+
+	for (int32 i = 0; i < N; ++i)
+	{
+		const FRunwayInfo& Me = All[i];
+		const int32 MyDes = Designator[i];
+
+		TArray<int32> Group;
+		for (int32 j = 0; j < N; ++j)
+		{
+			if (Designator[j] == MyDes) { Group.Add(j); }
+		}
+
+		FString Suffix;
+		if (Group.Num() > 1)
+		{
+			const float Rad = FMath::DegreesToRadians(Me.HeadingDeg);
+			const FVector2D RightDir(FMath::Cos(Rad), -FMath::Sin(Rad));
+			const float MyProj = FVector2D::DotProduct(Me.ThresholdNm, RightDir);
+			int32 MoreRight = 0, MoreLeft = 0;
+			for (int32 j : Group)
+			{
+				if (j == i) { continue; }
+				const float P = FVector2D::DotProduct(All[j].ThresholdNm, RightDir);
+				if (P > MyProj) { ++MoreRight; }
+				if (P < MyProj) { ++MoreLeft; }
+			}
+			if (Group.Num() == 2)
+			{
+				Suffix = (MoreRight == 0) ? TEXT("R") : TEXT("L");
+			}
+			else
+			{
+				if (MoreLeft == 0)       { Suffix = TEXT("L"); }
+				else if (MoreRight == 0) { Suffix = TEXT("R"); }
+				else                     { Suffix = TEXT("C"); }
+			}
+		}
+
+		const float RadHeading = FMath::DegreesToRadians(Me.HeadingDeg);
+		const FVector InboundDir(FMath::Sin(RadHeading), FMath::Cos(RadHeading), 0.f);
+		const FVector ThrW(Origin.X + Me.ThresholdNm.X * S,
+			Origin.Y + Me.ThresholdNm.Y * S, GroundWorldZ);
+
+		FVector2D ThrUV;
+		if (!ProjectToUV(ThrW, ThrUV)) { continue; }
+
+		// Perpendicular to the runway direction in screen space - puts the
+		// label to the SIDE of the runway rather than at the end (which
+		// is where the approach corridor extends to on the active end).
+		// Pick whichever perpendicular has the larger downward component
+		// so labels sit consistently below the runway, never floating
+		// where the corridor / glide-slope live. Offset magnitude scales
+		// with the runway's apparent size in screen (Len) - a fixed 4%
+		// UV nudge throws the label miles off in Chase view where the
+		// runway might only span 1% of frame at 12 km distance. - TripleA
+		FVector2D OutwardDir(0.f, 1.f);
+		float OffsetMag = 0.04f;
+		FVector2D InsideUV;
+		if (ProjectToUV(ThrW + InboundDir * 10000.f, InsideUV))
+		{
+			const FVector2D Delta = InsideUV - ThrUV;
+			const float Len = Delta.Length();
+			if (Len > KINDA_SMALL_NUMBER)
+			{
+				FVector2D Perp(-Delta.Y, Delta.X);
+				if (Perp.Y < 0.f) { Perp = -Perp; }
+				OutwardDir = Perp / Len;
+				OffsetMag = FMath::Clamp(Len * 0.8f, 0.005f, 0.04f);
+			}
+		}
+
+		FVector2D UV = ThrUV + OutwardDir * OffsetMag;
+		if (UV.X < 0.02f || UV.X > 0.98f || UV.Y < 0.02f || UV.Y > 0.98f) { continue; }
+
+		FInstructorCameraText Entry;
+		Entry.Text = FString::Printf(TEXT("%02d%s"), MyDes, *Suffix);
+		Entry.ScreenUV = UV;
+		Entry.Color = TextColor;
+		Entry.FontSize = 24;
+		Out.Add(Entry);
+
+		// Approach-guide text labels stripped - the tick marks themselves
+		// already convey "this is a reference distance" without needing
+		// numeric overlays to decode. Keeps the camera feed cleaner for
+		// portfolio capture; FL / NM digits read as clutter to anyone
+		// who isn't an aviation native. - TripleA
+	}
+
+	// Zone designators - name floats over the centre of each protected /
+	// restricted circle so the instructor reads what they're looking at
+	// without having to memorise the actor list. Same red / amber palette
+	// as the circle rings, solid alpha so they're always legible (no
+	// pulse - text breathing is harder to read than steady). - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		const FLinearColor ProtectedTextColor (1.f, 0.40f, 0.40f, 0.95f);
+		const FLinearColor RestrictedTextColor(1.f, 0.78f, 0.20f, 0.95f);
+
+		auto EmitZoneLabel = [&](const FVector& Centre, const FString& Text, const FLinearColor& Color)
+		{
+			FVector2D ZoneUV;
+			if (!ProjectToUV(Centre, ZoneUV)) { return; }
+			if (ZoneUV.X < 0.02f || ZoneUV.X > 0.98f || ZoneUV.Y < 0.02f || ZoneUV.Y > 0.98f) { return; }
+
+			FInstructorCameraText ZoneEntry;
+			ZoneEntry.Text = Text;
+			ZoneEntry.ScreenUV = ZoneUV;
+			ZoneEntry.Color = Color;
+			ZoneEntry.FontSize = 16;
+			Out.Add(ZoneEntry);
+		};
+
+		for (TActorIterator<AClearanceViolationZone> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			const FVector Centre(Loc.X, Loc.Y, GroundWorldZ);
+			const FString Name = It->ZoneName.IsNone() ? TEXT("PROTECTED") : It->ZoneName.ToString().ToUpper();
+			EmitZoneLabel(Centre, Name, ProtectedTextColor);
+		}
+		for (TActorIterator<AClearanceRestrictedArea> It(W); It; ++It)
+		{
+			if (!*It) { continue; }
+			const FVector Loc = It->GetActorLocation();
+			const FVector Centre(Loc.X, Loc.Y, GroundWorldZ);
+			const FString Name = It->AreaName.IsNone() ? TEXT("RESTRICTED") : It->AreaName.ToString().ToUpper();
+			EmitZoneLabel(Centre, Name, RestrictedTextColor);
+		}
+	}
+
+	// Compass headings around the sector ring at every 30°. Same green
+	// as the ring itself so they read as the boundary's annotation.
+	// Position is just inside the ring (90% radius) so the digits sit
+	// on the asphalt-side rather than floating in the void. - TripleA
+	if (ExitRadiusNm > 0.f)
+	{
+		const FVector RingOrigin = GetActorLocation();
+		const FLinearColor SectorTextColor(0.45f, 1.f, 0.65f, 0.85f);
+		const float SectorRadiusW = ExitRadiusNm * S * 0.90f;
+		for (int32 Hdg = 0; Hdg < 360; Hdg += 30)
+		{
+			const float HdgRad = FMath::DegreesToRadians(static_cast<float>(Hdg));
+			const FVector HdgPos(
+				RingOrigin.X + FMath::Sin(HdgRad) * SectorRadiusW,
+				RingOrigin.Y + FMath::Cos(HdgRad) * SectorRadiusW,
+				GroundWorldZ + 1500.f);
+
+			FVector2D HdgUV;
+			if (!ProjectToUV(HdgPos, HdgUV)) { continue; }
+			if (HdgUV.X < 0.02f || HdgUV.X > 0.98f || HdgUV.Y < 0.02f || HdgUV.Y > 0.98f) { continue; }
+
+			FInstructorCameraText HdgEntry;
+			HdgEntry.Text = FString::Printf(TEXT("%03d"), Hdg);
+			HdgEntry.ScreenUV = HdgUV;
+			HdgEntry.Color = SectorTextColor;
+			HdgEntry.FontSize = 14;
+			Out.Add(HdgEntry);
+		}
+	}
+
+	return Out;
+}
+
+void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
+{
+	if (!bInstructorPipEnabled || !InstructorPipCapture || !InstructorPipRT)
+	{
+		return;
+	}
+	if (!AirspaceManager)
+	{
+		return;
+	}
+
+	// Compute the camera transform inline from replicated state instead of
+	// looking up an ACameraActor pointer. The CameraActor pointers don't
+	// resolve reliably on clients (replication of references to non-replicated
+	// actors is a known UE gotcha) so we derive the same transforms from
+	// data that IS replicated: sector centre (this actor's location),
+	// SectorEnvironment (replicated on AirspaceManager), and class-default
+	// UPROPERTYs which are identical on every machine. - TripleA
+	const FVector Origin = GetActorLocation();
+	const float S = WorldUnitsPerNm;
+	const FSectorEnvironment Env = AirspaceManager->GetCurrentEnvironment();
+
+	const FVector ThrW(Origin.X + Env.ActiveRunwayThreshold.X * S,
+		Origin.Y + Env.ActiveRunwayThreshold.Y * S,
+		GroundWorldZ);
+	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
+	const float FacRad = FMath::DegreesToRadians(FAC);
+	const FVector InboundDir(FMath::Sin(FacRad), FMath::Cos(FacRad), 0.f);
+
+	FVector TargetLoc;
+	FRotator TargetRot;
+	float TargetFOV = 80.f;
+
+	switch (InstructorPipView)
+	{
+	case EClearanceCameraView::Overview:
+	{
+		// Strict top-down centred on the sector origin, north-up. Default
+		// altitude tuned so the sector ring fills ~85% of the frame.
+		// Pan offset + zoom level are mutated by AddOverviewPan /
+		// AddOverviewZoom from UMG drag + scroll events. - TripleA
+		const float DefaultAlt = ExitRadiusNm * S * 1.45f;
+		const float ZoomedAlt = DefaultAlt / FMath::Max(0.001f, InstructorOverviewZoomLevel);
+		TargetLoc = Origin + FVector(InstructorOverviewPanOffsetUnits.X,
+			InstructorOverviewPanOffsetUnits.Y, ZoomedAlt);
+		TargetRot = FRotator(-90.f, 90.f, 0.f);
+		TargetFOV = 90.f;
+		break;
+	}
+	case EClearanceCameraView::Tower:
+	{
+		// If the designer has tagged an actor in the level with "ClearanceTower"
+		// (a tower building mesh, a placed marker, anything) the camera uses
+		// THAT actor's world transform. Otherwise fall back to 50m above the
+		// runway threshold looking down the approach corridor. Tag-based so
+		// no new class is needed - just drop a tag on whatever mesh you've
+		// got. - TripleA
+		AActor* TowerAnchor = nullptr;
+		if (UWorld* W = GetWorld())
+		{
+			static const FName TowerTag(TEXT("ClearanceTower"));
+			for (TActorIterator<AActor> It(W); It; ++It)
+			{
+				if (*It && It->ActorHasTag(TowerTag))
+				{
+					TowerAnchor = *It;
+					break;
+				}
+			}
+		}
+
+		if (TowerAnchor)
+		{
+			// Camera sits exactly where the tagged actor is. Place a
+			// TargetPoint (or any empty actor) at the cab / window position
+			// you want and tag it; the camera transform is literal. - TripleA
+			TargetLoc = TowerAnchor->GetActorLocation();
+			FRotator BaseRot = TowerAnchor->GetActorRotation();
+			BaseRot.Yaw += InstructorTowerYawDeg;
+			TargetRot = BaseRot;
+		}
+		else
+		{
+			TargetLoc = ThrW + FVector(0.f, 0.f, 5000.f);
+			const FVector LookAt = ThrW - InboundDir * (20.f * S);
+			FRotator BaseRot = (LookAt - TargetLoc).Rotation();
+			BaseRot.Yaw += InstructorTowerYawDeg;
+			TargetRot = BaseRot;
+		}
+		// Tower-cab wide field. Real ATC tower windows are panoramic;
+		// 110 deg gives the instructor most of the apron + the active
+		// runway + a chunk of approach in one frame. - TripleA
+		TargetFOV = 110.f;
+		break;
+	}
+	case EClearanceCameraView::Approach:
+	{
+		// Use the selected runway from GetAllRunways instead of the wind-active
+		// one in Env, so the runway picker selects which one to frame. - TripleA
+		const TArray<FRunwayInfo>& AllRunways = AirspaceManager->GetAllRunways();
+		FVector2D RwyThrNm(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+		float RwyHeading = FAC;
+		if (AllRunways.Num() > 0)
+		{
+			const int32 Idx = FMath::Clamp(InstructorApproachRunwayIndex, 0, AllRunways.Num() - 1);
+			RwyThrNm = AllRunways[Idx].ThresholdNm;
+			RwyHeading = AllRunways[Idx].HeadingDeg;
+		}
+		static int32 ApproachLogTick = 0;
+		if (++ApproachLogTick % 60 == 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[PIP] Approach: this=%p auth=%d idx=%d total=%d thr=(%.0f,%.0f) hdg=%.0f"),
+				this, HasAuthority() ? 1 : 0,
+				InstructorApproachRunwayIndex, AllRunways.Num(),
+				RwyThrNm.X, RwyThrNm.Y, RwyHeading);
+		}
+		const FVector RwyThrW(Origin.X + RwyThrNm.X * S, Origin.Y + RwyThrNm.Y * S, GroundWorldZ);
+		const float RwyRad = FMath::DegreesToRadians(RwyHeading);
+		const FVector RwyInboundDir(FMath::Sin(RwyRad), FMath::Cos(RwyRad), 0.f);
+		const FVector RwyRightPerp(FMath::Cos(RwyRad), -FMath::Sin(RwyRad), 0.f);
+
+		// 3/4 angle: elevated, off to the side of the threshold, looking at
+		// a point along the runway. Frames the runway extending into the
+		// distance with the corridor visible behind it. Aircraft on final
+		// approach come from the back of the frame toward the threshold. - TripleA
+		// 3/4 frame centred on the threshold, pulled further back so the
+		// corridor + glide-slope have room to extend behind. Looking AT
+		// the threshold keeps the runway as the foreground anchor; the
+		// wider 100 deg FOV + bigger side / elevation reads more like a
+		// proper approach-controller observation post than a close
+		// fly-by. - TripleA
+		const float SideDistance = 250000.f;  // 2.5 km off to the side
+		const float Elevation    = 120000.f;  // 1.2 km up
+		TargetLoc = RwyThrW + RwyRightPerp * SideDistance + FVector(0.f, 0.f, Elevation);
+		TargetRot = (RwyThrW - TargetLoc).Rotation();
+		TargetFOV = 100.f;
+		break;
+	}
+	case EClearanceCameraView::Follow:
+	{
+		const FName Follow = !InstructorPipFollowCallsign.IsNone()
+			? InstructorPipFollowCallsign
+			: FollowTargetCallsign;
+		if (Follow.IsNone())
+		{
+			return;
+		}
+		const FAircraftState St = AirspaceManager->GetAircraftState(Follow);
+		if (!St.bIsValid)
+		{
+			return;
+		}
+		// Read POSITION from the visual actor (whatever the renderer is about
+		// to draw the mesh at) so the camera and the mesh stay perfectly
+		// locked - no per-frame drift within the chase frame.
+		// Read HEADING from the replicated state (compass convention) - it's
+		// the same value UpdateVisuals used to compute the actor's rotation,
+		// and computing the camera Forward vector from compass heading is
+		// straightforward. Mixing in the actor's UE-Yaw + YawOffsetDeg here
+		// gets the angles wrong. - TripleA
+		FVector Aircraft;
+		float MeshHalfLength = 750.f; // medium-aircraft default if no visual yet
+		const FSpawnedAircraftVisual* Visual = VisualActors.Find(Follow);
+		if (Visual && Visual->Actor)
+		{
+			Aircraft = Visual->Actor->GetActorLocation();
+			// Estimate the aircraft's half-length from its world-axis bounds.
+			// max(X, Y) catches whichever axis the plane is aligned along; we
+			// pad 1.3x to compensate for the bounding box shrinking when the
+			// plane is rotated off-axis. Used to scale chase pull-back and
+			// cockpit forward-offset so big planes don't end up in-frame too
+			// close, and so the cockpit cam reaches the nose on a 747. - TripleA
+			FVector BoundsOrigin, BoundsExtent;
+			Visual->Actor->GetActorBounds(false, BoundsOrigin, BoundsExtent);
+			MeshHalfLength = FMath::Max(BoundsExtent.X, BoundsExtent.Y) * 1.3f;
+		}
+		else
+		{
+			Aircraft = WorldPositionFor(St);
+		}
+		const float HeadingRad = FMath::DegreesToRadians(St.Heading);
+		const FVector Forward(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
+		const FVector Right(FMath::Cos(HeadingRad), -FMath::Sin(HeadingRad), 0.f);
+		const FVector Up(0.f, 0.f, 1.f);
+		switch (InstructorPipFollowAngle)
+		{
+		case EClearanceFollowAngle::Cockpit:
+		{
+			// Push forward to where the cockpit windows actually are - on a
+			// typical airliner that's ~80% of the half-length ahead of the
+			// mesh origin. Plus a small height offset for the windscreen
+			// height. - TripleA
+			const float CockpitFwd = FMath::Max(80.f, MeshHalfLength * 0.8f);
+			const float CockpitUp  = FMath::Max(60.f, MeshHalfLength * 0.12f);
+			TargetLoc = Aircraft + Forward * CockpitFwd + Up * CockpitUp;
+			TargetRot = Forward.Rotation();
+			break;
+		}
+		case EClearanceFollowAngle::Side:
+			TargetLoc = Aircraft + Right * 1800.f + Up * 500.f;
+			TargetRot = (Aircraft - TargetLoc).Rotation();
+			break;
+		case EClearanceFollowAngle::Top:
+			TargetLoc = Aircraft + Up * 3500.f;
+			TargetRot = (Aircraft - TargetLoc).Rotation();
+			break;
+		case EClearanceFollowAngle::Chase:
+		default:
+		{
+			// Pull back ~2.2x half-length so a 747 frames properly without the
+			// camera being inside the fuselage. Floor at 1500 so a tiny
+			// Cessna doesn't end up infinitely close. Height proportional too
+			// so the angle stays cinematic. - TripleA
+			const float ChaseDist   = FMath::Max(1500.f, MeshHalfLength * 2.2f);
+			const float ChaseHeight = FMath::Max(600.f,  MeshHalfLength * 0.45f);
+			TargetLoc = Aircraft - Forward * ChaseDist + Up * ChaseHeight;
+			TargetRot = (Aircraft - TargetLoc).Rotation();
+			break;
+		}
+		}
+		break;
+	}
+	case EClearanceCameraView::Operator:
+	{
+		// Use the operator's pushed view transform directly. AClearanceOperatorPC
+		// updates OperatorViewRotation/Location every ~30ms from its local
+		// GetControlRotation() and pawn eye location - that bypasses every UE
+		// rotation-replication footgun (yaw-only Character replication, missing
+		// pitch for non-Character pawns, no roll anywhere) and gives the
+		// instructor exactly what the operator's camera sees. - TripleA
+		if (OperatorViewLocation.IsZero())
+		{
+			return; // no data yet - operator PC hasn't ticked
+		}
+		TargetLoc = OperatorViewLocation;
+		TargetRot = OperatorViewRotation;
+		TargetFOV = 90.f;
+		break;
+	}
+	default:
+	{
+		TargetLoc = ThrW + FVector(0.f, 0.f, 600.f);
+		TargetRot = FRotator::ZeroRotator;
+		break;
+	}
+	}
+
+	InstructorPipCapture->SetWorldLocationAndRotation(TargetLoc, TargetRot);
+	InstructorPipCapture->FOVAngle = TargetFOV;
+
+	// Tell the texture streamer about this view BEFORE capturing. Without this
+	// the SceneCapture renders against whatever low-mip placeholder textures
+	// happen to be in memory - which is why aircraft appeared as flat white
+	// blobs while the same mesh looks fine in the main viewport. Adding a
+	// view location requests proper streaming for everything in this frustum. - TripleA
+	if (InstructorPipRT)
+	{
+		const float ScreenSize = static_cast<float>(InstructorPipRT->SizeX);
+		const float FOVScreenSize = ScreenSize / FMath::Max(0.001f, FMath::Tan(FMath::DegreesToRadians(TargetFOV * 0.5f)));
+		IStreamingManager::Get().AddViewInformation(TargetLoc, ScreenSize, FOVScreenSize);
+	}
+
+	const float Interval = 1.f / FMath::Max(1.f, InstructorPipCaptureRateHz);
+	InstructorPipCaptureAccum += DeltaSeconds;
+	if (InstructorPipCaptureAccum >= Interval)
+	{
+		InstructorPipCaptureAccum = 0.f;
+		InstructorPipCapture->CaptureScene();
+	}
+}
+
 void AClearanceSimulationController::SetWind(float DirectionDeg, float SpeedKts)
 {
 	WindDirectionDeg = DirectionDeg;
@@ -2659,6 +5022,11 @@ void AClearanceSimulationController::SetAutoSpawn(bool bEnabled)
 {
 	bAutoSpawn = bEnabled;
 	if (Spawner) { Spawner->SetAutoSpawn(bEnabled); }
+}
+
+void AClearanceSimulationController::SetSpawnerScenarioLocked(bool bLocked)
+{
+	if (Spawner) { Spawner->SetScenarioLocked(bLocked); }
 }
 
 bool AClearanceSimulationController::SpawnOne()
@@ -2683,20 +5051,28 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 
 	if (!bExternal)
 	{
-		UClearanceAircraftBehaviour* Behaviour = NewObject<UClearanceAircraftBehaviour>(this);
-		Behaviour->Initialise(AirspaceManager, Callsign);
-		Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
-		BehaviourMap.Add(Callsign, Behaviour);
-		if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
+		// Server-only: creates state-mutating Behaviour; clients receive state via OnRep only. - TripleA
+		if (HasAuthority())
+		{
+			UClearanceAircraftBehaviour* Behaviour = NewObject<UClearanceAircraftBehaviour>(this);
+			Behaviour->Initialise(AirspaceManager, Callsign);
+			Behaviour->TouchdownZoneOffsetNm = FMath::Max(0.f, TouchdownZoneMeters) / 1852.f; // metres -> nm
+			BehaviourMap.Add(Callsign, Behaviour);
+			if (CommsRouter) { CommsRouter->RegisterBehaviour(Callsign, Behaviour); }
+		}
 
-		// If the freshly-spawned aircraft is a bandit profile (NORDO, not declared
-		// friendly), redirect it AT a random violation zone instead of leaving it
-		// pointed at sector centre. A real intruder has an objective - that's what
-		// makes the operator's intercept call meaningful. - TripleA
-		if (AirspaceManager && GetWorld())
+		// If the freshly-spawned aircraft is a bandit profile (NORDO, not friendly
+		// or neutral), redirect it AT a random violation zone instead of leaving
+		// it pointed at sector centre. A real intruder has an objective - that's
+		// what makes the operator's intercept call meaningful. Civilians (Neutral)
+		// with broken IFF are NOT redirected - they're still civilian traffic. - TripleA
+		// Server-only: bandit redirect mutates state via RequestStateUpdate. - TripleA
+		if (HasAuthority() && AirspaceManager && GetWorld() && !bZoneChecksSuspended)
 		{
 			const FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
-			if (S.bIsValid && !S.bIFFOperational && S.ThreatClass != EThreatClass::Friendly)
+			if (S.bIsValid && !S.bIFFOperational
+				&& S.ThreatClass != EThreatClass::Friendly
+				&& S.ThreatClass != EThreatClass::Neutral)
 			{
 				TArray<AClearanceViolationZone*> Zones;
 				for (TActorIterator<AClearanceViolationZone> ZIt(GetWorld()); ZIt; ++ZIt) { Zones.Add(*ZIt); }
@@ -2736,7 +5112,11 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 			                                                      VariantsFor(State.WakeCategory);
 		if (Variants.Num() > 0)
 		{
-			const FAircraftVisualVariant& Variant = Variants[FMath::RandRange(0, Variants.Num() - 1)];
+			// Deterministic pick by callsign hash so server + client land on the
+			// same variant. FMath::RandRange rolled independently per peer and the
+			// meshes drifted - same data, different model. - TripleA
+			const int32 VariantIdx = static_cast<int32>(GetTypeHash(Callsign) % static_cast<uint32>(Variants.Num()));
+			const FAircraftVisualVariant& Variant = Variants[VariantIdx];
 			if (Variant.AircraftClass)
 			{
 				if (AActor* Visual = GetWorld()->SpawnActor<AActor>(Variant.AircraftClass))
@@ -2773,6 +5153,7 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 void AClearanceSimulationController::HandleAircraftDeregistered(FName Callsign)
 {
 	BehaviourMap.Remove(Callsign);
+	EverEnteredSector.Remove(Callsign); // reset entered-flag if the callsign reappears later
 	if (CommsRouter) { CommsRouter->UnregisterBehaviour(Callsign); }
 	if (ConflictDetector) { ConflictDetector->RemoveAircraft(Callsign); }
 
@@ -2828,13 +5209,16 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 		: Conflict.AlertLevel == EAlertLevel::Warning ? TEXT("WARNING") : TEXT("ADVISORY");
 
 	// Surface it on screen until there's a real UI, so conflicts are visible. - TripleA
-	if (GEngine)
 	{
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, ColourFor(Conflict.AlertLevel),
-			FString::Printf(TEXT("%s  %s / %s  -  %.1f nm, %.0f ft%s"), Lvl,
-				*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
-				Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
-				Conflict.bRequiresGoAround ? TEXT("  [GO-AROUND]") : TEXT("")));
+		const FString NMsg = FString::Printf(TEXT("%s  %s / %s  -  %.1f nm, %.0f ft%s"), Lvl,
+			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
+			Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
+			Conflict.bRequiresGoAround ? TEXT("  [GO-AROUND]") : TEXT(""));
+		PushNotification(NMsg, ColourFor(Conflict.AlertLevel), 5.f);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, ColourFor(Conflict.AlertLevel), NMsg);
+		}
 	}
 
 	if (Recorder)
@@ -2858,10 +5242,12 @@ void AClearanceSimulationController::HandleConflictResolved(FConflictEvent Confl
 		(Conflict.AlertLevel == EAlertLevel::Warning || Conflict.AlertLevel == EAlertLevel::Critical))
 	{
 		Scoring->LogIncident(EIncidentType::SuccessfulResolution, Conflict.AircraftA, Conflict.AircraftB, TEXT("Conflict resolved"));
+		const FString NMsg = FString::Printf(TEXT("RESOLVED  %s / %s  (+%d)"),
+			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution);
+		PushNotification(NMsg, FColor::Green, 4.f);
 		if (GEngine)
 		{
-			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green,
-				FString::Printf(TEXT("RESOLVED  %s / %s  (+%d)"), *Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution));
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, NMsg);
 		}
 	}
 	if (Recorder)
@@ -2999,7 +5385,7 @@ static void ClearanceIssueFromConsole(const TArray<FString>& Args, UWorld* World
 		Instruction.TargetValue = Value;
 
 		const EInstructionResult Result = It->PlayerIssueInstruction(Instruction);
-		const FString Msg = FString::Printf(TEXT("%s %s %.0f -> %s"), Label, *Callsign.ToString(), Value, *UEnum::GetValueAsString(Result));
+		const FString Msg = FString::Printf(TEXT("%s %s %.0f -> %s"), Label, *Callsign.ToString(), Value, *UEnum::GetDisplayValueAsText(Result).ToString());
 		UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
 		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		return;
@@ -3078,6 +5464,92 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 		{
 			C->ClearTraffic();
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
+		}
+	}));
+
+// --- Electronic Warfare console commands -------------------------------------
+// Toggle jamming on an aircraft: degrades that radar's reads on it plus
+// blankets the bearing arc to other contacts in the same wedge. Operator
+// sees one radar lose the picture, fused track stays up because the other
+// radars cover from a different angle. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceJamCmd(
+	TEXT("clearance.ew.jam"),
+	TEXT("clearance.ew.jam <callsign> <on|off> - toggle a jammer on the named aircraft"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.ew.jam <callsign> <on|off>")); return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+
+		const FName Callsign(*Args[0]);
+		const bool bOn = (Args.Num() < 2) ? true : (Args[1].ToLower() != TEXT("off") && Args[1] != TEXT("0"));
+
+		FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
+		if (!S.bIsValid)
+		{
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Red, FString::Printf(TEXT("ew.jam: no aircraft '%s'"), *Callsign.ToString())); }
+			return;
+		}
+		S.bJammingOn = bOn;
+		C->GetAirspaceManager()->RequestStateUpdate(S);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 4.f, bOn ? FColor::Red : FColor::Cyan,
+				FString::Printf(TEXT("EW: jammer %s on %s"), bOn ? TEXT("ON") : TEXT("OFF"), *Callsign.ToString()));
+		}
+	}));
+
+// Have an aircraft drop a chaff cloud at its current position. Every radar in
+// line of sight reports it as a low-confidence ghost with no transponder for
+// the next ~12 seconds. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceChaffCmd(
+	TEXT("clearance.ew.chaff"),
+	TEXT("clearance.ew.chaff <callsign> - drop a chaff cloud at the named aircraft's position"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.ew.chaff <callsign>")); return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetAirspaceManager()) { return; }
+
+		const FName Callsign(*Args[0]);
+		const FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
+		if (!S.bIsValid)
+		{
+			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Red, FString::Printf(TEXT("ew.chaff: no aircraft '%s'"), *Callsign.ToString())); }
+			return;
+		}
+		C->GetAirspaceManager()->DropChaff(S.Position, S.Altitude);
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor(255, 220, 0), FString::Printf(TEXT("EW: chaff dropped at %s"), *Callsign.ToString())); }
+	}));
+
+// Per-world mute - in PIE, run this in the server console to silence its
+// VoiceOutput while still hearing the client's. World param routes naturally to
+// the local instance. Args: on / off / toggle (default toggle). - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceAudioMuteCmd(
+	TEXT("clearance.audio.mute"),
+	TEXT("clearance.audio.mute [on|off|toggle] - mute this window's TTS output"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (!World) { return; }
+		int32 Found = 0;
+		for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
+		{
+			AClearanceVoiceOutput* V = *It;
+			if (!V) { continue; }
+			bool bNew = !V->bMuted;
+			if (Args.Num() >= 1)
+			{
+				const FString A = Args[0].ToLower();
+				if (A == TEXT("on") || A == TEXT("1"))  { bNew = true;  }
+				else if (A == TEXT("off") || A == TEXT("0")) { bNew = false; }
+			}
+			V->bMuted = bNew;
+			++Found;
+		}
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan,
+				FString::Printf(TEXT("audio mute applied to %d VoiceOutput(s)"), Found));
 		}
 	}));
 
@@ -3238,6 +5710,168 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceShadowCmd(
 		}
 	}));
 
+// ============================================================================
+// Instructor console commands - sent from any client window, routed through the
+// local PlayerController's Server RPC, executed on the server. - TripleA
+// ============================================================================
+
+static AClearanceOperatorPC* FindLocalOperatorPC(UWorld* World)
+{
+	if (!World) { return nullptr; }
+	if (APlayerController* PC = World->GetFirstPlayerController())
+	{
+		return Cast<AClearanceOperatorPC>(PC);
+	}
+	return nullptr;
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrEmergencyCmd(
+	TEXT("clearance.instructor.emergency"),
+	TEXT("clearance.instructor.emergency <callsign> <Mayday|CommsFailure|Hijack|FuelLow> - inject an emergency"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 2) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.instructor.emergency <callsign> <kind>")); return; }
+		AClearanceOperatorPC* PC = FindLocalOperatorPC(World);
+		if (!PC) { UE_LOG(LogTemp, Warning, TEXT("[Instructor] no AClearanceOperatorPC - set it as the default PlayerController in your GameMode")); return; }
+		EEmergencyType Kind = EEmergencyType::None;
+		const FString K = Args[1].ToLower();
+		if      (K == TEXT("mayday") || K == TEXT("7700"))           { Kind = EEmergencyType::GeneralMayday; }
+		else if (K == TEXT("commsfailure") || K == TEXT("7600"))     { Kind = EEmergencyType::CommsFailure; }
+		else if (K == TEXT("hijack") || K == TEXT("7500"))           { Kind = EEmergencyType::Hijack; }
+		else if (K == TEXT("fuellow") || K == TEXT("fuel"))          { Kind = EEmergencyType::FuelLow; }
+		else { UE_LOG(LogTemp, Warning, TEXT("unknown emergency type: %s"), *Args[1]); return; }
+		PC->Server_InjectEmergency(FName(*Args[0]), Kind);
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrSpawnCmd(
+	TEXT("clearance.instructor.spawn"),
+	TEXT("clearance.instructor.spawn - inject a random civilian spawn"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectSpawn(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrClearCmd(
+	TEXT("clearance.instructor.clear"),
+	TEXT("clearance.instructor.clear - wipe all sector traffic"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectClearTraffic(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrWindCmd(
+	TEXT("clearance.instructor.wind"),
+	TEXT("clearance.instructor.wind <dirDeg> <speedKts> - set sector wind"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 2) { return; }
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World))
+		{
+			PC->Server_InjectSetWind(FCString::Atof(*Args[0]), FCString::Atof(*Args[1]));
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrLoadCmd(
+	TEXT("clearance.instructor.scenario.load"),
+	TEXT("clearance.instructor.scenario.load <name> - load a scenario on the server"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { return; }
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectLoadScenario(Args[0]); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrStopCmd(
+	TEXT("clearance.instructor.scenario.stop"),
+	TEXT("clearance.instructor.scenario.stop - stop the running scenario"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectStopScenario(); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceInstrPauseCmd(
+	TEXT("clearance.instructor.pause"),
+	TEXT("clearance.instructor.pause <0|1> - pause/unpause the sim on the server"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		const bool b = (Args.Num() > 0) ? (Args[0] != TEXT("0")) : true;
+		if (AClearanceOperatorPC* PC = FindLocalOperatorPC(World)) { PC->Server_InjectSetPaused(b); }
+	}));
+
+// Counts the number of Controllers + AirspaceManagers per world - if either is
+// greater than 1 there's a duplicate that explains state-divergence bugs. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceNetActorsCmd(
+	TEXT("clearance.net.actors"),
+	TEXT("clearance.net.actors - dump count of Controller + AirspaceManager actors in the local world"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (!World) { return; }
+		const TCHAR* Role = World->GetNetMode() == NM_Client ? TEXT("CLIENT") : TEXT("SERVER");
+		int32 NumCtl = 0, NumMgr = 0;
+		FString CtlSigs, MgrSigs;
+		for (TActorIterator<AClearanceSimulationController> It(World); It; ++It)
+		{
+			++NumCtl;
+			CtlSigs += FString::Printf(TEXT(" %s%s"), *It->GetName(), It->HasAuthority() ? TEXT("(A)") : TEXT(""));
+		}
+		for (TActorIterator<AClearanceAirspaceManager> It(World); It; ++It)
+		{
+			++NumMgr;
+			MgrSigs += FString::Printf(TEXT(" %s[ac=%d]"), *It->GetName(), It->GetAircraftCount());
+		}
+		UE_LOG(LogTemp, Display, TEXT("[NET %s] Controllers=%d:%s   Managers=%d:%s"),
+			Role, NumCtl, *CtlSigs, NumMgr, *MgrSigs);
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 10.f, FColor::Yellow,
+				FString::Printf(TEXT("[NET %s] Ctl=%d Mgr=%d"), Role, NumCtl, NumMgr));
+		}
+	}));
+
+// Diagnostic: prints aircraft count from BOTH the world-iterator-found Manager
+// AND the Controller's UPROPERTY pointer. If they diverge, the Controller is
+// holding a stale or different Manager than the world has. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceNetCountCmd(
+	TEXT("clearance.net.count"),
+	TEXT("clearance.net.count - prints AirspaceManager count from iterator + from Controller.AirspaceManager"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (!World) { return; }
+		const TCHAR* Role = World->GetNetMode() == NM_Client ? TEXT("CLIENT")
+		                  : World->GetNetMode() == NM_ListenServer ? TEXT("SERVER")
+		                  : World->GetNetMode() == NM_DedicatedServer ? TEXT("DED-SERVER")
+		                  : TEXT("STANDALONE");
+
+		AClearanceAirspaceManager* MIter = nullptr;
+		for (TActorIterator<AClearanceAirspaceManager> It(World); It; ++It) { MIter = *It; break; }
+
+		AClearanceSimulationController* C = nullptr;
+		for (TActorIterator<AClearanceSimulationController> It(World); It; ++It) { C = *It; break; }
+
+		auto Dump = [](AClearanceAirspaceManager* M) -> FString {
+			if (!M) { return TEXT("null"); }
+			const TArray<FAircraftState> All = M->GetAllAircraftStates();
+			FString Out = FString::Printf(TEXT("%s[ac=%d]"), *M->GetName(), All.Num());
+			for (int32 i = 0; i < FMath::Min(5, All.Num()); ++i)
+			{
+				Out += FString::Printf(TEXT(" %s"), *All[i].Callsign.ToString());
+			}
+			return Out;
+		};
+
+		const FString IterStr = Dump(MIter);
+		const FString PtrStr  = C ? Dump(C->GetAirspaceManager()) : FString(TEXT("no controller"));
+		const bool bSame = MIter && C && (MIter == C->GetAirspaceManager());
+
+		UE_LOG(LogTemp, Display, TEXT("[NET %s] iter=%s  ctrl=%s  match=%s"),
+			Role, *IterStr, *PtrStr, bSame ? TEXT("YES") : TEXT("NO"));
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(-1, 10.f, bSame ? FColor::Green : FColor::Red,
+				FString::Printf(TEXT("[NET %s] iter=%s ctrl=%s %s"),
+					Role, *IterStr, *PtrStr, bSame ? TEXT("MATCH") : TEXT("DIVERGE")));
+		}
+	}));
+
 // Send every available friendly military aircraft at this bandit at once. - TripleA
 static FAutoConsoleCommandWithWorldAndArgs GClearanceInterceptFlightCmd(
 	TEXT("clearance.intercept.flight"),
@@ -3269,6 +5903,66 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceRadarCmd(
 		{
 			const bool bOn = (Args.Num() < 1) ? true : (Args[0].ToLower() != TEXT("off") && Args[0] != TEXT("0"));
 			C->SetRadarEnabled(bOn);
+		}
+	}));
+
+// Resolved at runtime so dev-builds + packaged builds find the same Scenarios folder. - TripleA
+static FString ClearanceScenarioDir()
+{
+	return FPaths::ProjectPluginsDir() / TEXT("ClearanceSim/Scenarios");
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioListCmd(
+	TEXT("clearance.scenario.list"),
+	TEXT("clearance.scenario.list - list scenario .json files in Plugins/ClearanceSim/Scenarios"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* /*World*/)
+	{
+		const FString Dir = ClearanceScenarioDir();
+		TArray<FString> Found;
+		IFileManager::Get().FindFiles(Found, *(Dir / TEXT("*.json")), true, false);
+		if (Found.Num() == 0)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[Scenario] no .json files in %s"), *Dir);
+			return;
+		}
+		UE_LOG(LogTemp, Display, TEXT("[Scenario] %d scenario(s) in %s:"), Found.Num(), *Dir);
+		for (const FString& F : Found) { UE_LOG(LogTemp, Display, TEXT("  - %s"), *F); }
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioLoadCmd(
+	TEXT("clearance.scenario.load"),
+	TEXT("clearance.scenario.load <name> - load + start a scenario (name without .json)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.scenario.load <name>")); return; }
+		AClearanceSimulationController* C = FindClearanceController(World);
+		if (!C || !C->GetScenarioRunner()) { UE_LOG(LogTemp, Warning, TEXT("[Scenario] controller / runner missing")); return; }
+
+		const FString Name = Args[0].EndsWith(TEXT(".json")) ? Args[0] : Args[0] + TEXT(".json");
+		const FString Path = ClearanceScenarioDir() / Name;
+		FString Err;
+		if (!C->GetScenarioRunner()->LoadFromFile(Path, Err))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[Scenario] load failed: %s"), *Err);
+			return;
+		}
+		// Hard-lock the spawner BEFORE clearing so it can't tick in between and
+		// repopulate the manager with pre-scenario traffic. The lock is independent
+		// of bAutoSpawn, so free-play preference is preserved. - TripleA
+		C->SetSpawnerScenarioLocked(true);
+		C->ClearTraffic();
+		C->GetScenarioRunner()->Start();
+		UE_LOG(LogTemp, Display, TEXT("[Scenario] running: %s"), *C->GetScenarioRunner()->GetLoadedName());
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceScenarioStopCmd(
+	TEXT("clearance.scenario.stop"),
+	TEXT("clearance.scenario.stop - stop the running scenario"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& /*Args*/, UWorld* World)
+	{
+		if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			if (C->GetScenarioRunner()) { C->GetScenarioRunner()->Stop(); }
 		}
 	}));
 
@@ -3458,7 +6152,7 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceReplaySpeedCmd(
 
 static FAutoConsoleCommandWithWorldAndArgs GClearanceExitCmd(
 	TEXT("clearance.exit"),
-	TEXT("clearance.exit <callsign> - clear an aircraft to leave the sector (scores as a successful departure when it crosses the ring)"),
+	TEXT("clearance.exit <callsign> - clear an aircraft to leave the sector (scores as a successful handoff when it crosses the ring)"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
 	{
 		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.exit <callsign>")); return; }
@@ -3468,7 +6162,7 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceExitCmd(
 			I.TargetCallsign = FName(*Args[0]);
 			I.Type = EInstructionType::ExitSector;
 			const EInstructionResult Result = C->PlayerIssueInstruction(I);
-			const FString Msg = FString::Printf(TEXT("exit %s -> %s"), *I.TargetCallsign.ToString(), *UEnum::GetValueAsString(Result));
+			const FString Msg = FString::Printf(TEXT("exit %s -> %s"), *I.TargetCallsign.ToString(), *UEnum::GetDisplayValueAsText(Result).ToString());
 			UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
 			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		}

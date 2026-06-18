@@ -14,10 +14,12 @@ void AClearanceAircraftSpawner::SetReferences(AClearanceAirspaceManager* InManag
 
 void AClearanceAircraftSpawner::TickSpawning(float DeltaTime)
 {
-	if (!bAutoSpawn || !Manager || CurrentSpawnIntervalSeconds <= 0.f)
+	if (!bAutoSpawn || bScenarioLocked || !Manager || CurrentSpawnIntervalSeconds <= 0.f)
 	{
 		return;
 	}
+	// Trace - if this fires while a scenario should be locking, my gate is broken. - TripleA
+	UE_LOG(LogTemp, Warning, TEXT("[Spawner] TICKING (autospawn=%d locked=%d)"), bAutoSpawn?1:0, bScenarioLocked?1:0);
 
 	SpawnTimer += DeltaTime;
 	if (SpawnTimer >= CurrentSpawnIntervalSeconds)
@@ -51,20 +53,25 @@ bool AClearanceAircraftSpawner::SpawnAircraft()
 
 	if (bBandit)
 	{
-		// Drop a hostile contact in alongside the civilian traffic. ThreatClass stays
-		// UNKNOWN until the operator interrogates and classifies - the player has to
-		// notice no IFF response and make the call. Squawk 7777 is the NATO hostile
-		// code; civilians never use it, so a sharp operator catches it on the scope
-		// too. - TripleA
-		State.Callsign         = GenerateBanditCallsign();
-		State.ThreatClass      = EThreatClass::Unknown;
-		State.SquawkCode       = 7777;
-		State.bIFFOperational  = false;
-		State.bIsMilitary      = true;
+		// Drop a hostile contact in alongside the civilian traffic. ThreatClass
+		// stays UNKNOWN until the operator interrogates and classifies - the
+		// player has to notice no IFF response and make the call. TrueAffiliation
+		// is Hostile so the instructor's god view sees the truth. Squawk 7777 is
+		// the NATO hostile code; civilians never use it, so a sharp operator
+		// catches it on the scope too. - TripleA
+		State.Callsign          = GenerateBanditCallsign();
+		State.ThreatClass       = EThreatClass::Unknown;
+		State.TrueAffiliation   = EThreatClass::Hostile;
+		State.SquawkCode        = 7777;
+		State.bIFFOperational   = false;
+		State.bIsMilitary       = true;
 	}
 	else
 	{
-		State.Callsign = Data.Callsign;
+		// Civilian airliner. Both fields agree - no ambiguity to classify. - TripleA
+		State.Callsign        = Data.Callsign;
+		State.ThreatClass     = EThreatClass::Neutral;
+		State.TrueAffiliation = EThreatClass::Neutral;
 	}
 
 	// targets / performance limits are filled in when the Behaviour initialises
@@ -79,6 +86,12 @@ void AClearanceAircraftSpawner::SetSpawnInterval(float Seconds)
 void AClearanceAircraftSpawner::SetAutoSpawn(bool bEnabled)
 {
 	bAutoSpawn = bEnabled;
+}
+
+void AClearanceAircraftSpawner::SetScenarioLocked(bool bLocked)
+{
+	bScenarioLocked = bLocked;
+	if (bLocked) { SpawnTimer = 0.f; } // reset so when unlocked we don't immediately fire a delayed spawn
 }
 
 FAircraftSpawnData AClearanceAircraftSpawner::GenerateSpawnData()

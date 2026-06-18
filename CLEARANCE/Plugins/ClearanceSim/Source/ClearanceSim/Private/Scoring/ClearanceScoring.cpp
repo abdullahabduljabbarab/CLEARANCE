@@ -18,7 +18,7 @@ void UClearanceScoring::LogIncident(EIncidentType Type, FName AircraftA, FName A
 	switch (Type)
 	{
 	case EIncidentType::SuccessfulLanding:    ++TotalLandings;   ++TotalHandled; break;
-	case EIncidentType::SuccessfulDeparture:  ++TotalDepartures; ++TotalHandled; break;
+	case EIncidentType::SuccessfulHandoff:    ++TotalHandoffs;   ++TotalHandled; break;
 	case EIncidentType::SuccessfulEmergencyHandling: ++TotalHandled; break;
 	case EIncidentType::GoAroundTriggered:    ++TotalGoArounds;  break;
 	case EIncidentType::SeparationLoss:       ++TotalSeparationLosses; ++TotalFailures; break;
@@ -59,7 +59,7 @@ void UClearanceScoring::ResetSession()
 {
 	IncidentLog.Reset();
 	CurrentScore = 0;
-	TotalLandings = TotalDepartures = TotalGoArounds = 0;
+	TotalLandings = TotalHandoffs = TotalGoArounds = 0;
 	TotalSeparationLosses = TotalInstructions = TotalHandled = TotalFailures = 0;
 	CurrentSpawnIntervalSeconds = BaseSpawnIntervalSeconds;
 
@@ -72,7 +72,7 @@ int32 UClearanceScoring::PointsForIncident(EIncidentType Type) const
 	switch (Type)
 	{
 	case EIncidentType::SuccessfulLanding:     return PointsLanding;
-	case EIncidentType::SuccessfulDeparture:   return PointsDeparture;
+	case EIncidentType::SuccessfulHandoff:     return PointsHandoff;
 	case EIncidentType::SuccessfulResolution:  return PointsResolution;
 	case EIncidentType::SuccessfulIntercept:   return PointsIntercept;
 	case EIncidentType::SeparationLoss:        return -PenaltySeparationLoss;

@@ -415,6 +415,17 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Instructor|Camera")
 	bool bShowCameraView = false;
 
+	// Master gate for the scope + camera-overlay paint events. The TRUTH SCOPE
+	// and CAMERA VIEW tabs are siblings of the PERFORMANCE tab in the layout,
+	// but their paint runs from the panel root's NativePaint - so collapsing
+	// child widgets in UMG isn't enough on its own to stop the vectors from
+	// drawing through the Performance tab background. Set false when the
+	// PERFORMANCE tab is active so neither BP_PaintScope nor BP_PaintCameraOverlay
+	// fires; set true for the scope/camera tabs (the existing bShowCameraView
+	// flag then decides which of the two paints). - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor|Tabs")
+	bool bShowScopeOrCamera = true;
+
 	// --- Tuning -----------------------------------------------------------
 
 	// How many nm radius the mini-scope shows. Default ~80nm matches the

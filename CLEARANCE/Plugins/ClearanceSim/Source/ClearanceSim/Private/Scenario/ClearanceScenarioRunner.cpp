@@ -292,10 +292,11 @@ void UClearanceScenarioRunner::Start()
 		UE_LOG(LogTemp, Warning, TEXT("[Scenario] Start refused - no scenario loaded or refs missing"));
 		return;
 	}
-	bRunning      = true;
-	ElapsedSec    = 0.f;
-	FiredEvents   = 0;
-	FiredTriggers = 0;
+	bRunning            = true;
+	ElapsedSec          = 0.f;
+	WallClockElapsedSec = 0.f;
+	FiredEvents         = 0;
+	FiredTriggers       = 0;
 	Flags.Reset();
 	for (FScenarioTimedEvent& E : Scenario.TimedEvents) { E.bFired = false; }
 	for (FScenarioTrigger& T : Scenario.Triggers)       { T.bFired = false; }
@@ -336,10 +337,11 @@ void UClearanceScenarioRunner::Stop()
 	}
 }
 
-void UClearanceScenarioRunner::Tick(float SimDeltaSeconds)
+void UClearanceScenarioRunner::Tick(float SimDeltaSeconds, float WallClockDeltaSeconds)
 {
-	if (!bRunning || SimDeltaSeconds <= 0.f) { return; }
-	ElapsedSec += SimDeltaSeconds;
+	if (!bRunning) { return; }
+	if (SimDeltaSeconds > 0.f)       { ElapsedSec          += SimDeltaSeconds; }
+	if (WallClockDeltaSeconds > 0.f) { WallClockElapsedSec += WallClockDeltaSeconds; }
 	EvaluateTimedEvents();
 	EvaluateTriggers();
 	UpdatePursuits();

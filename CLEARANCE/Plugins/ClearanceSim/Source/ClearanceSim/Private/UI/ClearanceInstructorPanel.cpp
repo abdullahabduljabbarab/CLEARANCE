@@ -116,32 +116,39 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 	const int32 Result = Super::NativePaint(Args, AllottedGeometry, MyCullingRect,
 		OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
 
-	// Skip the scope paint entirely when the panel is in camera-feed mode -
-	// otherwise the vectors would render on top of the camera Image widget
-	// (NativePaint runs after child widgets so its LayerId is higher) and
-	// the user would see a scope overlay on the camera feed. The Image
-	// widget itself is shown/hidden by UMG; this just stops C++ from
-	// drawing into the same area. - TripleA
-	if (!bShowCameraView)
+	// Master gate first - when the PERFORMANCE tab (or any other non-scope tab)
+	// is active, neither paint event should fire. Child-widget collapse on the
+	// scope/camera VBox isn't enough because these paints run from the panel
+	// root, not from those children. - TripleA
+	if (bShowScopeOrCamera)
 	{
-		// Build a paint context and surface it to BP so the scope can paint into
-		// it. const_cast is the standard pattern - BlueprintImplementableEvent
-		// dispatch is non-const but the paint elements list it writes to is
-		// already the const& we got passed. - TripleA
-		FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
-			LayerId, InWidgetStyle, bParentEnabled);
-		const_cast<UClearanceInstructorPanel*>(this)->BP_PaintScope(Context, AllottedGeometry.GetLocalSize());
-	}
-	else
-	{
-		// Camera-view paint pass for HUD overlays (runway centerlines,
-		// approach corridors). Use Result + 1 so we sit ABOVE every child
-		// widget that just painted - using the original LayerId puts us
-		// underneath Img_CameraFeed (the image draws at a higher layer than
-		// the panel root) and the lines get hidden behind the feed. - TripleA
-		FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
-			Result + 1, InWidgetStyle, bParentEnabled);
-		const_cast<UClearanceInstructorPanel*>(this)->BP_PaintCameraOverlay(Context, AllottedGeometry.GetLocalSize());
+		// Skip the scope paint entirely when the panel is in camera-feed mode -
+		// otherwise the vectors would render on top of the camera Image widget
+		// (NativePaint runs after child widgets so its LayerId is higher) and
+		// the user would see a scope overlay on the camera feed. The Image
+		// widget itself is shown/hidden by UMG; this just stops C++ from
+		// drawing into the same area. - TripleA
+		if (!bShowCameraView)
+		{
+			// Build a paint context and surface it to BP so the scope can paint into
+			// it. const_cast is the standard pattern - BlueprintImplementableEvent
+			// dispatch is non-const but the paint elements list it writes to is
+			// already the const& we got passed. - TripleA
+			FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
+				LayerId, InWidgetStyle, bParentEnabled);
+			const_cast<UClearanceInstructorPanel*>(this)->BP_PaintScope(Context, AllottedGeometry.GetLocalSize());
+		}
+		else
+		{
+			// Camera-view paint pass for HUD overlays (runway centerlines,
+			// approach corridors). Use Result + 1 so we sit ABOVE every child
+			// widget that just painted - using the original LayerId puts us
+			// underneath Img_CameraFeed (the image draws at a higher layer than
+			// the panel root) and the lines get hidden behind the feed. - TripleA
+			FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
+				Result + 1, InWidgetStyle, bParentEnabled);
+			const_cast<UClearanceInstructorPanel*>(this)->BP_PaintCameraOverlay(Context, AllottedGeometry.GetLocalSize());
+		}
 	}
 
 	// Replay scrub-bar seam ticks. One vertical line over the slider track
@@ -327,7 +334,7 @@ void UClearanceInstructorPanel::BuildScoreView(FInstructorScoreView& Out) const
 	Out.Total              = CachedController->RepScoreTotal;
 	Out.EfficiencyPct      = CachedController->RepScoreEfficiencyPct;
 	Out.Landings           = CachedController->RepScoreLandings;
-	Out.Departures         = CachedController->RepScoreDepartures;
+	Out.Handoffs           = CachedController->RepScoreHandoffs;
 	Out.ResolvedConflicts  = CachedController->RepScoreResolved;
 	Out.Intercepts         = CachedController->RepScoreIntercepts;
 	Out.Emergencies        = CachedController->RepScoreEmergencies;
@@ -1418,7 +1425,7 @@ bool UClearanceInstructorPanel::ScoreChanged(const FInstructorScoreView& A, cons
 {
 	return A.Total != B.Total
 		|| A.EfficiencyPct != B.EfficiencyPct
-		|| A.Landings != B.Landings || A.Departures != B.Departures
+		|| A.Landings != B.Landings || A.Handoffs != B.Handoffs
 		|| A.ResolvedConflicts != B.ResolvedConflicts || A.Intercepts != B.Intercepts
 		|| A.Emergencies != B.Emergencies || A.GoArounds != B.GoArounds
 		|| A.SepLoss != B.SepLoss || A.WakeBusts != B.WakeBusts

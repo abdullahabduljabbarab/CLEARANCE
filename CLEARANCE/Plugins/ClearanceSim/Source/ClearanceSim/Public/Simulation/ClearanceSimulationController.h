@@ -317,6 +317,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
 	const TArray<float>& GetReplaySegmentSeams() const { return ReplaySegmentSeams; }
 
+	// ATC comms transcript - operator commands, pilot readbacks / refusals,
+	// system advisories. Populated automatically as the CommsRouter
+	// broadcasts instruction results. The panel's Performance > Transcript
+	// sub-tab binds to this. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	const TArray<FCommsTranscriptEntry>& GetTranscript() const { return Transcript; }
+
+	// Append a system line ("Mayday declared", "Conflict alert AAL101/DLH103",
+	// "Reclassifying UNK002 as Hostile" etc). Anything that isn't a direct
+	// operator/pilot exchange goes through here. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void LogTranscriptSystem(FName Callsign, const FString& Text);
+
+	// Append an operator (ATC) or pilot (aircraft) line directly - for paths
+	// that bypass the CommsRouter delegate (parser "say again", emergency
+	// declarations the pilot makes on the radio, crash mayday, voice readbacks
+	// etc). Speaker label is derived from Role inside Append. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	void LogTranscriptLine(EClearanceCommsRole InRole, FName Callsign, const FString& Text);
+
 	// --- Cameras ------------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
@@ -602,7 +622,7 @@ public:
 	int32 RepScoreLandings = 0;
 
 	UPROPERTY(Replicated)
-	int32 RepScoreDepartures = 0;
+	int32 RepScoreHandoffs = 0;
 
 	UPROPERTY(Replicated)
 	int32 RepScoreResolved = 0;
@@ -642,6 +662,17 @@ public:
 
 	UPROPERTY(Replicated)
 	float RepScoreNextSpawnSec = 0.f;
+
+	// Full ordered list of scored events, server-mirrored from Scoring->GetSessionLog
+	// in the same pass that updates the rep counters. Each entry carries TimeStamp +
+	// Type + AircraftA/B + Details so the Performance tab can render per-category
+	// "[mm:ss] CALLSIGN" rows under each counter. Replicated as a whole array; the
+	// session log is hundreds of entries at most so the bandwidth is trivial. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FIncidentRecord> RepScoringLog;
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	const TArray<FIncidentRecord>& GetScoringLog() const { return RepScoringLog; }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Refs")
 	TObjectPtr<AClearanceAircraftSpawner> Spawner;
@@ -813,6 +844,20 @@ private:
 	UPROPERTY(Replicated)
 	TArray<float> ReplaySegmentSeams;
 
+	// ATC comms transcript. Capped at the most recent N entries to keep the
+	// replication payload bounded; the panel UI shows the tail of this list
+	// in scrolling order. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FCommsTranscriptEntry> Transcript;
+
+private:
+	UFUNCTION()
+	void HandleInstructionResult(FName Callsign, FAircraftInstruction Instruction, EInstructionResult Result);
+
+	void AppendTranscriptEntry(EClearanceCommsRole InRole, FName Callsign, const FString& Text);
+
+public:
+
 	// Preset cameras spawned on session start. Free-cam is intentionally not exposed.
 	// Replicated so the instructor PIP on clients can resolve them - the
 	// CameraActors themselves replicate (built-in), but the controller's
@@ -901,6 +946,11 @@ private:
 
 	bool bSessionActive = false;
 	bool bPaused = false;
+
+	// Replicated so the instructor panel (which runs on the client in a host /
+	// client split) can read it via GetSessionTime() each paint without an RPC.
+	// Server-only writer (the Tick accumulator) - clients just observe. - TripleA
+	UPROPERTY(Replicated)
 	float SessionTime = 0.f;
 	bool bInitialised = false;
 

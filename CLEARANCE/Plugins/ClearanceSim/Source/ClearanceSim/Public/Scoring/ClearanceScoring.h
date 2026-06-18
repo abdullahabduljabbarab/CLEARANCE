@@ -51,7 +51,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PointsIntercept = 150;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
-	int32 PointsDeparture = 80;
+	int32 PointsHandoff = 80;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PointsResolution = 50;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
@@ -107,11 +107,11 @@ private:
 
 	int32 CurrentScore = 0;
 	int32 TotalLandings = 0;
-	int32 TotalDepartures = 0;
+	int32 TotalHandoffs = 0;
 	int32 TotalGoArounds = 0;
 	int32 TotalSeparationLosses = 0;
 	int32 TotalInstructions = 0;
-	int32 TotalHandled = 0; // landings + departures
+	int32 TotalHandled = 0; // landings + handoffs
 	int32 TotalFailures = 0; // separation losses + unresolved exits + missed handoffs
 
 	float CurrentSpawnIntervalSeconds = 30.f;

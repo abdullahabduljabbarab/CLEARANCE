@@ -432,7 +432,14 @@ void AClearanceSimulationController::InitialiseSystems()
 
 	if (Spawner) { Spawner->SetReferences(AirspaceManager); }
 	if (ConflictDetector) { ConflictDetector->SetReferences(AirspaceManager); }
-	if (CommsRouter) { CommsRouter->SetReferences(AirspaceManager, Validator); }
+	if (CommsRouter)
+	{
+		CommsRouter->SetReferences(AirspaceManager, Validator);
+		// Subscribe to instruction results so the comms transcript can capture
+		// the operator command + auto-generate the pilot readback / refusal.
+		// AddUniqueDynamic so re-initialising doesn't double-up. - TripleA
+		CommsRouter->OnInstructionResult.AddUniqueDynamic(this, &AClearanceSimulationController::HandleInstructionResult);
+	}
 
 	BindDelegates();
 	SpawnPresetCameras();
@@ -481,7 +488,12 @@ void AClearanceSimulationController::StartSession()
 		Spawner->EntryRadiusNm = ExitRadiusNm;
 	}
 
-	SessionTime = 0.f;
+	// Intentionally NOT resetting SessionTime - it ticks from server BeginPlay
+	// so the HUD timer shows total elapsed PIE time, surviving multiple
+	// StartSession calls. Per-scenario timing relative to start is captured
+	// elsewhere (recorder, scoring incidents stamp themselves at the current
+	// SessionTime so durations come out correct regardless of absolute value).
+	// - TripleA
 	bPaused = false;
 	bSessionActive = true;
 	NextViperNumber = 1;
@@ -537,7 +549,7 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreTotal);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreEfficiencyPct);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreLandings);
-	DOREPLIFETIME(AClearanceSimulationController, RepScoreDepartures);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoreHandoffs);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreResolved);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreIntercepts);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreEmergencies);
@@ -551,6 +563,8 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreCrashed);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreBusted);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreNextSpawnSec);
+	DOREPLIFETIME(AClearanceSimulationController, RepScoringLog);
+	DOREPLIFETIME(AClearanceSimulationController, SessionTime);
 	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
 	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
 	DOREPLIFETIME(AClearanceSimulationController, CameraTower);
@@ -564,6 +578,7 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, ReplaySpeed);
 	DOREPLIFETIME(AClearanceSimulationController, ReplayDuration);
 	DOREPLIFETIME(AClearanceSimulationController, ReplaySegmentSeams);
+	DOREPLIFETIME(AClearanceSimulationController, Transcript);
 }
 
 void AClearanceSimulationController::PushNotification(const FString& Text, FColor Colour, float LifetimeSec)
@@ -583,6 +598,13 @@ void AClearanceSimulationController::PushNotification(const FString& Text, FColo
 	{
 		RepNotifications.RemoveAt(0);
 	}
+
+	// Anything escalated to a HUD notification (conflicts, separation losses,
+	// intercept results, emergency advisories, scoring events) is by definition
+	// significant enough for the AAR transcript. Logged as System since these
+	// originate from the simulation, not a specific operator/pilot transmission.
+	// - TripleA
+	AppendTranscriptEntry(EClearanceCommsRole::System, NAME_None, Text);
 }
 
 // Multicast: pilot voice + mayday lines. Fires on the server and every
@@ -593,6 +615,19 @@ void AClearanceSimulationController::Multicast_PlayTTS_Implementation(FName Call
 {
 	UWorld* World = GetWorld();
 	if (!World || Text.IsEmpty()) { return; }
+
+	// Single transcription point - anything voiced over the radio lands in the
+	// transcript. Server-only so peers don't duplicate. Lines with no callsign
+	// (system / controller voice, scenario broadcasts) get System role; aircraft
+	// lines get Pilot role. - TripleA
+	if (HasAuthority())
+	{
+		const EClearanceCommsRole TranscriptRole = Callsign.IsNone()
+			? EClearanceCommsRole::System
+			: EClearanceCommsRole::Pilot;
+		AppendTranscriptEntry(TranscriptRole, Callsign, Text);
+	}
+
 	for (TActorIterator<AClearanceVoiceOutput> It(World); It; ++It)
 	{
 		if (!*It) { break; }
@@ -671,6 +706,17 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		return;
 	}
 
+	// SessionTime ticks pre-StartSession so the HUD shows elapsed time the
+	// moment the controller is alive on the server (instructor watches it
+	// count up while setting up a scenario, no "press start" friction).
+	// Frozen during in-sim pause and during replay - that's why the increment
+	// sits between those two gates and the bSessionActive gate, not below
+	// them. - TripleA
+	if (!bPaused && !bReplayMode)
+	{
+		SessionTime += DeltaTime;
+	}
+
 	if (!bSessionActive || bPaused)
 	{
 		return;
@@ -712,11 +758,10 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	}
 
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
-	SessionTime += SimDelta;
 
 	// Scenario runner advances on sim time so a 10x time-scaled session reaches
 	// scripted moments 10x faster - matches authoring intuition. - TripleA
-	if (ScenarioRunner && ScenarioRunner->IsRunning()) { ScenarioRunner->Tick(SimDelta); }
+	if (ScenarioRunner && ScenarioRunner->IsRunning()) { ScenarioRunner->Tick(SimDelta, DeltaTime); }
 
 	// Phase 3: mirror ScenarioRunner state to replicated UPROPERTYs so clients
 	// see the SCENARIO readout line without needing a ScenarioRunner instance. - TripleA
@@ -745,13 +790,13 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		RepScoreEfficiencyPct = Scoring->GetEfficiency() * 100.f;
 		RepScoreNextSpawnSec  = Scoring->GetCurrentSpawnInterval();
 
-		int32 nLand = 0, nDep = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0, nBust = 0;
+		int32 nLand = 0, nHand = 0, nRes = 0, nGA = 0, nSep = 0, nExit = 0, nWake = 0, nTCAS = 0, nInt = 0, nMisID = 0, nViol = 0, nEmer = 0, nCrash = 0, nBust = 0;
 		for (const FIncidentRecord& R : Scoring->GetSessionLog())
 		{
 			switch (R.Type)
 			{
 			case EIncidentType::SuccessfulLanding:    ++nLand; break;
-			case EIncidentType::SuccessfulDeparture:  ++nDep;  break;
+			case EIncidentType::SuccessfulHandoff:    ++nHand; break;
 			case EIncidentType::SuccessfulResolution: ++nRes;  break;
 			case EIncidentType::SuccessfulIntercept:  ++nInt;  break;
 			case EIncidentType::GoAroundTriggered:    ++nGA;   break;
@@ -768,7 +813,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 			}
 		}
 		RepScoreLandings    = nLand;
-		RepScoreDepartures  = nDep;
+		RepScoreHandoffs    = nHand;
 		RepScoreResolved    = nRes;
 		RepScoreIntercepts  = nInt;
 		RepScoreEmergencies = nEmer;
@@ -781,6 +826,11 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		RepScoreViolated    = nViol;
 		RepScoreCrashed     = nCrash;
 		RepScoreBusted      = nBust;
+
+		// Mirror the full ordered scoring log to clients. Cheap - one TArray copy
+		// per scoring update, log only grows on actual incidents. Performance tab
+		// reads from this to render per-category "[mm:ss] CALLSIGN" rows. - TripleA
+		RepScoringLog = Scoring->GetSessionLog();
 	}
 
 	// Violation zone check: any declared-hostile aircraft inside a protected zone
@@ -1036,10 +1086,17 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 							FString(), false);
 						break;
 					case EEmergencyType::CommsFailure:
+						// No spoken transmission (radio failure) - just the cockpit static
+						// cue. Manually log a System line so the trainee sees the
+						// squawk change in the transcript. - TripleA
 						Multicast_PlayCockpitCue(S.Callsign, 0, 2.0f);
+						LogTranscriptLine(EClearanceCommsRole::System, S.Callsign, FString::Printf(TEXT("[radio silence - comms failure suspected, %s squawking 7600]"), *S.Callsign.ToString()));
 						break;
 					case EEmergencyType::Hijack:
+						// Same - no TTS, just a brief carrier blip. Manual log so the
+						// squawk change is visible. - TripleA
 						Multicast_PlayCockpitCue(S.Callsign, 0, 0.6f);
+						LogTranscriptLine(EClearanceCommsRole::System, S.Callsign, FString::Printf(TEXT("[brief carrier - %s squawking 7500]"), *S.Callsign.ToString()));
 						break;
 					default: break;
 					}
@@ -2137,7 +2194,7 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 	TickGCIIntercepts(DeltaTime);                                  // join-up + escort
 	TickBanditEW(DeltaTime);                                       // hostiles react to closing interceptors
 	TickCrashingAircraft(DeltaTime);                               // drop falling aircraft to the ground
-	CheckExits();                                                  // landings / departures / strays
+	CheckExits();                                                  // landings / handoffs / strays
 
 	UpdateVisuals();
 	DrawDebugView();
@@ -2787,9 +2844,9 @@ void AClearanceSimulationController::DrawDebugView()
 
 	// Scoring breakdown - read from replicated fields (server mirrors Scoring state
 	// + per-incident tallies, client gets it via replication). - TripleA
-	Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +dep %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
+	Readout += FString::Printf(TEXT("SCORING  total %d   |   +land %d  +handoff %d  +resolved %d  +intercept %d  +emer %d   |   -go-around %d  -sep-loss %d  -wake %d  -tcas %d  -strayed %d  -misID %d  -violated %d  -crashed %d  -busted %d   |   next spawn %.0fs\n"),
 		RepScoreTotal,
-		RepScoreLandings, RepScoreDepartures, RepScoreResolved, RepScoreIntercepts, RepScoreEmergencies,
+		RepScoreLandings, RepScoreHandoffs, RepScoreResolved, RepScoreIntercepts, RepScoreEmergencies,
 		RepScoreGoArounds, RepScoreSepLoss, RepScoreWake, RepScoreTCAS, RepScoreStrayed, RepScoreMisID, RepScoreViolated, RepScoreCrashed, RepScoreBusted,
 		RepScoreNextSpawnSec);
 
@@ -3115,7 +3172,7 @@ void AClearanceSimulationController::CheckExits()
 		}
 		else if (Dist > ExitRadiusNm && EverEnteredSector.Contains(State.Callsign))
 		{
-			// Cleared to leave = a clean departure; drifting out otherwise is a miss.
+			// Cleared to leave = a clean handoff to the next sector; drifting out otherwise is a miss.
 			// An emergency aircraft drifting out unhandled is a catastrophic loss.
 			// Non-civilian contacts (hostile / unknown / military) exiting are GCI's
 			// problem and don't count as "strayed". Civilians are Neutral per
@@ -3135,7 +3192,7 @@ void AClearanceSimulationController::CheckExits()
 			{
 				Outcome = (State.ActiveEmergency != EEmergencyType::None)
 					? EIncidentType::SuccessfulEmergencyHandling
-					: EIncidentType::SuccessfulDeparture;
+					: EIncidentType::SuccessfulHandoff;
 			}
 			else if (bNonCivilian)
 			{
@@ -3393,6 +3450,189 @@ void AClearanceSimulationController::SetReplayPaused(bool bInPaused)
 void AClearanceSimulationController::SetReplaySpeed(float Multiplier)
 {
 	ReplaySpeed = FMath::Max(0.05f, Multiplier);
+}
+
+// --- Comms transcript ------------------------------------------------------
+
+namespace
+{
+	// Phraseology renderers for the comms transcript. Map each
+	// EInstructionType / value pair onto a short ATC-style line. Not full
+	// ICAO phraseology (e.g. "two seven zero" instead of "270"), but readable
+	// at a glance and matches what the player would actually say. - TripleA
+	FString FormatHeading(int32 Hdg)
+	{
+		return FString::Printf(TEXT("%03d"), ((Hdg % 360) + 360) % 360);
+	}
+
+	FString FormatAltitude(int32 AltFt)
+	{
+		if (AltFt >= 18000)
+		{
+			return FString::Printf(TEXT("FL%03d"), FMath::RoundToInt(AltFt / 100.f));
+		}
+		return FString::Printf(TEXT("%d ft"), AltFt);
+	}
+
+	FString RenderOperatorPhraseology(const FAircraftInstruction& Inst)
+	{
+		const FString Callsign = Inst.TargetCallsign.ToString();
+		switch (Inst.Type)
+		{
+		case EInstructionType::HeadingChange:
+		{
+			const TCHAR* Dir = (Inst.TurnDirection < 0) ? TEXT("left ") : (Inst.TurnDirection > 0) ? TEXT("right ") : TEXT("");
+			return FString::Printf(TEXT("%s, turn %sheading %s"), *Callsign, Dir, *FormatHeading(FMath::RoundToInt(Inst.TargetValue)));
+		}
+		case EInstructionType::AltitudeChange:
+		{
+			const TCHAR* Exp = Inst.bExpedite ? TEXT(", expedite") : TEXT("");
+			return FString::Printf(TEXT("%s, climb / descend %s%s"), *Callsign, *FormatAltitude(FMath::RoundToInt(Inst.TargetValue)), Exp);
+		}
+		case EInstructionType::SpeedChange:
+			return FString::Printf(TEXT("%s, speed %d knots"), *Callsign, FMath::RoundToInt(Inst.TargetValue));
+		case EInstructionType::Hold:
+			return FString::Printf(TEXT("%s, hold present position"), *Callsign);
+		case EInstructionType::ApproachClearance:
+			return FString::Printf(TEXT("%s, cleared ILS approach"), *Callsign);
+		case EInstructionType::TakeoffClearance:
+			return FString::Printf(TEXT("%s, cleared for takeoff"), *Callsign);
+		case EInstructionType::ExitSector:
+			return FString::Printf(TEXT("%s, contact next sector, frequency change approved"), *Callsign);
+		case EInstructionType::DeclareTrackLost:
+			return FString::Printf(TEXT("%s, no joy, breaking off"), *Callsign);
+		default:
+			return Callsign;
+		}
+	}
+
+	FString RenderPilotReadback(const FAircraftInstruction& Inst)
+	{
+		const FString Callsign = Inst.TargetCallsign.ToString();
+		switch (Inst.Type)
+		{
+		case EInstructionType::HeadingChange:
+		{
+			const TCHAR* Dir = (Inst.TurnDirection < 0) ? TEXT("left ") : (Inst.TurnDirection > 0) ? TEXT("right ") : TEXT("");
+			return FString::Printf(TEXT("%sheading %s, %s"), Dir, *FormatHeading(FMath::RoundToInt(Inst.TargetValue)), *Callsign);
+		}
+		case EInstructionType::AltitudeChange:
+		{
+			const TCHAR* Exp = Inst.bExpedite ? TEXT(" expedite") : TEXT("");
+			return FString::Printf(TEXT("%s%s, %s"), *FormatAltitude(FMath::RoundToInt(Inst.TargetValue)), Exp, *Callsign);
+		}
+		case EInstructionType::SpeedChange:
+			return FString::Printf(TEXT("speed %d knots, %s"), FMath::RoundToInt(Inst.TargetValue), *Callsign);
+		case EInstructionType::Hold:
+			return FString::Printf(TEXT("holding present position, %s"), *Callsign);
+		case EInstructionType::ApproachClearance:
+			return FString::Printf(TEXT("cleared ILS approach, %s"), *Callsign);
+		case EInstructionType::TakeoffClearance:
+			return FString::Printf(TEXT("cleared for takeoff, %s"), *Callsign);
+		case EInstructionType::ExitSector:
+			return FString::Printf(TEXT("frequency change approved, %s"), *Callsign);
+		case EInstructionType::DeclareTrackLost:
+			return FString::Printf(TEXT("roger, %s"), *Callsign);
+		default:
+			return Callsign;
+		}
+	}
+
+	FString RenderPilotRefusal(const FAircraftInstruction& Inst, EInstructionResult Result)
+	{
+		const FString Callsign = Inst.TargetCallsign.ToString();
+		switch (Result)
+		{
+		case EInstructionResult::Rejected_PhysicallyImpossible:
+			return FString::Printf(TEXT("unable, %s"), *Callsign);
+		case EInstructionResult::Rejected_ConflictAdvisory:
+			return FString::Printf(TEXT("negative, traffic, %s"), *Callsign);
+		case EInstructionResult::Rejected_AircraftExited:
+			return FString::Printf(TEXT("out of sector, %s"), *Callsign);
+		default:
+			return FString();
+		}
+	}
+}
+
+void AClearanceSimulationController::HandleInstructionResult(FName Callsign, FAircraftInstruction Instruction, EInstructionResult Result)
+{
+	UE_LOG(LogTemp, Warning, TEXT("[Transcript] HandleInstructionResult fired: %s result=%s auth=%d"),
+		*Callsign.ToString(),
+		*UEnum::GetDisplayValueAsText(Result).ToString(),
+		HasAuthority() ? 1 : 0);
+
+	// Operator's outbound transmission - always logged. Operator's voice is the
+	// trainee themselves (typed / spoken into the parser), so it never goes
+	// through Multicast_PlayTTS like the pilot voice does. Has to be logged
+	// here explicitly. - TripleA
+	AppendTranscriptEntry(EClearanceCommsRole::Operator, Callsign, RenderOperatorPhraseology(Instruction));
+
+	// Pilot readbacks / refusals for the Accepted / Rejected_PhysicallyImpossible
+	// / Rejected_ConflictAdvisory / Rejected_AircraftExited cases all run through
+	// the parser's assembled SpeakOut -> Multicast_PlayTTS path, which now
+	// auto-logs to transcript at the source. No per-instruction Pilot log here
+	// (would double-up with the TTS log). - TripleA
+	switch (Result)
+	{
+	case EInstructionResult::Rejected_NoResponse:
+		// Deliberate silence - NORDO contact. No TTS, no parser readback, so log
+		// a System line so the trainee can see they got nothing back. - TripleA
+		AppendTranscriptEntry(EClearanceCommsRole::System, Callsign, FString::Printf(TEXT("[no response from %s]"), *Callsign.ToString()));
+		break;
+	case EInstructionResult::Rejected_InvalidCallsign:
+		AppendTranscriptEntry(EClearanceCommsRole::System, Callsign, FString::Printf(TEXT("Unknown callsign %s"), *Callsign.ToString()));
+		break;
+	default:
+		break;
+	}
+}
+
+void AClearanceSimulationController::LogTranscriptSystem(FName Callsign, const FString& Text)
+{
+	AppendTranscriptEntry(EClearanceCommsRole::System, Callsign, Text);
+}
+
+void AClearanceSimulationController::LogTranscriptLine(EClearanceCommsRole InRole, FName Callsign, const FString& Text)
+{
+	AppendTranscriptEntry(InRole, Callsign, Text);
+}
+
+void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole InRole, FName Callsign, const FString& Text)
+{
+	if (!HasAuthority())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transcript] Append SKIPPED - not authority. Role=%d cs=%s text=%s"),
+			static_cast<int32>(InRole), *Callsign.ToString(), *Text);
+		return;
+	}
+	if (Text.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transcript] Append SKIPPED - empty text. Role=%d cs=%s"),
+			static_cast<int32>(InRole), *Callsign.ToString());
+		return;
+	}
+	UE_LOG(LogTemp, Display, TEXT("[Transcript] Appending: [%s] cs=%s text='%s' (total now %d)"),
+		InRole == EClearanceCommsRole::Operator ? TEXT("OP") : (InRole == EClearanceCommsRole::Pilot ? TEXT("PILOT") : TEXT("SYS")),
+		*Callsign.ToString(), *Text, Transcript.Num() + 1);
+
+	const FString SpeakerLabel = (InRole == EClearanceCommsRole::Operator) ? FString(TEXT("ATC"))
+	                          : (InRole == EClearanceCommsRole::Pilot)    ? Callsign.ToString()
+	                          :                                             FString(TEXT("SYS"));
+	FCommsTranscriptEntry Entry;
+	Entry.TimeSec = SessionTime;
+	Entry.Role = InRole;
+	Entry.Callsign = Callsign;
+	Entry.Speaker = SpeakerLabel;
+	Entry.Text = Text;
+	Transcript.Add(MoveTemp(Entry));
+	// Cap the replicated buffer to the last 500 entries - keeps net cost
+	// bounded and the panel's scroll list only renders the tail. - TripleA
+	constexpr int32 MaxTranscript = 500;
+	if (Transcript.Num() > MaxTranscript)
+	{
+		Transcript.RemoveAt(0, Transcript.Num() - MaxTranscript);
+	}
 }
 
 bool AClearanceSimulationController::StartDIS(const FString& Host, int32 Port)
@@ -5912,7 +6152,7 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceReplaySpeedCmd(
 
 static FAutoConsoleCommandWithWorldAndArgs GClearanceExitCmd(
 	TEXT("clearance.exit"),
-	TEXT("clearance.exit <callsign> - clear an aircraft to leave the sector (scores as a successful departure when it crosses the ring)"),
+	TEXT("clearance.exit <callsign> - clear an aircraft to leave the sector (scores as a successful handoff when it crosses the ring)"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
 	{
 		if (Args.Num() < 1) { UE_LOG(LogTemp, Warning, TEXT("usage: clearance.exit <callsign>")); return; }

@@ -317,6 +317,13 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	const FName Callsign = ResolveCallsign(Controller, Tokens, Idx);
 	if (Callsign.IsNone())
 	{
+		// Operator's raw transmission - the trainee called a callsign that isn't
+		// in the sector. This path returns BEFORE the main parser loop so the
+		// operator line never reaches HandleInstructionResult. Log it directly
+		// so AAR shows what the trainee actually said. The "Station calling"
+		// system response is auto-logged via Multicast_PlayTTS, so no explicit
+		// System log needed here. - TripleA
+		Controller->LogTranscriptLine(EClearanceCommsRole::Operator, NAME_None, Transmission);
 		const FString R = TEXT("Station calling, say again your callsign");
 		SpeakAsController(Controller, R);
 		return R;
@@ -362,14 +369,12 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("left")) { Dir = -1; ++Idx; }
 			else if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("right")) { Dir = 1; ++Idx; }
 
-			// Pilot readback: "turning left heading two seven zero" - include verb. - TripleA
-			const TCHAR* TurningWord = (Dir < 0) ? TEXT("turning left ") :
-			                           (Dir > 0) ? TEXT("turning right ") : TEXT("turning ");
-
+			// ICAO Doc 4444 §12.3 readback: direction word + value, NO action verb.
+			// Pilot says "left heading 270" not "turning left heading 270". - TripleA
 			if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("heading"))
 			{
 				++Idx;
-				if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("%sheading %03d"), TurningWord, Value), Dir, false); }
+				if (ParseNumberRun(Tokens, Idx, Value)) { Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("%sheading %03d"), *DirWord(Dir), Value), Dir, false); }
 			}
 			else if (ParseNumberRun(Tokens, Idx, Value)) // relative: "turn left 30 [degrees]"
 			{
@@ -377,7 +382,7 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { Cur = AM->GetAircraftState(Callsign).Heading; }
 				float Target = (Dir < 0) ? Cur - (float)Value : Cur + (float)Value;
 				Target = FMath::Fmod(Target + 360.f, 360.f);
-				Make(EInstructionType::HeadingChange, Target, FString::Printf(TEXT("%s%d degrees"), TurningWord, Value), Dir, false);
+				Make(EInstructionType::HeadingChange, Target, FString::Printf(TEXT("%s%d degrees"), *DirWord(Dir), Value), Dir, false);
 				if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("degrees")) { ++Idx; }
 			}
 		}
@@ -387,15 +392,14 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			if (ParseNumberRun(Tokens, Idx, Value))
 			{
 				// No turn verb said by the controller; the pilot readback infers the
-				// direction from the shortest turn ("turning right" vs "turning left")
-				// so it still sounds like radio comms. - TripleA
+				// direction from the shortest turn so the direction word matches the
+				// actual turn ("left heading 270" vs "right heading 270"). No action
+				// verb per ICAO Doc 4444 §12.3 readback format. - TripleA
 				float Cur = 0.f;
 				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { Cur = AM->GetAircraftState(Callsign).Heading; }
 				const float Delta = FMath::FindDeltaAngleDegrees(Cur, (float)Value);
-				const TCHAR* TurningWord = (Delta < -1.f) ? TEXT("turning left ") :
-				                           (Delta >  1.f) ? TEXT("turning right ") : TEXT("");
-				const int32 InferredDir = (Delta < 0.f) ? -1 : (Delta > 0.f ? 1 : 0);
-				Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("%sheading %03d"), TurningWord, Value), InferredDir, false);
+				const int32 InferredDir = (Delta < -1.f) ? -1 : (Delta > 1.f ? 1 : 0);
+				Make(EInstructionType::HeadingChange, (float)Value, FString::Printf(TEXT("%sheading %03d"), *DirWord(InferredDir), Value), InferredDir, false);
 			}
 		}
 		else if (T == TEXT("flight") && Idx + 1 < Tokens.Num() && Tokens[Idx + 1] == TEXT("level"))
@@ -403,14 +407,10 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			Idx += 2;
 			if (ParseNumberRun(Tokens, Idx, Value))
 			{
-				// Pilot readback includes the verb - "descending to flight level 250"
-				// or "climbing to flight level 250" depending on current altitude. - TripleA
-				float CurAlt = 0.f;
-				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { CurAlt = AM->GetAircraftState(Callsign).Altitude; }
-				const float Target = (float)Value * 100.f;
-				const TCHAR* Verb = (CurAlt > Target + 50.f) ? TEXT("descending to") :
-				                    (CurAlt < Target - 50.f) ? TEXT("climbing to")   : TEXT("maintaining");
-				Make(EInstructionType::AltitudeChange, Target, FString::Printf(TEXT("%s flight level %d"), Verb, Value), 0, bExpedite);
+				// ICAO Doc 4444 §12.3 readback: target value only, no climb/descend
+				// verb ("flight level 250, AFR101" not "climbing to flight level 250").
+				// - TripleA
+				Make(EInstructionType::AltitudeChange, (float)Value * 100.f, FString::Printf(TEXT("flight level %d"), Value), 0, bExpedite);
 			}
 		}
 		else if (T == TEXT("altitude"))
@@ -418,12 +418,8 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			++Idx;
 			if (ParseNumberRun(Tokens, Idx, Value))
 			{
-				float CurAlt = 0.f;
-				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { CurAlt = AM->GetAircraftState(Callsign).Altitude; }
-				const float Target = (float)Value;
-				const TCHAR* Verb = (CurAlt > Target + 50.f) ? TEXT("descending to") :
-				                    (CurAlt < Target - 50.f) ? TEXT("climbing to")   : TEXT("maintaining");
-				Make(EInstructionType::AltitudeChange, Target, FString::Printf(TEXT("%s altitude %d"), Verb, Value), 0, bExpedite);
+				// ICAO Doc 4444 §12.3 readback: target only, no verb. - TripleA
+				Make(EInstructionType::AltitudeChange, (float)Value, FString::Printf(TEXT("altitude %d"), Value), 0, bExpedite);
 			}
 		}
 		else if (T == TEXT("speed"))
@@ -431,20 +427,14 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			++Idx;
 			if (ParseNumberRun(Tokens, Idx, Value))
 			{
-				// Pilot readback uses "reducing to" / "increasing to" / "maintaining"
-				// based on whether the new speed is lower / higher / matches. - TripleA
-				float CurSpd = 0.f;
-				if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager()) { CurSpd = AM->GetAircraftState(Callsign).Speed; }
-				const float Target = (float)Value;
-				const TCHAR* Verb = (CurSpd > Target + 5.f) ? TEXT("reducing to") :
-				                    (CurSpd < Target - 5.f) ? TEXT("increasing to") : TEXT("maintaining");
-				Make(EInstructionType::SpeedChange, Target, FString::Printf(TEXT("%s speed %d"), Verb, Value), 0, false);
+				// ICAO Doc 4444 §12.3 readback: target only, no verb. - TripleA
+				Make(EInstructionType::SpeedChange, (float)Value, FString::Printf(TEXT("speed %d"), Value), 0, false);
 			}
 		}
 		else if (T == TEXT("descend") || T == TEXT("climb"))
 		{
-			// "descend 8000" / "climb 8000" - the verb the operator used is the readback verb.
-			const bool bDescend = (T == TEXT("descend"));
+			// "descend 8000" / "climb 8000" - pilot readback strips the verb,
+			// just reads back the target altitude. - TripleA
 			++Idx;
 			int32 Peek = Idx;
 			while (Peek < Tokens.Num() && (Tokens[Peek] == TEXT("to") || Tokens[Peek] == TEXT("and"))) { ++Peek; }
@@ -453,8 +443,7 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 				Idx = Peek;
 				if (ParseNumberRun(Tokens, Idx, Value))
 				{
-					const TCHAR* Verb = bDescend ? TEXT("descending to") : TEXT("climbing to");
-					Make(EInstructionType::AltitudeChange, (float)Value, FString::Printf(TEXT("%s altitude %d"), Verb, Value), 0, bExpedite);
+					Make(EInstructionType::AltitudeChange, (float)Value, FString::Printf(TEXT("altitude %d"), Value), 0, bExpedite);
 				}
 			}
 		}
@@ -538,6 +527,11 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 
 	if (Parsed.Num() == 0 && !bGoAround && HoldReadback.IsEmpty())
 	{
+		// Log the operator's garbled transmission (operator transmissions are
+		// trainee input, never TTS'd, so they need an explicit log). The pilot's
+		// "say again" goes through SpeakOut -> Multicast_PlayTTS which auto-logs
+		// at the source. - TripleA
+		Controller->LogTranscriptLine(EClearanceCommsRole::Operator, Callsign, Transmission);
 		const FString R = FString::Printf(TEXT("%s, say again"), *Callsign.ToString());
 		SpeakOut(Controller, Callsign, R);
 		return R;
@@ -572,9 +566,19 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		return FString::Printf(TEXT("%s, NO RESPONSE"), *Callsign.ToString());
 	}
 
-	FString Readback = Callsign.ToString();
-	if (Accepted.Num() > 0) { Readback += TEXT(", ") + FString::Join(Accepted, TEXT(", ")); }
-	if (Unable.Num() > 0) { Readback += TEXT(" -- UNABLE ") + FString::Join(Unable, TEXT(", ")); }
+	// ICAO Doc 4444 §12.3 / FAA 7110.65: pilot readbacks place callsign LAST
+	// as the sign-off so ATC can verify the readback is complete and tied to
+	// the correct aircraft. "Left heading 270, AFR101" not "AFR101, left
+	// heading 270". - TripleA
+	FString Readback;
+	if (Accepted.Num() > 0) { Readback += FString::Join(Accepted, TEXT(", ")); }
+	if (Unable.Num() > 0)
+	{
+		if (!Readback.IsEmpty()) { Readback += TEXT(" -- "); }
+		Readback += TEXT("UNABLE ") + FString::Join(Unable, TEXT(", "));
+	}
+	if (!Readback.IsEmpty()) { Readback += TEXT(", "); }
+	Readback += Callsign.ToString();
 	SpeakOut(Controller, Callsign, Readback);
 	return Readback;
 }

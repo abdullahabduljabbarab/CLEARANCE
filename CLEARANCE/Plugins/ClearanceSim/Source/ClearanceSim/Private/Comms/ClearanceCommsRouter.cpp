@@ -31,7 +31,7 @@ EInstructionResult UClearanceCommsRouter::IssueInstruction(const FAircraftInstru
 	// asked for someone who isn't (validly) in the sector. - TripleA
 	if (!Manager || !Validator || !Manager->IsCallsignRegistered(Callsign))
 	{
-		OnInstructionResult.Broadcast(Callsign, EInstructionResult::Rejected_InvalidCallsign);
+		OnInstructionResult.Broadcast(Callsign, Instruction, EInstructionResult::Rejected_InvalidCallsign);
 		return EInstructionResult::Rejected_InvalidCallsign;
 	}
 
@@ -55,7 +55,7 @@ EInstructionResult UClearanceCommsRouter::IssueInstruction(const FAircraftInstru
 		}
 	}
 
-	OnInstructionResult.Broadcast(Callsign, Result);
+	OnInstructionResult.Broadcast(Callsign, Instruction, Result);
 	return Result;
 }
 

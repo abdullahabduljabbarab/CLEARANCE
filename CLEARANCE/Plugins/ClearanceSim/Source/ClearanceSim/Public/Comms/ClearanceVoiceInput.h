@@ -12,7 +12,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnVoiceReadback, const FString&, Re
 
 // Push-to-talk voice input: captures the mic while "listening", sends the audio
 // to a local whisper.cpp server for transcription, then feeds the recognised
-// text into the phraseology parser. Drop one in the level; Neo's UI calls
+// text into the phraseology parser. Drop one in the level; the UI layer calls
 // StartListening/StopListening and binds OnTranscript/OnReadback. - TripleA
 UCLASS(Blueprintable)
 class CLEARANCESIM_API AClearanceVoiceInput : public AActor

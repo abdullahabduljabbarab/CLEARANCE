@@ -83,7 +83,7 @@ enum class EIncidentType : uint8
 	WakeEncounter			UMETA(DisplayName = "Wake Encounter"),
 	TCASResolutionAdvisory	UMETA(DisplayName = "TCAS Resolution Advisory"),
 	SuccessfulLanding		UMETA(DisplayName = "Successful Landing"),
-	SuccessfulDeparture		UMETA(DisplayName = "Successful Departure"),
+	SuccessfulHandoff		UMETA(DisplayName = "Successful Handoff"),
 	SuccessfulResolution	UMETA(DisplayName = "Successful Resolution"),
 	SuccessfulIntercept		UMETA(DisplayName = "Successful Intercept"),
 	// Operator declared a confirmed civilian (IFF on, not military) as hostile.
@@ -593,8 +593,37 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnWakeTurbulenceAdvisory, FName,
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(FOnTCASResolutionAdvisory, FName, ClimberCallsign, FName, DescenderCallsign, float, ClimberTargetAltitudeFt, float, DescenderTargetAltitudeFt);
 
 // Comms Router
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInstructionResult, FName, Callsign, EInstructionResult, Result);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnInstructionResult, FName, Callsign, FAircraftInstruction, Instruction, EInstructionResult, Result);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAdvisoryWarning, FString, Message, EAlertLevel, Level);
+
+// One line in the ATC comms transcript - operator command, pilot readback /
+// refusal, or system advisory. Persisted on the Controller and replicated to
+// the panel for the Performance > Transcript sub-tab. - TripleA
+UENUM(BlueprintType)
+enum class EClearanceCommsRole : uint8
+{
+	Operator	UMETA(DisplayName = "Operator"),
+	Pilot		UMETA(DisplayName = "Pilot"),
+	System		UMETA(DisplayName = "System")
+};
+
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FCommsTranscriptEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) float TimeSec = 0.f;
+	UPROPERTY(BlueprintReadOnly) EClearanceCommsRole Role = EClearanceCommsRole::Operator;
+	// Aircraft involved in the exchange (the same for both operator and pilot
+	// entries about the same instruction). Use Speaker for the UI label. - TripleA
+	UPROPERTY(BlueprintReadOnly) FName Callsign = NAME_None;
+	// Pre-computed display label for the speaker column: "ATC" for operator
+	// transmissions, the aircraft callsign for pilot transmissions, "SYS" for
+	// emergency / classification / advisory lines. Saves the UI from branching
+	// on Role to derive this. - TripleA
+	UPROPERTY(BlueprintReadOnly) FString Speaker;
+	UPROPERTY(BlueprintReadOnly) FString Text;
+};
 
 // Scoring
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnScoreUpdated, int32, NewScore);

@@ -34,8 +34,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Scenario")
 	bool IsRunning() const { return bRunning; }
 
+	// Wall-clock seconds since StartScenario, used for display ("T+02:30").
+	// Unaffected by SimulationTimeScale so the displayed counter matches the
+	// instructor's wristwatch. Trigger evaluations use ElapsedSec (scaled)
+	// internally - authored event timestamps stay in scenario-seconds. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Scenario")
-	float GetElapsedSeconds() const { return ElapsedSec; }
+	float GetElapsedSeconds() const { return WallClockElapsedSec; }
+
+	UFUNCTION(BlueprintCallable, Category = "Scenario")
+	float GetScenarioSeconds() const { return ElapsedSec; }
 
 	UFUNCTION(BlueprintCallable, Category = "Scenario")
 	FName GetLoadedId() const { return Scenario.Metadata.Id; }
@@ -60,8 +67,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Scenario")
 	bool IsFlagSet(FName FlagName) const { return Flags.Contains(FlagName); }
 
-	// Advance scenario time. Called from the Controller's main tick. - TripleA
-	void Tick(float SimDeltaSeconds);
+	// Advance scenario time. SimDeltaSeconds drives event-trigger comparisons
+	// (so a 10x speed session reaches scripted moments 10x faster as authored).
+	// WallClockDeltaSeconds drives the displayed counter so the instructor's
+	// "T+mm:ss" matches their wristwatch regardless of speed. - TripleA
+	void Tick(float SimDeltaSeconds, float WallClockDeltaSeconds);
 
 private:
 	UPROPERTY()
@@ -83,7 +93,8 @@ private:
 	TMap<FName, FName> ActivePursuits;
 
 	bool bRunning = false;
-	float ElapsedSec = 0.f;
+	float ElapsedSec = 0.f;          // scenario time (sim-scaled) - drives trigger evaluation
+	float WallClockElapsedSec = 0.f; // wall-clock seconds since StartScenario - drives display
 	int32 FiredEvents = 0;
 	int32 FiredTriggers = 0;
 

@@ -54,7 +54,7 @@ struct CLEARANCESIM_API FInstructorScoreView
 	UPROPERTY(BlueprintReadOnly) float EfficiencyPct = 100.f;
 
 	UPROPERTY(BlueprintReadOnly) int32 Landings = 0;
-	UPROPERTY(BlueprintReadOnly) int32 Departures = 0;
+	UPROPERTY(BlueprintReadOnly) int32 Handoffs = 0;
 	UPROPERTY(BlueprintReadOnly) int32 ResolvedConflicts = 0;
 	UPROPERTY(BlueprintReadOnly) int32 Intercepts = 0;
 	UPROPERTY(BlueprintReadOnly) int32 Emergencies = 0;

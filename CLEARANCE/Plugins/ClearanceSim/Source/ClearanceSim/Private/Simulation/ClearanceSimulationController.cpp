@@ -33,6 +33,10 @@
 #include "EngineUtils.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Misc/DateTime.h"
+#include "HAL/FileManager.h"
 #include "Components/StaticMeshComponent.h"
 
 namespace
@@ -617,14 +621,29 @@ void AClearanceSimulationController::Multicast_PlayTTS_Implementation(FName Call
 	if (!World || Text.IsEmpty()) { return; }
 
 	// Single transcription point - anything voiced over the radio lands in the
-	// transcript. Server-only so peers don't duplicate. Lines with no callsign
-	// (system / controller voice, scenario broadcasts) get System role; aircraft
-	// lines get Pilot role. - TripleA
+	// transcript. Server-only so peers don't duplicate.
+	// Role rules:
+	//   - no callsign           -> System (controller voice, broadcasts)
+	//   - registered aircraft   -> Pilot (the actual aircraft is speaking)
+	//   - any other callsign    -> System (TOWER / MET / ACC / AWACS / GCI /
+	//     ATIS - facilities, not aircraft; their callsign goes into Speaker
+	//     so the transcript still shows "TOWER:" instead of "SYS:"). - TripleA
 	if (HasAuthority())
 	{
-		const EClearanceCommsRole TranscriptRole = Callsign.IsNone()
-			? EClearanceCommsRole::System
-			: EClearanceCommsRole::Pilot;
+		EClearanceCommsRole TranscriptRole = EClearanceCommsRole::System;
+		if (!Callsign.IsNone())
+		{
+			// bPanic = crash panic + final-words lines. The final line fires
+			// on a 14-second delayed timer, by which point the aircraft has
+			// already been deregistered from AirspaceManager (the crash
+			// itself deregisters), so IsCallsignRegistered would falsely
+			// route it to System. But the speaker is still the pilot - dying
+			// over the radio is a Pilot transmission, not a system event.
+			// - TripleA
+			const bool bIsAircraft = bPanic
+				|| (AirspaceManager && AirspaceManager->IsCallsignRegistered(Callsign));
+			TranscriptRole = bIsAircraft ? EClearanceCommsRole::Pilot : EClearanceCommsRole::System;
+		}
 		AppendTranscriptEntry(TranscriptRole, Callsign, Text);
 	}
 
@@ -3598,6 +3617,212 @@ void AClearanceSimulationController::LogTranscriptLine(EClearanceCommsRole InRol
 	AppendTranscriptEntry(InRole, Callsign, Text);
 }
 
+namespace
+{
+	FString MMSS(float Seconds)
+	{
+		const int32 S = FMath::Max(0, FMath::FloorToInt(Seconds));
+		return FString::Printf(TEXT("%02d:%02d"), S / 60, S % 60);
+	}
+
+	const TCHAR* IncidentDisplayName(EIncidentType T)
+	{
+		switch (T)
+		{
+		case EIncidentType::SuccessfulLanding:           return TEXT("Landing");
+		case EIncidentType::SuccessfulHandoff:           return TEXT("Handoff");
+		case EIncidentType::SuccessfulResolution:        return TEXT("Conflict resolved");
+		case EIncidentType::SuccessfulIntercept:         return TEXT("Intercept");
+		case EIncidentType::SuccessfulEmergencyHandling: return TEXT("Emergency handled");
+		case EIncidentType::GoAroundTriggered:           return TEXT("Go-around");
+		case EIncidentType::SeparationLoss:              return TEXT("Separation loss");
+		case EIncidentType::UnresolvedExit:              return TEXT("Strayed");
+		case EIncidentType::WakeEncounter:               return TEXT("Wake encounter");
+		case EIncidentType::TCASResolutionAdvisory:      return TEXT("TCAS RA");
+		case EIncidentType::MisidentifiedCivilian:       return TEXT("Mis-ID");
+		case EIncidentType::ViolationZoneBreached:       return TEXT("Protected-zone breach");
+		case EIncidentType::AircraftCrashed:             return TEXT("Aircraft crashed");
+		case EIncidentType::RestrictedAirspaceBust:      return TEXT("Restricted-zone bust");
+		case EIncidentType::MissedHandoff:               return TEXT("Missed handoff");
+		case EIncidentType::LateInstruction:             return TEXT("Late instruction");
+		default:                                          return TEXT("Event");
+		}
+	}
+
+	const TCHAR* RoleTag(EClearanceCommsRole R)
+	{
+		switch (R)
+		{
+		case EClearanceCommsRole::Operator: return TEXT("ATC");
+		case EClearanceCommsRole::Pilot:    return TEXT("PILOT");
+		case EClearanceCommsRole::System:   return TEXT("SYS");
+		default:                            return TEXT("");
+		}
+	}
+}
+
+bool AClearanceSimulationController::ExportAARReport(FString& OutPath)
+{
+	if (!HasAuthority()) { return false; }
+
+	const FDateTime Now = FDateTime::Now();
+	const FString Stamp = Now.ToString(TEXT("%Y%m%d_%H%M%S"));
+	const FString DirPath = FPaths::ProjectSavedDir() / TEXT("Reports");
+	IFileManager::Get().MakeDirectory(*DirPath, /*Tree=*/true);
+	const FString FullPath = DirPath / FString::Printf(TEXT("Session_%s.md"), *Stamp);
+
+	const TArray<FIncidentRecord>& Log = RepScoringLog;
+	const TArray<FCommsTranscriptEntry>& T = Transcript;
+
+	// Header
+	FString Md;
+	Md.Reserve(64 * 1024);
+	Md += FString::Printf(TEXT("# CLEARANCE - Session AAR\n\n"));
+	Md += FString::Printf(TEXT("**Generated:** %s\n"), *Now.ToString(TEXT("%Y-%m-%d %H:%M:%S")));
+	Md += FString::Printf(TEXT("**Session duration:** %s\n"), *MMSS(SessionTime));
+	if (bRepScenarioRunning && !RepScenarioName.IsEmpty())
+	{
+		Md += FString::Printf(TEXT("**Scenario:** %s (T+%s)\n"), *RepScenarioName, *MMSS(RepScenarioElapsedSec));
+	}
+	Md += FString::Printf(TEXT("**Conditions:** Wind %03.0f / %.0fkt\n\n"), WindDirectionDeg, WindSpeedKts);
+	Md += TEXT("---\n\n");
+
+	// Summary
+	const int32 OpsHandled  = RepScoreLandings + RepScoreHandoffs;
+	const int32 Failures    = RepScoreSepLoss + RepScoreStrayed + RepScoreMisID + RepScoreViolated + RepScoreCrashed + RepScoreBusted;
+	Md += TEXT("## Summary\n\n");
+	Md += FString::Printf(TEXT("- **Total score:** %d (efficiency %.0f%%)\n"), RepScoreTotal, RepScoreEfficiencyPct);
+	Md += FString::Printf(TEXT("- **Handled:** %d (%d landings + %d handoffs)\n"), OpsHandled, RepScoreLandings, RepScoreHandoffs);
+	Md += FString::Printf(TEXT("- **Failures:** %d (sep loss / strayed / mis-ID / violated / crashed / busted)\n"), Failures);
+	Md += FString::Printf(TEXT("- **Resolutions / intercepts / emergencies handled:** %d / %d / %d\n\n"),
+		RepScoreResolved, RepScoreIntercepts, RepScoreEmergencies);
+	Md += TEXT("---\n\n");
+
+	// Timeline
+	Md += TEXT("## Timeline\n\n");
+	if (Log.Num() == 0)
+	{
+		Md += TEXT("_No scored events this session._\n\n");
+	}
+	else
+	{
+		Md += TEXT("| Time  | Event                  | Aircraft        | Detail |\n");
+		Md += TEXT("|-------|------------------------|-----------------|--------|\n");
+		for (const FIncidentRecord& R : Log)
+		{
+			const FString Acft = R.AircraftB.IsNone()
+				? R.AircraftA.ToString()
+				: FString::Printf(TEXT("%s / %s"), *R.AircraftA.ToString(), *R.AircraftB.ToString());
+			FString Detail = R.Details.Replace(TEXT("|"), TEXT("/")); // table-safe
+			Md += FString::Printf(TEXT("| %s | %s | %s | %s |\n"),
+				*MMSS(R.TimeStamp), IncidentDisplayName(R.Type), *Acft, *Detail);
+		}
+		Md += TEXT("\n");
+	}
+	Md += TEXT("---\n\n");
+
+	// Critical incidents drilldown - top penalties with 60-second comms window
+	Md += TEXT("## Critical incidents\n\n");
+	TArray<int32> CriticalIdx;
+	for (int32 i = 0; i < Log.Num(); ++i)
+	{
+		const EIncidentType Tp = Log[i].Type;
+		if (Tp == EIncidentType::MisidentifiedCivilian
+		 || Tp == EIncidentType::ViolationZoneBreached
+		 || Tp == EIncidentType::AircraftCrashed
+		 || Tp == EIncidentType::SeparationLoss
+		 || Tp == EIncidentType::RestrictedAirspaceBust)
+		{
+			CriticalIdx.Add(i);
+		}
+	}
+	if (CriticalIdx.Num() == 0)
+	{
+		Md += TEXT("_No catastrophic incidents this session._\n\n");
+	}
+	else
+	{
+		for (int32 Idx : CriticalIdx)
+		{
+			const FIncidentRecord& R = Log[Idx];
+			Md += FString::Printf(TEXT("### [%s] %s - %s\n\n"),
+				*MMSS(R.TimeStamp), IncidentDisplayName(R.Type), *R.AircraftA.ToString());
+			if (!R.Details.IsEmpty()) { Md += FString::Printf(TEXT("- %s\n"), *R.Details); }
+			// 60-second comms window leading up to the incident
+			const float WindowStart = R.TimeStamp - 60.f;
+			Md += TEXT("- **60-second comms window:**\n");
+			bool bAnyComms = false;
+			for (const FCommsTranscriptEntry& E : T)
+			{
+				if (E.TimeSec >= WindowStart && E.TimeSec <= R.TimeStamp)
+				{
+					Md += FString::Printf(TEXT("    - [%s] **%s** %s: %s\n"),
+						*MMSS(E.TimeSec), RoleTag(E.Role), *E.Speaker, *E.Text);
+					bAnyComms = true;
+				}
+			}
+			if (!bAnyComms) { Md += TEXT("    - _(no transmissions in the 60 seconds before this incident)_\n"); }
+			Md += TEXT("\n");
+		}
+	}
+	Md += TEXT("---\n\n");
+
+	// Score breakdown
+	Md += TEXT("## Score breakdown\n\n");
+	Md += TEXT("**Operations (+):**\n");
+	Md += FString::Printf(TEXT("- Landings: %d\n"), RepScoreLandings);
+	Md += FString::Printf(TEXT("- Handoffs: %d\n"), RepScoreHandoffs);
+	Md += FString::Printf(TEXT("- Conflicts resolved: %d\n"), RepScoreResolved);
+	Md += FString::Printf(TEXT("- Intercepts: %d\n"), RepScoreIntercepts);
+	Md += FString::Printf(TEXT("- Emergencies handled: %d\n\n"), RepScoreEmergencies);
+	Md += TEXT("**Incidents (-):**\n");
+	Md += FString::Printf(TEXT("- Go-arounds: %d\n"), RepScoreGoArounds);
+	Md += FString::Printf(TEXT("- Separation losses: %d\n"), RepScoreSepLoss);
+	Md += FString::Printf(TEXT("- Wake busts: %d\n"), RepScoreWake);
+	Md += FString::Printf(TEXT("- TCAS RAs: %d\n"), RepScoreTCAS);
+	Md += FString::Printf(TEXT("- Strayed: %d\n"), RepScoreStrayed);
+	Md += FString::Printf(TEXT("- Mis-IDs: %d\n"), RepScoreMisID);
+	Md += FString::Printf(TEXT("- Protected-zone breaches: %d\n"), RepScoreViolated);
+	Md += FString::Printf(TEXT("- Aircraft crashed: %d\n"), RepScoreCrashed);
+	Md += FString::Printf(TEXT("- Restricted-zone busts: %d\n\n"), RepScoreBusted);
+	Md += TEXT("---\n\n");
+
+	// Full transcript
+	Md += FString::Printf(TEXT("## Comms transcript (%d entries)\n\n"), T.Num());
+	if (T.Num() == 0)
+	{
+		Md += TEXT("_No transmissions logged._\n");
+	}
+	else
+	{
+		for (const FCommsTranscriptEntry& E : T)
+		{
+			Md += FString::Printf(TEXT("- [%s] **%s** %s: %s\n"),
+				*MMSS(E.TimeSec), RoleTag(E.Role), *E.Speaker, *E.Text);
+		}
+	}
+
+	const bool bOk = FFileHelper::SaveStringToFile(Md, *FullPath);
+	if (bOk)
+	{
+		// Resolve to an absolute, openable path so the popup + log show a
+		// clean Windows / VS Code-clickable string instead of UE's relative
+		// "../../../../" prefix. - TripleA
+		OutPath = FPaths::ConvertRelativePathToFull(FullPath);
+		// One announcement only - PushNotification auto-logs as System so the
+		// transcript captures it without a separate explicit log call (would
+		// double-up and pollute the very report the next export reads). - TripleA
+		PushNotification(FString::Printf(TEXT("AAR exported: %s"), *OutPath), FColor(80, 200, 255), 8.f);
+		UE_LOG(LogTemp, Display, TEXT("[AAR] Exported -> %s"), *OutPath);
+	}
+	else
+	{
+		PushNotification(FString::Printf(TEXT("AAR export FAILED -> %s"), *FullPath), FColor::Red, 8.f);
+		UE_LOG(LogTemp, Warning, TEXT("ExportAARReport: failed to write %s"), *FullPath);
+	}
+	return bOk;
+}
+
 void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole InRole, FName Callsign, const FString& Text)
 {
 	if (!HasAuthority())
@@ -3616,8 +3841,13 @@ void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole I
 		InRole == EClearanceCommsRole::Operator ? TEXT("OP") : (InRole == EClearanceCommsRole::Pilot ? TEXT("PILOT") : TEXT("SYS")),
 		*Callsign.ToString(), *Text, Transcript.Num() + 1);
 
+	// Speaker label: operator transmissions always show "ATC", pilot lines
+	// show the aircraft callsign, and System lines show their callsign if
+	// they have one (TOWER / MET / ACC / AWACS / GCI / ATIS facilities) or
+	// "SYS" as fallback for genuinely sourceless events. - TripleA
 	const FString SpeakerLabel = (InRole == EClearanceCommsRole::Operator) ? FString(TEXT("ATC"))
 	                          : (InRole == EClearanceCommsRole::Pilot)    ? Callsign.ToString()
+	                          : (!Callsign.IsNone())                       ? Callsign.ToString()
 	                          :                                             FString(TEXT("SYS"));
 	FCommsTranscriptEntry Entry;
 	Entry.TimeSec = SessionTime;

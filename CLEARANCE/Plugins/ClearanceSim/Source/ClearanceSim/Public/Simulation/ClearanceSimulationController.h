@@ -337,6 +337,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
 	void LogTranscriptLine(EClearanceCommsRole InRole, FName Callsign, const FString& Text);
 
+	// Snapshot the current session into a Markdown AAR report on disk under
+	// <ProjectSavedDir>/Reports/Session_YYYYMMDD_HHMMSS.md. Pulls everything
+	// from already-replicated state: score totals, RepScoringLog (per-category
+	// timeline), Transcript (full comms log), scenario name + elapsed, wind +
+	// runway. No "end of session" state required - the report is always
+	// "everything since StartSession", instructor can export mid-debrief or
+	// after specific incidents. Returns true + populates OutPath on success.
+	// Server-only (HasAuthority) so client calls are no-ops. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
+	bool ExportAARReport(FString& OutPath);
+
 	// --- Cameras ------------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")

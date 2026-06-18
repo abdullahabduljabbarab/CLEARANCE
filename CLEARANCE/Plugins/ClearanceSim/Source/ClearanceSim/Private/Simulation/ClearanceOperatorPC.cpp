@@ -382,3 +382,13 @@ void AClearanceOperatorPC::Server_InjectSetReplaySpeed_Implementation(float Mult
 {
 	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->SetReplaySpeed(Multiplier); }
 }
+
+bool AClearanceOperatorPC::Server_InjectExportAAR_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectExportAAR_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		FString Path;
+		C->ExportAARReport(Path);
+	}
+}

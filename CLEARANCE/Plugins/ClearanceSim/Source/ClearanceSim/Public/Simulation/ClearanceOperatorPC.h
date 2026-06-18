@@ -95,6 +95,13 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
 	void Server_InjectSetReplaySpeed(float Multiplier);
 
+	// Instructor clicks "Export AAR" on the panel - server snapshots the
+	// session into a Markdown report under <ProjectSavedDir>/Reports/. The
+	// report path is announced back to all peers via PushNotification +
+	// transcript so the instructor sees where the file landed. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
+	void Server_InjectExportAAR();
+
 	// Push the operator's full control rotation to the SimController so the
 	// instructor PIP can mirror it. Unreliable - we send it every ~30Hz so a
 	// dropped packet just leaves the instructor one frame behind. - TripleA

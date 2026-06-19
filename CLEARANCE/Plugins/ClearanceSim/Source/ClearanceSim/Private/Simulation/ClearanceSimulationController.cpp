@@ -568,6 +568,7 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreBusted);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreNextSpawnSec);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoringLog);
+	DOREPLIFETIME(AClearanceSimulationController, RepOperatorTracks);
 	DOREPLIFETIME(AClearanceSimulationController, SessionTime);
 	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
 	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
@@ -851,6 +852,13 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		// reads from this to render per-category "[mm:ss] CALLSIGN" rows. - TripleA
 		RepScoringLog = Scoring->GetSessionLog();
 	}
+
+	// Operator scope mirror - fuse every enabled radar site's tracks into one
+	// list per truth callsign and replicate. Instructor panel's operator-scope
+	// sub-mode paints from this, so the instructor sees the trainee's actual
+	// radar (degraded by EW, populated with chaff ghosts) instead of truth.
+	// - TripleA
+	RefreshOperatorTracks();
 
 	// Violation zone check: any declared-hostile aircraft inside a protected zone
 	// fires a catastrophic ViolationZoneBreached incident (mirror of mis-ID). One-
@@ -2400,6 +2408,54 @@ void AClearanceSimulationController::UpdateVisuals()
 
 			IClearanceAircraftVisualInterface::Execute_UpdateAircraftVisual(Found->Actor, bGearDeployed, Throttle, bOnGround);
 		}
+	}
+}
+
+void AClearanceSimulationController::RefreshOperatorTracks()
+{
+	if (!HasAuthority()) { return; }
+	UWorld* World = GetWorld();
+	if (!World) { RepOperatorTracks.Reset(); return; }
+
+	// Gather every enabled radar. Centre-of-sector radar (the controller's
+	// own UClearanceRadar) feeds in alongside any placed AClearanceRadarSite
+	// actors. - TripleA
+	TArray<UClearanceRadar*> Radars;
+	if (Radar && Radar->IsEnabled()) { Radars.Add(Radar); }
+	for (TActorIterator<AClearanceRadarSite> SIt(World); SIt; ++SIt)
+	{
+		if (*SIt && SIt->Radar && SIt->Radar->IsEnabled()) { Radars.Add(SIt->Radar); }
+	}
+
+	if (Radars.Num() == 0)
+	{
+		RepOperatorTracks.Reset();
+		return;
+	}
+
+	// Latest-paint-wins merge keyed on TruthCallsign. A track painted by
+	// multiple sites takes the freshest paint - that's the data the operator
+	// would see on their fused scope. - TripleA
+	TMap<FName, FRadarTrack> Fused;
+	for (UClearanceRadar* R : Radars)
+	{
+		for (const FRadarTrack& T : R->GetTracks())
+		{
+			if (FRadarTrack* Existing = Fused.Find(T.TruthCallsign))
+			{
+				if (T.LastPaintTime > Existing->LastPaintTime) { *Existing = T; }
+			}
+			else
+			{
+				Fused.Add(T.TruthCallsign, T);
+			}
+		}
+	}
+
+	RepOperatorTracks.Reset(Fused.Num());
+	for (const TPair<FName, FRadarTrack>& Pair : Fused)
+	{
+		RepOperatorTracks.Add(Pair.Value);
 	}
 }
 

@@ -296,7 +296,10 @@ public:
 	// unknown = octagon-as-quatrefoil-stand-in, neutral = square). Bearing
 	// vector points from centre along HeadingDeg. Alert level draws a
 	// coloured ring around the symbol; bIsMilitary adds a small "+"
-	// below. - TripleA
+	// below. Alpha multiplies every drawn line / ring's alpha channel so
+	// the operator-scope mode can fade symbols by FRadarTrack::Confidence -
+	// EW-jammed tracks fade toward transparent. Defaults to 1.0 so the
+	// existing truth-scope call sites stay untouched. - TripleA
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Scope")
 	void DrawAffiliationSymbol(
 		UPARAM(ref) struct FPaintContext& Context,
@@ -305,7 +308,8 @@ public:
 		bool bIsMilitary,
 		float HeadingDeg,
 		EAlertLevel Alert,
-		float HalfSizePx = 12.f);
+		float HalfSizePx = 12.f,
+		float Alpha = 1.f);
 
 	// Sector outline + 25 / 50 / 75% range rings + N/E/S/W compass ticks.
 	// Centred at ScopeCentre with the outer ring at ScopePixelRadius. Call
@@ -401,6 +405,22 @@ public:
 		FVector2D ScopeCentre,
 		float ScopePixelRadius,
 		const TArray<FInstructorAircraftRow>& Rows,
+		bool bShowFullDataBlock = false);
+
+	// Operator-scope counterpart to DrawAllAircraftLabels. Same auto-avoid
+	// + leader-line pass but reads radar tracks (estimated alt / spd / hdg
+	// + DisplayCallsign, or "PRI" when bHasSecondary is false) instead of
+	// truth rows. Each label fades by Track.Confidence so EW-degraded
+	// paints look degraded in the data block too. Threat class for the
+	// label tint is looked up internally from AirspaceManager->GetAircraftState
+	// (TruthCallsign), so a track for a deregistered aircraft falls back
+	// to Unknown tint. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Scope")
+	void DrawOperatorTrackLabels(
+		UPARAM(ref) struct FPaintContext& Context,
+		FVector2D ScopeCentre,
+		float ScopePixelRadius,
+		const TArray<FRadarTrack>& Tracks,
 		bool bShowFullDataBlock = false);
 
 	// Whether the per-aircraft data blocks should show the full ATC format

@@ -348,6 +348,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
 	bool ExportAARReport(FString& OutPath);
 
+	// The operator's sensor-fused radar tracks - what the trainee actually sees
+	// on their scope, not the truth held by the AirspaceManager. Server fuses
+	// every enabled radar site each tick (latest-paint wins; secondary returns
+	// keep their DisplayCallsign, primary-only paints fall back to "PRI"),
+	// replicated to the instructor panel so the instructor scope mode can
+	// render exactly what the trainee is seeing - including degraded paints
+	// from EW jamming, ghost contacts from chaff, dropped tracks where the
+	// fusion went stale. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Radar")
+	const TArray<FRadarTrack>& GetOperatorTracks() const { return RepOperatorTracks; }
+
 	// --- Cameras ------------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
@@ -684,6 +695,15 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|AAR")
 	const TArray<FIncidentRecord>& GetScoringLog() const { return RepScoringLog; }
+
+	// The operator's sensor-fused radar tracks - mirrored from the per-tick
+	// fusion of every enabled UClearanceRadar site. Server is the sole writer;
+	// the instructor panel's operator-scope sub-mode binds via GetOperatorTracks
+	// and paints these instead of the truth states, so the instructor sees
+	// exactly what the trainee sees on the radar (EW-degraded confidences,
+	// chaff ghost contacts, dropped tracks where fusion went stale). - TripleA
+	UPROPERTY(Replicated)
+	TArray<FRadarTrack> RepOperatorTracks;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Refs")
 	TObjectPtr<AClearanceAircraftSpawner> Spawner;
@@ -1056,6 +1076,11 @@ public:
 	void CheckExits();
 	void UpdateVisuals();
 	void DrawDebugView();
+
+	// Iterate every enabled radar site, latest-paint-wins merge per truth
+	// callsign, write the result into RepOperatorTracks. Called from the
+	// server tick alongside the other rep mirrors. - TripleA
+	void RefreshOperatorTracks();
 	FVector WorldPositionFor(const FAircraftState& State) const;
 	// Altitude (ft) -> vertical world offset above ground, via the altitude curve.
 	float AltitudeToWorldZOffset(float AltitudeFt) const;

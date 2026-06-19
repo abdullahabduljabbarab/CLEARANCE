@@ -841,9 +841,11 @@ namespace
 
 void UClearanceInstructorPanel::DrawAffiliationSymbol(
 	FPaintContext& Context, FVector2D Centre, EThreatClass Threat,
-	bool bIsMilitary, float HeadingDeg, EAlertLevel Alert, float HalfSizePx)
+	bool bIsMilitary, float HeadingDeg, EAlertLevel Alert, float HalfSizePx, float Alpha)
 {
-	const FLinearColor Frame = (Alert == EAlertLevel::Critical) ? ColourForAlert(Alert) : ColourForThreat(Threat);
+	const float A = FMath::Clamp(Alpha, 0.f, 1.f);
+	FLinearColor Frame = (Alert == EAlertLevel::Critical) ? ColourForAlert(Alert) : ColourForThreat(Threat);
+	Frame.A *= A;
 	const float H = FMath::Max(2.f, HalfSizePx);
 
 	TArray<FVector2D> Frags;
@@ -910,7 +912,9 @@ void UClearanceInstructorPanel::DrawAffiliationSymbol(
 
 	if (Alert != EAlertLevel::None)
 	{
-		PaintCircle(Context, Centre, H * 1.4f, 24, ColourForAlert(Alert));
+		FLinearColor AlertRing = ColourForAlert(Alert);
+		AlertRing.A *= A;
+		PaintCircle(Context, Centre, H * 1.4f, 24, AlertRing);
 	}
 
 	if (bIsMilitary)
@@ -926,9 +930,11 @@ void UClearanceInstructorPanel::DrawScopeBoundary(FPaintContext& Context, FVecto
 {
 	const float Outer = FMath::Max(8.f, ScopePixelRadius);
 
-	const FLinearColor Border  = FLinearColor(0.20f, 0.24f, 0.31f, 0.85f);
-	const FLinearColor Faint   = FLinearColor(0.20f, 0.24f, 0.31f, 0.45f);
-	const FLinearColor Compass = FLinearColor(0.31f, 0.78f, 1.00f, 0.55f);
+	const FLinearColor Border    = FLinearColor(0.20f, 0.24f, 0.31f, 0.85f);
+	const FLinearColor Faint     = FLinearColor(0.20f, 0.24f, 0.31f, 0.45f);
+	const FLinearColor MinorTick = FLinearColor(0.31f, 0.78f, 1.00f, 0.40f);
+	const FLinearColor MajorTick = FLinearColor(0.31f, 0.78f, 1.00f, 0.85f);
+	const FLinearColor RoseLabel = FLinearColor(0.55f, 0.88f, 1.00f, 0.85f);
 
 	// Three range rings (25 / 50 / 75% of outer) + outer boundary.
 	PaintCircle(Context, ScopeCentre, Outer * 0.25f, 32, Faint);
@@ -936,11 +942,40 @@ void UClearanceInstructorPanel::DrawScopeBoundary(FPaintContext& Context, FVecto
 	PaintCircle(Context, ScopeCentre, Outer * 0.75f, 56, Faint);
 	PaintCircle(Context, ScopeCentre, Outer,          64, Border);
 
-	// Compass tick crosses through centre, slightly past the outer ring.
-	PaintLine(Context, ScopeCentre + FVector2D(0, -Outer - 6.f), ScopeCentre + FVector2D(0, -Outer + 2.f), Compass);
-	PaintLine(Context, ScopeCentre + FVector2D(Outer + 6.f, 0),  ScopeCentre + FVector2D(Outer - 2.f, 0),  Compass);
-	PaintLine(Context, ScopeCentre + FVector2D(0, Outer + 6.f),  ScopeCentre + FVector2D(0, Outer - 2.f),  Compass);
-	PaintLine(Context, ScopeCentre + FVector2D(-Outer - 6.f, 0), ScopeCentre + FVector2D(-Outer + 2.f, 0), Compass);
+	// Standard ATC heading rose: 36 ticks at every 10deg around the perimeter,
+	// every third tick (12 total at every 30deg) gets a longer mark + a
+	// "000" / "030" / "060" / ... 3-digit label sitting just outside it. Screen
+	// Y is inverted so 0deg (north) points along -Y; labels rotate with the
+	// scope but are kept upright for readability. - TripleA
+	constexpr int32 NumTicks = 36; // 360 / 10
+	for (int32 i = 0; i < NumTicks; ++i)
+	{
+		const float DegA = static_cast<float>(i) * (360.f / static_cast<float>(NumTicks));
+		const float RadA = FMath::DegreesToRadians(DegA);
+		const FVector2D Dir(FMath::Sin(RadA), -FMath::Cos(RadA));
+
+		const bool bMajor = ((i % 3) == 0);
+		const float Inner    = bMajor ? Outer - 4.f : Outer - 1.f;
+		const float TickEnd  = bMajor ? Outer + 6.f : Outer + 3.f;
+
+		PaintLine(Context,
+			ScopeCentre + Dir * Inner,
+			ScopeCentre + Dir * TickEnd,
+			bMajor ? MajorTick : MinorTick);
+
+		if (bMajor)
+		{
+			// 3-digit heading label sitting just outside the major tick. Pre-
+			// shift the text anchor by half its approximate pixel size so the
+			// label visually centres on the tick instead of hanging off it.
+			// 7px/char * 3 chars = ~21px wide, ~12px tall at default font. - TripleA
+			const int32 DegInt = FMath::RoundToInt(DegA);
+			const FString LabelText = FString::Printf(TEXT("%03d"), DegInt);
+			const FVector2D Anchor = ScopeCentre + Dir * (Outer + 14.f);
+			UWidgetBlueprintLibrary::DrawText(Context, LabelText,
+				Anchor + FVector2D(-10.f, -6.f), RoseLabel);
+		}
+	}
 }
 
 void UClearanceInstructorPanel::DrawScopeChaffCloud(FPaintContext& Context, FVector2D Centre, float AgeFrac)
@@ -1210,6 +1245,112 @@ void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
 		PaintLine(Context, LeaderStart, LeaderEnd, LeaderTint, 2.0f);
 
 		// Label text.
+		constexpr float LineHeight = 12.f;
+		for (int32 i = 0; i < Lines.Num(); ++i)
+		{
+			UWidgetBlueprintLibrary::DrawText(Context, Lines[i],
+				LabelTopLeft + FVector2D(0.f, i * LineHeight), Tint);
+		}
+	}
+}
+
+void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
+	FVector2D ScopeCentre, float ScopePixelRadius,
+	const TArray<FRadarTrack>& Tracks, bool bShowFullDataBlock)
+{
+	// Same candidate slot table as DrawAllAircraftLabels. Kept inline rather
+	// than shared because the two functions are siblings and the slot list
+	// might evolve per-mode (operator scope is denser - more tracks per
+	// aircraft when chaff is up). - TripleA
+	static const FVector2D Candidates[] = {
+		FVector2D(  14.f,  -22.f), FVector2D( -74.f,  -22.f),
+		FVector2D(  14.f,   10.f), FVector2D( -74.f,   10.f),
+		FVector2D(  22.f,   -6.f), FVector2D( -82.f,   -6.f),
+		FVector2D(  35.f,  -55.f), FVector2D( -95.f,  -55.f),
+		FVector2D(  35.f,   40.f), FVector2D( -95.f,   40.f),
+		FVector2D(  55.f,  -10.f), FVector2D(-115.f,  -10.f),
+		FVector2D(  70.f,  -90.f), FVector2D(-130.f,  -90.f),
+		FVector2D(  70.f,   75.f), FVector2D(-130.f,   75.f),
+		FVector2D(  95.f,  -25.f), FVector2D(-155.f,  -25.f),
+	};
+
+	AClearanceAirspaceManager* AM = CachedController ? CachedController->GetAirspaceManager() : nullptr;
+
+	TArray<FBox2D> Placed;
+	Placed.Reserve(Tracks.Num());
+
+	for (const FRadarTrack& Trk : Tracks)
+	{
+		// Project the track's estimated position (with sensor jitter) to
+		// scope pixels. FVector2D conversion drops Z since the scope is
+		// top-down. - TripleA
+		const FVector2D PosNm(Trk.Position.X, Trk.Position.Y);
+		const FVector2D SymbolPx = ScopeNmToPixel(PosNm, ScopeCentre, ScopePixelRadius);
+
+		// Build the label content from the radar paint, not from truth.
+		// "PRI" when the transponder didn't return - the operator can't
+		// see the callsign on a primary-only paint. - TripleA
+		TArray<FString> Lines;
+		Lines.Add(Trk.bHasSecondary ? Trk.DisplayCallsign.ToString() : FString(TEXT("PRI")));
+		const int32 FL = FMath::RoundToInt(Trk.Altitude / 100.f);
+		if (bShowFullDataBlock)
+		{
+			Lines.Add(FString::Printf(TEXT("FL%03d"), FL));
+			Lines.Add(FString::Printf(TEXT("%dkt"), FMath::RoundToInt(Trk.Speed)));
+			Lines.Add(FString::Printf(TEXT("%03d"), FMath::RoundToInt(Trk.Heading)));
+		}
+		else
+		{
+			Lines.Add(FString::Printf(TEXT("FL%03d"), FL));
+		}
+
+		const FVector2D LabelSize = EstimateLabelSize(Lines);
+
+		FVector2D ChosenOffset = Candidates[0];
+		for (const FVector2D& Cand : Candidates)
+		{
+			const FBox2D Box(SymbolPx + Cand, SymbolPx + Cand + LabelSize);
+			bool bOverlap = false;
+			for (const FBox2D& P : Placed)
+			{
+				if (Box.Intersect(P)) { bOverlap = true; break; }
+			}
+			if (!bOverlap) { ChosenOffset = Cand; break; }
+		}
+
+		const FVector2D LabelTopLeft = SymbolPx + ChosenOffset;
+		Placed.Add(FBox2D(LabelTopLeft, LabelTopLeft + LabelSize));
+
+		// Affiliation tint from truth state, since the radar track doesn't
+		// carry threat class. If the aircraft has been deregistered (crash,
+		// exit) the lookup returns a default-constructed state -> Unknown
+		// tint, which reads as "lost contact" in the operator scope. - TripleA
+		EThreatClass Threat = EThreatClass::Unknown;
+		if (AM)
+		{
+			const FAircraftState S = AM->GetAircraftState(Trk.TruthCallsign);
+			if (S.bIsValid) { Threat = S.ThreatClass; }
+		}
+
+		FLinearColor Tint = ColourForThreat(Threat);
+		const float A = FMath::Clamp(Trk.Confidence, 0.f, 1.f);
+		Tint.A *= A;
+
+		// Leader line to the closest corner of the label box.
+		const FVector2D LabelCentre = LabelTopLeft + LabelSize * 0.5f;
+		FVector2D LeaderEnd = LabelTopLeft;
+		if (LabelCentre.X > SymbolPx.X) { LeaderEnd.X = LabelTopLeft.X; }
+		else                             { LeaderEnd.X = LabelTopLeft.X + LabelSize.X; }
+		if (LabelCentre.Y > SymbolPx.Y) { LeaderEnd.Y = LabelTopLeft.Y; }
+		else                             { LeaderEnd.Y = LabelTopLeft.Y + LabelSize.Y; }
+
+		const FVector2D ToLabel = (LeaderEnd - SymbolPx).GetSafeNormal();
+		const FVector2D LeaderStart = SymbolPx + ToLabel * 13.f;
+
+		FLinearColor LeaderTint = Tint;
+		LeaderTint.A = FMath::Min(0.95f, LeaderTint.A + 0.10f); // leaders slightly more visible than label text
+		PaintLine(Context, LeaderStart, LeaderEnd, LeaderTint, 2.0f);
+
 		constexpr float LineHeight = 12.f;
 		for (int32 i = 0; i < Lines.Num(); ++i)
 		{

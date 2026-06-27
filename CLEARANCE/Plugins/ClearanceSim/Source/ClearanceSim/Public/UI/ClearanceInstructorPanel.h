@@ -407,6 +407,35 @@ public:
 		const TArray<FInstructorAircraftRow>& Rows,
 		bool bShowFullDataBlock = false);
 
+	// Decluttered pixel position for one aircraft. Returns the natural
+	// ScopeNmToPixel projection unless this aircraft sits within an overlap
+	// threshold (~12px) of one or more other aircraft - in which case the
+	// returned position is nudged a few px along a deterministic angle so
+	// stacked symbols spread out into a visible cluster instead of drawing
+	// on top of each other. Real-world ATC scopes (STARS, DSR) call this
+	// "Datablock Stagger" or "Symbol Declutter". The BP scope ForEach should
+	// use this for both the symbol position AND any leader source so the
+	// data block clearly anchors to its specific symbol. Same algorithm is
+	// used internally by DrawAllAircraftLabels for its leader sources. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Scope")
+	FVector2D GetDeclutteredSymbolPx(
+		const FInstructorAircraftRow& Row,
+		const TArray<FInstructorAircraftRow>& AllRows,
+		FVector2D ScopeCentre,
+		float ScopePixelRadius) const;
+
+	// Operator-scope counterpart for FRadarTrack. Same decluster algorithm,
+	// keyed on TruthCallsign so chaff ghost contacts (synthetic GHOST_xxxxx
+	// callsigns) separate visibly from real aircraft tracks that happen to
+	// paint at the same position - critical because at the moment of a chaff
+	// drop the ghost track and the real aircraft share a pixel. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Scope")
+	FVector2D GetDeclutteredTrackPx(
+		const FRadarTrack& Track,
+		const TArray<FRadarTrack>& AllTracks,
+		FVector2D ScopeCentre,
+		float ScopePixelRadius) const;
+
 	// Operator-scope counterpart to DrawAllAircraftLabels. Same auto-avoid
 	// + leader-line pass but reads radar tracks (estimated alt / spd / hdg
 	// + DisplayCallsign, or "PRI" when bHasSecondary is false) instead of

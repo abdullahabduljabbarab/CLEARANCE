@@ -903,12 +903,18 @@ void UClearanceInstructorPanel::DrawAffiliationSymbol(
 	default: break;
 	}
 
+	// Symbol shape only. NOTE: don't append the bearing vector to Frags -
+	// PaintPolyline draws a CONNECTED polyline, which would render an extra
+	// segment from the last symbol vertex to (Centre) before continuing to
+	// the bearing tip. That stray diagonal was visible inside the box as a
+	// "mystery third line". Bearing vector is drawn separately below with
+	// its own PaintLine so the symbol polyline ends cleanly. - TripleA
+	PaintPolyline(Context, Frags, Frame);
+
 	// Bearing vector. Screen Y inverted: north (0deg) = -Y.
 	const float Rad = FMath::DegreesToRadians(HeadingDeg);
 	const FVector2D BearingTip = Centre + FVector2D(FMath::Sin(Rad), -FMath::Cos(Rad)) * H * 1.6f;
-	Add(Centre, BearingTip);
-
-	PaintPolyline(Context, Frags, Frame);
+	PaintLine(Context, Centre, BearingTip, Frame);
 
 	if (Alert != EAlertLevel::None)
 	{
@@ -976,6 +982,23 @@ void UClearanceInstructorPanel::DrawScopeBoundary(FPaintContext& Context, FVecto
 				Anchor + FVector2D(-10.f, -6.f), RoseLabel);
 		}
 	}
+
+	// Cardinal letters (N / E / S / W) sit a little further out than the
+	// numeric labels, brighter + bigger-looking via full alpha. Gives the
+	// scope an instant orientation read at a glance without having to parse
+	// the numeric headings. Real ATC scopes pair the numeric rose with
+	// these for exactly that reason. - TripleA
+	const FLinearColor CardinalTint = FLinearColor(0.85f, 1.00f, 1.00f, 1.0f);
+	static const TCHAR* CardinalGlyphs[4] = { TEXT("N"), TEXT("E"), TEXT("S"), TEXT("W") };
+	static const float  CardinalDeg[4]    = { 0.f, 90.f, 180.f, 270.f };
+	for (int32 c = 0; c < 4; ++c)
+	{
+		const float RadC = FMath::DegreesToRadians(CardinalDeg[c]);
+		const FVector2D Dir(FMath::Sin(RadC), -FMath::Cos(RadC));
+		const FVector2D Anchor = ScopeCentre + Dir * (Outer + 32.f);
+		UWidgetBlueprintLibrary::DrawText(Context, CardinalGlyphs[c],
+			Anchor + FVector2D(-3.f, -7.f), CardinalTint);
+	}
 }
 
 void UClearanceInstructorPanel::DrawScopeChaffCloud(FPaintContext& Context, FVector2D Centre, float AgeFrac)
@@ -1016,6 +1039,20 @@ void UClearanceInstructorPanel::DrawZoneMarker(FPaintContext& Context, FVector2D
 		Pts.Add(Centre + FVector2D(FMath::Cos(A1), FMath::Sin(A1)) * Rad);
 	}
 	PaintPolyline(Context, Pts, Tint);
+
+	// Zone name label sitting just above the top of the ring. Approximate
+	// pre-centre by character count since the default font is ~7px/char. The
+	// label is rendered at full alpha so it reads cleanly over the dashed
+	// ring colour. - TripleA
+	if (!Zone.Name.IsNone())
+	{
+		const FString NameStr = Zone.Name.ToString();
+		const float NameWidthPx = static_cast<float>(NameStr.Len()) * 7.f;
+		FLinearColor LabelTint = Tint;
+		LabelTint.A = 1.f;
+		UWidgetBlueprintLibrary::DrawText(Context, NameStr,
+			Centre + FVector2D(-NameWidthPx * 0.5f, -Rad - 14.f), LabelTint);
+	}
 }
 
 void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector2D ScopeCentre,
@@ -1029,11 +1066,52 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 	const FVector2D Along(FMath::Sin(Rad), -FMath::Cos(Rad));   // screen Y inverted
 	const FVector2D Cross(-Along.Y, Along.X);
 
-	// 12px-long line oriented along heading + a perpendicular tick to mark
-	// the threshold edge.
-	const FLinearColor Tint(0.92f, 0.92f, 0.92f, 0.75f);
-	PaintLine(Context, Threshold, Threshold + Along * 12.f, Tint, 1.5f);
-	PaintLine(Context, Threshold - Cross * 4.f, Threshold + Cross * 4.f, Tint, 1.5f);
+	const FLinearColor StripTint     (0.95f, 0.95f, 0.95f, 0.95f);
+	const FLinearColor CentreTint    (0.85f, 0.85f, 0.85f, 0.55f);
+	const FLinearColor DesignatorTint(0.95f, 0.95f, 0.95f, 1.00f);
+
+	// Runway strip - thick line from threshold along landing direction for
+	// the full asphalt length. Length is on the runway actor in UE units,
+	// convert to scope pixels via WorldUnitsPerNm + the scope's pixel/nm
+	// ratio. Falls back to a small fixed length so single-point runways
+	// (or zoomed-way-out scopes) still show something. - TripleA
+	const float PixelsPerNm = ScopePixelRadius / FMath::Max(1.f, ScopeRangeNm);
+	const float UnitsPerNm  = (CachedController ? FMath::Max(1.f, CachedController->WorldUnitsPerNm) : 1000.f);
+	const float StripLenPx  = FMath::Max(10.f, (Runway.LengthUnits / UnitsPerNm) * PixelsPerNm);
+	PaintLine(Context, Threshold, Threshold + Along * StripLenPx, StripTint, 3.0f);
+
+	// Threshold edge tick - perpendicular bar marking where the touchdown
+	// zone starts. Slightly wider than the strip for visibility.
+	const float ThreshHalf = FMath::Max(4.f, StripLenPx * 0.06f);
+	PaintLine(Context, Threshold - Cross * ThreshHalf, Threshold + Cross * ThreshHalf, StripTint, 2.0f);
+
+	// Extended centerline - dashed line going OUT from the threshold in the
+	// approach direction (opposite the landing direction). 20nm worth of
+	// pixels by default; pilots line up on this radial so the instructor
+	// can see where inbound traffic should be sequencing. - TripleA
+	const float CentreLineLenPx = 20.f * PixelsPerNm;
+	constexpr int32 DashCount = 10;
+	for (int32 i = 0; i < DashCount; ++i)
+	{
+		if ((i % 2) != 0) { continue; }
+		const float F0 = static_cast<float>(i)     / static_cast<float>(DashCount);
+		const float F1 = static_cast<float>(i + 1) / static_cast<float>(DashCount);
+		PaintLine(Context,
+			Threshold - Along * (F0 * CentreLineLenPx),
+			Threshold - Along * (F1 * CentreLineLenPx),
+			CentreTint, 1.5f);
+	}
+
+	// Two-digit designator (heading / 10, rounded; 0 -> 36 per ICAO
+	// convention). L / R / C suffixes aren't on FRunwayInfo - parallel
+	// siblings can be told apart by their threshold positions on the scope
+	// itself. - TripleA
+	int32 Des = FMath::RoundToInt(Runway.HeadingDeg / 10.f);
+	if (Des <= 0)  { Des = 36; }
+	if (Des > 36)  { Des = Des % 36; if (Des == 0) { Des = 36; } }
+	const FString DesText = FString::Printf(TEXT("%02d"), Des);
+	UWidgetBlueprintLibrary::DrawText(Context, DesText,
+		Threshold + Cross * (ThreshHalf + 4.f) + FVector2D(-7.f, -6.f), DesignatorTint);
 }
 
 void UClearanceInstructorPanel::DrawWaypointMarker(FPaintContext& Context, FVector2D ScopeCentre,
@@ -1128,7 +1206,13 @@ namespace
 		}
 		else
 		{
-			Lines.Add(FString::Printf(TEXT("FL%03d"), FL));
+			// Minimum data block: callsign + "FL### HDG" on one line. Heading
+			// is always-on in short mode so the controller can read it directly
+			// instead of having to mentally correct for the off-centre parallax
+			// when comparing the bearing vector against the rim's heading rose.
+			// Real STARS / DSR scopes do the same in minimum-block mode. - TripleA
+			const int32 Hdg = FMath::RoundToInt(Row.Heading);
+			Lines.Add(FString::Printf(TEXT("FL%03d %03d"), FL, Hdg));
 		}
 		return Lines;
 	}
@@ -1163,6 +1247,115 @@ void UClearanceInstructorPanel::DrawAircraftLabel(FPaintContext& Context, FVecto
 		UWidgetBlueprintLibrary::DrawText(Context, Lines[i],
 			LabelTopLeft + FVector2D(0.f, i * LineHeight), Tint);
 	}
+}
+
+FVector2D UClearanceInstructorPanel::GetDeclutteredTrackPx(
+	const FRadarTrack& Track,
+	const TArray<FRadarTrack>& AllTracks,
+	FVector2D ScopeCentre, float ScopePixelRadius) const
+{
+	const FVector2D Natural = ScopeNmToPixel(FVector2D(Track.Position.X, Track.Position.Y),
+		ScopeCentre, ScopePixelRadius);
+
+	constexpr float OverlapPx = 12.f;
+	constexpr float OverlapSq = OverlapPx * OverlapPx;
+	constexpr float NudgePx   = 10.f;
+
+	struct FMember { FName Callsign; FVector2D Px; };
+	TArray<FMember> Cluster;
+	Cluster.Reserve(4);
+	for (const FRadarTrack& Other : AllTracks)
+	{
+		const FVector2D OtherPx = ScopeNmToPixel(FVector2D(Other.Position.X, Other.Position.Y),
+			ScopeCentre, ScopePixelRadius);
+		if (FVector2D::DistSquared(OtherPx, Natural) <= OverlapSq)
+		{
+			Cluster.Add({ Other.TruthCallsign, OtherPx });
+		}
+	}
+
+	if (Cluster.Num() <= 1) { return Natural; }
+
+	Cluster.Sort([](const FMember& A, const FMember& B)
+	{
+		return A.Callsign.LexicalLess(B.Callsign);
+	});
+
+	int32 MyIdx = 0;
+	for (int32 i = 0; i < Cluster.Num(); ++i)
+	{
+		if (Cluster[i].Callsign == Track.TruthCallsign) { MyIdx = i; break; }
+	}
+
+	FVector2D ClusterCentre = FVector2D::ZeroVector;
+	for (const FMember& M : Cluster) { ClusterCentre += M.Px; }
+	ClusterCentre /= static_cast<float>(Cluster.Num());
+
+	const float AnglePerMember = (2.f * PI) / static_cast<float>(Cluster.Num());
+	const float MyAngle = -0.5f * PI + AnglePerMember * static_cast<float>(MyIdx);
+	const FVector2D Offset(FMath::Cos(MyAngle) * NudgePx, FMath::Sin(MyAngle) * NudgePx);
+
+	return ClusterCentre + Offset;
+}
+
+FVector2D UClearanceInstructorPanel::GetDeclutteredSymbolPx(
+	const FInstructorAircraftRow& Row,
+	const TArray<FInstructorAircraftRow>& AllRows,
+	FVector2D ScopeCentre, float ScopePixelRadius) const
+{
+	const FVector2D Natural = ScopeNmToPixel(Row.PositionNm, ScopeCentre, ScopePixelRadius);
+
+	// Threshold = ~12px (typical symbol HalfSize is 12, so two symbols whose
+	// centres are within 12px overlap visibly). - TripleA
+	constexpr float OverlapPx = 12.f;
+	constexpr float OverlapSq = OverlapPx * OverlapPx;
+	constexpr float NudgePx   = 10.f;
+
+	// Build the cluster: every aircraft (including self) whose natural pixel
+	// position is within OverlapPx of mine. Sort by callsign so the per-
+	// member index is deterministic - both this aircraft and its neighbours
+	// will compute the same index for each member every frame. - TripleA
+	struct FMember { FName Callsign; FVector2D Px; };
+	TArray<FMember> Cluster;
+	Cluster.Reserve(4);
+	for (const FInstructorAircraftRow& Other : AllRows)
+	{
+		const FVector2D OtherPx = ScopeNmToPixel(Other.PositionNm, ScopeCentre, ScopePixelRadius);
+		if (FVector2D::DistSquared(OtherPx, Natural) <= OverlapSq)
+		{
+			Cluster.Add({ Other.Callsign, OtherPx });
+		}
+	}
+
+	if (Cluster.Num() <= 1) { return Natural; }
+
+	// Deterministic ordering by callsign string. Same callsign list every
+	// frame means the same index, means a stable offset (no jitter). - TripleA
+	Cluster.Sort([](const FMember& A, const FMember& B)
+	{
+		return A.Callsign.LexicalLess(B.Callsign);
+	});
+
+	int32 MyIdx = 0;
+	for (int32 i = 0; i < Cluster.Num(); ++i)
+	{
+		if (Cluster[i].Callsign == Row.Callsign) { MyIdx = i; break; }
+	}
+
+	// Distribute cluster members around a small circle: first at 12 o'clock
+	// (-Y), rest evenly clockwise. Two-member clusters end up vertically
+	// stacked, three-member triangular, etc. Cluster centre is the average
+	// of the natural positions so symbols spread evenly around their
+	// shared visual position. - TripleA
+	FVector2D ClusterCentre = FVector2D::ZeroVector;
+	for (const FMember& M : Cluster) { ClusterCentre += M.Px; }
+	ClusterCentre /= static_cast<float>(Cluster.Num());
+
+	const float AnglePerMember = (2.f * PI) / static_cast<float>(Cluster.Num());
+	const float MyAngle = -0.5f * PI + AnglePerMember * static_cast<float>(MyIdx);
+	const FVector2D Offset(FMath::Cos(MyAngle) * NudgePx, FMath::Sin(MyAngle) * NudgePx);
+
+	return ClusterCentre + Offset;
 }
 
 void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
@@ -1203,7 +1396,10 @@ void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
 
 	for (const FInstructorAircraftRow& Row : Rows)
 	{
-		const FVector2D SymbolPx = ScopeNmToPixel(Row.PositionNm, ScopeCentre, ScopePixelRadius);
+		// Use the decluttered position so leader sources track the nudged
+		// symbol position when two aircraft cluster - keeps label <-> symbol
+		// visual pairing intact even when traffic stacks. - TripleA
+		const FVector2D SymbolPx = GetDeclutteredSymbolPx(Row, Rows, ScopeCentre, ScopePixelRadius);
 		const TArray<FString> Lines = BuildLabelLines(Row, bShowFullDataBlock);
 		const FVector2D LabelSize = EstimateLabelSize(Lines);
 
@@ -1227,22 +1423,35 @@ void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
 			? FLinearColor(1.00f, 0.24f, 0.24f, 1.f)
 			: ColourForThreat(Row.ThreatClass);
 
-		// Leader line: thin tint-matched line from just outside the symbol edge
-		// to the closest corner of the label box. Drawn at full alpha + 2px
-		// thickness so it reads clearly against the dark scope background. - TripleA
+		// Leader line: thicker tint-matched line from just outside the symbol
+		// edge to the MIDPOINT of the closest label edge (not the corner -
+		// corner anchors look detached, edge midpoints visually "touch" the
+		// text block). Real ATC scopes do this for instant symbol <-> label
+		// pairing even in clustered traffic. - TripleA
 		const FVector2D LabelCentre = LabelTopLeft + LabelSize * 0.5f;
-		FVector2D LeaderEnd = LabelTopLeft;
-		if (LabelCentre.X > SymbolPx.X)  { LeaderEnd.X = LabelTopLeft.X; }
-		else                              { LeaderEnd.X = LabelTopLeft.X + LabelSize.X; }
-		if (LabelCentre.Y > SymbolPx.Y)  { LeaderEnd.Y = LabelTopLeft.Y; }
-		else                              { LeaderEnd.Y = LabelTopLeft.Y + LabelSize.Y; }
+		const FVector2D Delta = LabelCentre - SymbolPx;
+		FVector2D LeaderEnd;
+		if (FMath::Abs(Delta.X) > FMath::Abs(Delta.Y))
+		{
+			// Label is more to the side - anchor on the vertical edge nearest
+			// to the symbol, at half the label's height.
+			LeaderEnd.X = (Delta.X > 0.f) ? LabelTopLeft.X : (LabelTopLeft.X + LabelSize.X);
+			LeaderEnd.Y = LabelTopLeft.Y + LabelSize.Y * 0.5f;
+		}
+		else
+		{
+			// Label is more above/below - anchor on the horizontal edge nearest
+			// the symbol, at half the label's width.
+			LeaderEnd.X = LabelTopLeft.X + LabelSize.X * 0.5f;
+			LeaderEnd.Y = (Delta.Y > 0.f) ? LabelTopLeft.Y : (LabelTopLeft.Y + LabelSize.Y);
+		}
 
 		const FVector2D ToLabel = (LeaderEnd - SymbolPx).GetSafeNormal();
 		const FVector2D LeaderStart = SymbolPx + ToLabel * 13.f;
 
 		FLinearColor LeaderTint = Tint;
-		LeaderTint.A = 0.95f;
-		PaintLine(Context, LeaderStart, LeaderEnd, LeaderTint, 2.0f);
+		LeaderTint.A = 1.0f;
+		PaintLine(Context, LeaderStart, LeaderEnd, LeaderTint, 2.5f);
 
 		// Label text.
 		constexpr float LineHeight = 12.f;
@@ -1281,11 +1490,10 @@ void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
 
 	for (const FRadarTrack& Trk : Tracks)
 	{
-		// Project the track's estimated position (with sensor jitter) to
-		// scope pixels. FVector2D conversion drops Z since the scope is
-		// top-down. - TripleA
-		const FVector2D PosNm(Trk.Position.X, Trk.Position.Y);
-		const FVector2D SymbolPx = ScopeNmToPixel(PosNm, ScopeCentre, ScopePixelRadius);
+		// Use the decluttered position so leader sources track the nudged
+		// symbol position when ghosts cluster with real tracks (which they do
+		// at the moment of chaff drop, before the aircraft moves on). - TripleA
+		const FVector2D SymbolPx = GetDeclutteredTrackPx(Trk, Tracks, ScopeCentre, ScopePixelRadius);
 
 		// Build the label content from the radar paint, not from truth.
 		// "PRI" when the transponder didn't return - the operator can't
@@ -1301,7 +1509,11 @@ void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
 		}
 		else
 		{
-			Lines.Add(FString::Printf(TEXT("FL%03d"), FL));
+			// Minimum block on operator scope: track callsign + "FL### HDG"
+			// using the radar's estimated heading (not truth). Same parallax-
+			// correction reasoning as the truth-scope label. - TripleA
+			const int32 Hdg = FMath::RoundToInt(Trk.Heading);
+			Lines.Add(FString::Printf(TEXT("FL%03d %03d"), FL, Hdg));
 		}
 
 		const FVector2D LabelSize = EstimateLabelSize(Lines);

@@ -102,6 +102,18 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
 	void Server_InjectExportAAR();
 
+	// Session checkpoint controls - save the live world state under a name,
+	// reload it later to reset for a trainee retry. Defence training rigs
+	// use this for multi-attempt scenario rehearsals. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|Checkpoints")
+	void Server_InjectSaveCheckpoint(FName Name);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|Checkpoints")
+	void Server_InjectLoadCheckpoint(FName Name);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|Checkpoints")
+	void Server_InjectDeleteCheckpoint(FName Name);
+
 	// Push the operator's full control rotation to the SimController so the
 	// instructor PIP can mirror it. Unreliable - we send it every ~30Hz so a
 	// dropped packet just leaves the instructor one frame behind. - TripleA

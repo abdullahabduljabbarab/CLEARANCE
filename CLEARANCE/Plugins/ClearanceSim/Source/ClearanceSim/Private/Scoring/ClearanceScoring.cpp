@@ -67,6 +67,41 @@ void UClearanceScoring::ResetSession()
 	OnDifficultyAdjusted.Broadcast(CurrentSpawnIntervalSeconds);
 }
 
+void UClearanceScoring::RestoreFromCheckpoint(int32 InScore, const TArray<FIncidentRecord>& InLog)
+{
+	IncidentLog = InLog;
+	CurrentScore = InScore;
+
+	// Re-derive per-category tallies from the restored log. Mirrors the
+	// counter logic in LogIncident so the rep counters end up identical to
+	// what they were at save time. - TripleA
+	TotalLandings = TotalHandoffs = TotalGoArounds = 0;
+	TotalSeparationLosses = TotalInstructions = TotalHandled = TotalFailures = 0;
+	for (const FIncidentRecord& R : IncidentLog)
+	{
+		switch (R.Type)
+		{
+		case EIncidentType::SuccessfulLanding:    ++TotalLandings;   ++TotalHandled; break;
+		case EIncidentType::SuccessfulHandoff:    ++TotalHandoffs;   ++TotalHandled; break;
+		case EIncidentType::SuccessfulEmergencyHandling: ++TotalHandled; break;
+		case EIncidentType::GoAroundTriggered:    ++TotalGoArounds;  break;
+		case EIncidentType::SeparationLoss:       ++TotalSeparationLosses; ++TotalFailures; break;
+		case EIncidentType::UnresolvedExit:
+		case EIncidentType::MissedHandoff:
+		case EIncidentType::WakeEncounter:
+		case EIncidentType::TCASResolutionAdvisory:
+		case EIncidentType::MisidentifiedCivilian:
+		case EIncidentType::ViolationZoneBreached:
+		case EIncidentType::AircraftCrashed:
+		case EIncidentType::RestrictedAirspaceBust: ++TotalFailures; break;
+		default: break;
+		}
+	}
+	AdjustDifficulty();
+	OnScoreUpdated.Broadcast(CurrentScore);
+	OnDifficultyAdjusted.Broadcast(CurrentSpawnIntervalSeconds);
+}
+
 int32 UClearanceScoring::PointsForIncident(EIncidentType Type) const
 {
 	switch (Type)

@@ -625,6 +625,20 @@ struct CLEARANCESIM_API FCommsTranscriptEntry
 	UPROPERTY(BlueprintReadOnly) FString Text;
 };
 
+// Lightweight info about a saved checkpoint - what the instructor panel
+// dropdown needs to render the row. The full payload (aircraft states,
+// scoring log etc.) stays server-side; only this summary replicates. - TripleA
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FClearanceCheckpointInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FName Name = NAME_None;
+	UPROPERTY(BlueprintReadOnly) float SessionTimeAtSave = 0.f;
+	UPROPERTY(BlueprintReadOnly) int32 AircraftCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 ScoreAtSave = 0;
+};
+
 // Scoring
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnScoreUpdated, int32, NewScore);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDifficultyAdjusted, float, NewSpawnRate);

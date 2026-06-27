@@ -392,3 +392,21 @@ void AClearanceOperatorPC::Server_InjectExportAAR_Implementation()
 		C->ExportAARReport(Path);
 	}
 }
+
+bool AClearanceOperatorPC::Server_InjectSaveCheckpoint_Validate(FName Name) { return true; }
+void AClearanceOperatorPC::Server_InjectSaveCheckpoint_Implementation(FName Name)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->SaveCheckpoint(Name); }
+}
+
+bool AClearanceOperatorPC::Server_InjectLoadCheckpoint_Validate(FName Name) { return true; }
+void AClearanceOperatorPC::Server_InjectLoadCheckpoint_Implementation(FName Name)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->LoadCheckpoint(Name); }
+}
+
+bool AClearanceOperatorPC::Server_InjectDeleteCheckpoint_Validate(FName Name) { return true; }
+void AClearanceOperatorPC::Server_InjectDeleteCheckpoint_Implementation(FName Name)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->DeleteCheckpoint(Name); }
+}

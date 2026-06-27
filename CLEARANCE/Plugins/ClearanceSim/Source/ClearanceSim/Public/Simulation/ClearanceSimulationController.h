@@ -359,6 +359,28 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Radar")
 	const TArray<FRadarTrack>& GetOperatorTracks() const { return RepOperatorTracks; }
 
+	// --- Session checkpoints (training reset) -------------------------------
+	// Defence-training rigs let an instructor set up a scenario, save a
+	// checkpoint right before the critical moment, let the trainee try, then
+	// roll back to the same state for another attempt. Same pattern in
+	// CAE/L3/Lockheed courseware. Stored entirely in memory - no disk
+	// persistence yet. Server-only (HasAuthority). - TripleA
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Checkpoints")
+	void SaveCheckpoint(FName Name);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Checkpoints")
+	bool LoadCheckpoint(FName Name);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Checkpoints")
+	void DeleteCheckpoint(FName Name);
+
+	// Lightweight info list of every saved checkpoint - replicated to clients
+	// so the instructor panel dropdown can populate without an RPC. The full
+	// payload (aircraft states, scoring log) stays server-side. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Checkpoints")
+	const TArray<FClearanceCheckpointInfo>& GetCheckpoints() const { return RepCheckpoints; }
+
 	// --- Cameras ------------------------------------------------------------
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera")
@@ -704,6 +726,30 @@ public:
 	// chaff ghost contacts, dropped tracks where fusion went stale). - TripleA
 	UPROPERTY(Replicated)
 	TArray<FRadarTrack> RepOperatorTracks;
+
+	// Lightweight replicated info for the checkpoints dropdown UI. The full
+	// payload (aircraft states + scoring log) stays in CheckpointStore
+	// server-side; clients only see name + summary. - TripleA
+	UPROPERTY(Replicated)
+	TArray<FClearanceCheckpointInfo> RepCheckpoints;
+
+	// Server-only full checkpoint payload. Not a UPROPERTY because clients
+	// don't need to know about the full snapshot - the lightweight info
+	// above is what the dropdown reads. - TripleA
+	struct FCheckpointPayload
+	{
+		TArray<FAircraftState> AircraftStates;
+		float SessionTime         = 0.f;
+		float WindDirectionDeg    = 0.f;
+		float WindSpeedKts        = 0.f;
+		int32 ScoreAtSave         = 0;
+		TArray<FIncidentRecord> ScoringLog;
+	};
+	TMap<FName, FCheckpointPayload> CheckpointStore;
+
+	// Rebuild RepCheckpoints from CheckpointStore - call after Save or Delete
+	// so clients see the dropdown update. - TripleA
+	void RebuildRepCheckpoints();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Refs")
 	TObjectPtr<AClearanceAircraftSpawner> Spawner;

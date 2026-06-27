@@ -569,6 +569,7 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, RepScoreNextSpawnSec);
 	DOREPLIFETIME(AClearanceSimulationController, RepScoringLog);
 	DOREPLIFETIME(AClearanceSimulationController, RepOperatorTracks);
+	DOREPLIFETIME(AClearanceSimulationController, RepCheckpoints);
 	DOREPLIFETIME(AClearanceSimulationController, SessionTime);
 	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
 	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
@@ -754,6 +755,12 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		}
 		// Radar still ticks in replay, so the operator can debrief from the radar view.
 		if (Radar && Radar->IsEnabled()) { Radar->Tick(DeltaTime); }
+		// Re-fuse operator tracks each replay tick so the operator scope on
+		// the instructor panel follows the replayed world. Without this,
+		// RepOperatorTracks goes stale at the moment EnterReplay fires and
+		// the operator scope appears frozen during replay even though the
+		// radar sites + central radar are repainting. - TripleA
+		RefreshOperatorTracks();
 		// DIS receiver still polls in replay - a partner sim watching the same debrief
 		// can still drop traffic on our scope. - TripleA
 		if (DISReceiver && DISReceiver->IsRunning() && AirspaceManager && GetWorld())
@@ -1555,13 +1562,21 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 		}
 	}
 
-	S.ThreatClass = NewClass;
 	if (bAsInstructor)
 	{
-		// God-view shaping: the instructor is rewriting the ground truth, not
-		// just nudging the operator picture. The truth scope reads
-		// TrueAffiliation so the symbol on it has to follow this. - TripleA
+		// God-view shaping: the instructor is rewriting the ground truth, NOT
+		// the operator's view. Truth scope reads TrueAffiliation so its symbol
+		// updates; operator scope reads ThreatClass so it keeps whatever the
+		// trainee last identified. This preserves the training scenario where
+		// the instructor flips a contact's true disposition mid-session
+		// without telegraphing it to the trainee. - TripleA
 		S.TrueAffiliation = NewClass;
+	}
+	else
+	{
+		// Operator's own classification - changes their view only. TrueAffiliation
+		// stays put so any mis-ID is still detected against the ground truth. - TripleA
+		S.ThreatClass = NewClass;
 	}
 	// Hostile contacts lock out of civilian ATC immediately.
 	S.bUnderGCIControl = (NewClass == EThreatClass::Hostile);
@@ -3877,6 +3892,91 @@ bool AClearanceSimulationController::ExportAARReport(FString& OutPath)
 		UE_LOG(LogTemp, Warning, TEXT("ExportAARReport: failed to write %s"), *FullPath);
 	}
 	return bOk;
+}
+
+void AClearanceSimulationController::SaveCheckpoint(FName Name)
+{
+	if (!HasAuthority() || Name.IsNone() || !AirspaceManager) { return; }
+
+	FCheckpointPayload Payload;
+	Payload.AircraftStates    = AirspaceManager->GetAllAircraftStates();
+	Payload.SessionTime       = SessionTime;
+	Payload.WindDirectionDeg  = WindDirectionDeg;
+	Payload.WindSpeedKts      = WindSpeedKts;
+	Payload.ScoreAtSave       = Scoring ? Scoring->GetCurrentScore() : 0;
+	Payload.ScoringLog        = Scoring ? Scoring->GetSessionLog() : TArray<FIncidentRecord>();
+
+	CheckpointStore.Add(Name, MoveTemp(Payload));
+	RebuildRepCheckpoints();
+
+	PushNotification(FString::Printf(TEXT("Checkpoint saved: %s (%d aircraft, score %d)"),
+		*Name.ToString(),
+		AirspaceManager->GetAllAircraftStates().Num(),
+		Scoring ? Scoring->GetCurrentScore() : 0),
+		FColor(80, 200, 255), 5.f);
+	LogTranscriptSystem(NAME_None, FString::Printf(TEXT("[INSTRUCTOR] Checkpoint saved: \"%s\""), *Name.ToString()));
+}
+
+bool AClearanceSimulationController::LoadCheckpoint(FName Name)
+{
+	if (!HasAuthority() || Name.IsNone() || !AirspaceManager) { return false; }
+	const FCheckpointPayload* Payload = CheckpointStore.Find(Name);
+	if (!Payload)
+	{
+		PushNotification(FString::Printf(TEXT("Checkpoint not found: %s"), *Name.ToString()), FColor::Red, 5.f);
+		return false;
+	}
+
+	// Clear all live aircraft then re-register from the snapshot. ClearTraffic
+	// handles deregistration which cascades to visual actor + behaviour
+	// teardown; RegisterAircraft on each state re-spawns + re-wires. - TripleA
+	AirspaceManager->ClearAllAircraft();
+	for (const FAircraftState& S : Payload->AircraftStates)
+	{
+		AirspaceManager->RegisterAircraft(S);
+	}
+
+	SessionTime      = Payload->SessionTime;
+	WindDirectionDeg = Payload->WindDirectionDeg;
+	WindSpeedKts     = Payload->WindSpeedKts;
+	if (Scoring)
+	{
+		Scoring->RestoreFromCheckpoint(Payload->ScoreAtSave, Payload->ScoringLog);
+	}
+
+	// Don't touch the transcript - keep all attempts in the AAR so the
+	// instructor can review the trainee's progress across multiple tries
+	// at the same scenario. - TripleA
+
+	PushNotification(FString::Printf(TEXT("Checkpoint loaded: %s (%d aircraft restored)"),
+		*Name.ToString(), Payload->AircraftStates.Num()),
+		FColor(80, 200, 255), 5.f);
+	LogTranscriptSystem(NAME_None, FString::Printf(TEXT("[INSTRUCTOR] Checkpoint loaded: \"%s\""), *Name.ToString()));
+	return true;
+}
+
+void AClearanceSimulationController::DeleteCheckpoint(FName Name)
+{
+	if (!HasAuthority() || Name.IsNone()) { return; }
+	if (CheckpointStore.Remove(Name) > 0)
+	{
+		RebuildRepCheckpoints();
+		LogTranscriptSystem(NAME_None, FString::Printf(TEXT("[INSTRUCTOR] Checkpoint deleted: \"%s\""), *Name.ToString()));
+	}
+}
+
+void AClearanceSimulationController::RebuildRepCheckpoints()
+{
+	RepCheckpoints.Reset(CheckpointStore.Num());
+	for (const TPair<FName, FCheckpointPayload>& Pair : CheckpointStore)
+	{
+		FClearanceCheckpointInfo Info;
+		Info.Name               = Pair.Key;
+		Info.SessionTimeAtSave  = Pair.Value.SessionTime;
+		Info.AircraftCount      = Pair.Value.AircraftStates.Num();
+		Info.ScoreAtSave        = Pair.Value.ScoreAtSave;
+		RepCheckpoints.Add(Info);
+	}
 }
 
 void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole InRole, FName Callsign, const FString& Text)

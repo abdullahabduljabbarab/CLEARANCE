@@ -45,6 +45,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Scoring")
 	void ResetSession();
 
+	// Rewind state to a saved checkpoint snapshot. Restores the score, the
+	// incident log, and the per-category tallies derived from it. Spawn-
+	// interval difficulty is recomputed from the restored log. Called by
+	// AClearanceSimulationController::LoadCheckpoint - the trainee can retry
+	// the same scenario without being penalised twice for actions on the
+	// first attempt. - TripleA
+	void RestoreFromCheckpoint(int32 InScore, const TArray<FIncidentRecord>& InLog);
+
 	// Rewards / penalties (positive = reward).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scoring|Points")
 	int32 PointsLanding = 100;

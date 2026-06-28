@@ -436,6 +436,39 @@ public:
 		FVector2D ScopeCentre,
 		float ScopePixelRadius) const;
 
+	// Radar coverage analysis grid for the COVERAGE overlay on the truth
+	// scope. Samples airspace at Resolution x Resolution points across the
+	// sector and returns the number of enabled radars that cover each cell.
+	// Row-major: index = row * Resolution + col. Cell at (row, col) maps to
+	// sector-relative nm position:
+	//   nm_x = ((col + 0.5) / Resolution - 0.5) * 2 * SectorRadiusNm
+	//   nm_y = ((row + 0.5) / Resolution - 0.5) * 2 * SectorRadiusNm
+	// (col grows east, row grows north - matches scope projection convention)
+	//
+	// Defence procurement specs call out the ">= 2 sensors" threshold
+	// explicitly when evaluating sensor network robustness - this is the
+	// metric. Iterates placed AClearanceRadarSite actors only (their RangeNm
+	// + actor location are replicated as actor state, so both peers can
+	// compute the same grid). BP can call this directly for custom analysis,
+	// but for the standard heatmap paint use DrawCoverageGrid below - same
+	// data but with the iteration + filled rects done in one C++ call. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Scope")
+	TArray<int32> GetRadarCoverageGrid(int32 Resolution, float SectorRadiusNm) const;
+
+	// Paint the radar coverage heatmap into the scope. Single C++ call,
+	// internally calls GetRadarCoverageGrid + iterates the cells + draws
+	// each as a filled colored rect. Splice into BP_PaintScope between
+	// the environmental layers and the aircraft layer when bShowCoverage
+	// is on. Uses 50x50 grid with low-alpha tints (blind = faint red,
+	// 1 radar = amber, 2+ = green) so aircraft + zones + airways stay
+	// legible on top. Sector radius comes from ScopeRangeNm so the grid
+	// matches the visible scope range. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Scope")
+	void DrawCoverageGrid(
+		UPARAM(ref) struct FPaintContext& Context,
+		FVector2D ScopeCentre,
+		float ScopePixelRadius);
+
 	// Operator-scope counterpart to DrawAllAircraftLabels. Same auto-avoid
 	// + leader-line pass but reads radar tracks (estimated alt / spd / hdg
 	// + DisplayCallsign, or "PRI" when bHasSecondary is false) instead of

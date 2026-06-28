@@ -4,12 +4,18 @@
 #include "Airspace/ClearanceViolationZone.h"
 #include "Airspace/ClearanceRestrictedArea.h"
 #include "Airspace/ClearanceWaypoint.h"
+#include "Safety/ClearanceRadarSite.h"
+#include "Safety/ClearanceRadar.h"
 #include "Scenario/ClearanceScenarioRunner.h"
 #include "Components/ScrollBox.h"
 #include "Components/Image.h"
 #include "Components/Slider.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
+#include "Rendering/DrawElements.h"
+#include "Rendering/SlateRenderer.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Styling/CoreStyle.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineUtils.h"
 
@@ -1247,6 +1253,183 @@ void UClearanceInstructorPanel::DrawAircraftLabel(FPaintContext& Context, FVecto
 		UWidgetBlueprintLibrary::DrawText(Context, Lines[i],
 			LabelTopLeft + FVector2D(0.f, i * LineHeight), Tint);
 	}
+}
+
+void UClearanceInstructorPanel::DrawCoverageGrid(FPaintContext& Context,
+	FVector2D ScopeCentre, float ScopePixelRadius)
+{
+	UWorld* World = GetWorld();
+	if (!World || !CachedController) { return; }
+
+	const FSlateBrush* WhiteBrush = FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"));
+	if (!WhiteBrush) { return; }
+
+	const FVector ControllerOrigin = CachedController->GetActorLocation();
+	const float UnitsPerNm  = FMath::Max(1.f, CachedController->WorldUnitsPerNm);
+	const float PixelsPerNm = ScopePixelRadius / FMath::Max(1.f, ScopeRangeNm);
+
+	// No red full-scope background - tints the underlying scope and obscures
+	// waypoints / zones / airways. Absence of green coverage already reads
+	// as "no coverage" once you understand the overlay. - TripleA
+
+	// Triangle-fan radial gradient per radar - centre vertex bright green,
+	// edge vertices fully transparent. Slate interpolates vertex colors
+	// across the triangles so the disc reads as a smooth falloff. Overlapping
+	// discs blend additively-ish under standard alpha blending: the fusion
+	// area is visibly more saturated/opaque than single-radar areas. - TripleA
+	// Two-ring gradient: bright-ish centre, plateau-ish "shoulder" at 80%
+	// of range, then fast falloff to transparent at the actual edge. Single
+	// linear gradient looked like the disc only filled ~70% of true range
+	// because the eye stops perceiving green below ~0.05 alpha; the shoulder
+	// keeps alpha visible most of the way to the edge then drops sharply
+	// for a soft boundary. - TripleA
+	const FLinearColor CentreColor  (0.20f, 0.85f, 0.30f, 0.10f);
+	const FLinearColor ShoulderColor(0.20f, 0.85f, 0.30f, 0.08f);
+	const FLinearColor EdgeColor    (0.20f, 0.85f, 0.30f, 0.00f);
+	constexpr int32 Segments = 48;
+	constexpr float  ShoulderRadiusFrac = 0.80f;
+
+	FSlateResourceHandle WhiteHandle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*WhiteBrush);
+
+	for (TActorIterator<AClearanceRadarSite> It(World); It; ++It)
+	{
+		AClearanceRadarSite* Site = *It;
+		if (!Site || !Site->Radar || !Site->Radar->IsEnabled()) { continue; }
+
+		const FVector Rel = Site->GetActorLocation() - ControllerOrigin;
+		const FVector2D PosNm = FVector2D(Rel.X, Rel.Y) / UnitsPerNm;
+		const FVector2D PosPx = ScopeNmToPixel(PosNm, ScopeCentre, ScopePixelRadius);
+		const float RangePx = Site->RangeNm * PixelsPerNm;
+		if (RangePx <= 1.f) { continue; }
+
+		// Vertices passed in widget-local pixel space - the engine's
+		// FSlateVertex::Make factory bakes in the accumulated render
+		// transform AND initialises all the per-vertex fields (clip rect,
+		// local size, material UVs) that hand-rolling forgets, which is
+		// what was producing the fullscreen-green-quad rendering bug. - TripleA
+		const FSlateRenderTransform RenderXf = Context.AllottedGeometry.GetAccumulatedRenderTransform();
+		const FVector2f LocalSize(static_cast<float>(Context.AllottedGeometry.GetLocalSize().X),
+		                          static_cast<float>(Context.AllottedGeometry.GetLocalSize().Y));
+
+		// Vertex layout: [0] = centre, [1..Segments] = shoulder ring at
+		// ShoulderRadiusFrac, [Segments+1..2*Segments] = edge ring at full range.
+		const int32 ShoulderBase = 1;
+		const int32 EdgeBase     = 1 + Segments;
+		TArray<FSlateVertex> Verts;
+		Verts.SetNum(1 + 2 * Segments);
+
+		auto MakeFanVert = [&RenderXf, &LocalSize](FVector2D LocalPos, const FLinearColor& Col)
+		{
+			const FVector2f Pos(static_cast<float>(LocalPos.X), static_cast<float>(LocalPos.Y));
+			return FSlateVertex::Make<ESlateVertexRounding::Disabled>(
+				RenderXf,
+				Pos,
+				FVector2f(0.5f, 0.5f),
+				FVector2f(0.f, 0.f),
+				Col.ToFColor(true));
+		};
+
+		const float ShoulderPx = RangePx * ShoulderRadiusFrac;
+		Verts[0] = MakeFanVert(PosPx, CentreColor);
+		for (int32 i = 0; i < Segments; ++i)
+		{
+			const float A = (2.f * PI * static_cast<float>(i)) / static_cast<float>(Segments);
+			const float Cos = FMath::Cos(A), Sin = FMath::Sin(A);
+			Verts[ShoulderBase + i] = MakeFanVert(
+				FVector2D(PosPx.X + Cos * ShoulderPx, PosPx.Y + Sin * ShoulderPx),
+				ShoulderColor);
+			Verts[EdgeBase + i] = MakeFanVert(
+				FVector2D(PosPx.X + Cos * RangePx, PosPx.Y + Sin * RangePx),
+				EdgeColor);
+		}
+
+		// Inner fan: centre -> shoulder triangles. Outer ring: shoulder ->
+		// edge quads (2 triangles per segment). - TripleA
+		TArray<SlateIndex> Indices;
+		Indices.Reserve(Segments * 9);
+		for (int32 i = 0; i < Segments; ++i)
+		{
+			const int32 Next = (i + 1) % Segments;
+			// Centre triangle
+			Indices.Add(0);
+			Indices.Add(static_cast<SlateIndex>(ShoulderBase + i));
+			Indices.Add(static_cast<SlateIndex>(ShoulderBase + Next));
+			// Shoulder -> edge quad (two triangles)
+			Indices.Add(static_cast<SlateIndex>(ShoulderBase + i));
+			Indices.Add(static_cast<SlateIndex>(EdgeBase + i));
+			Indices.Add(static_cast<SlateIndex>(EdgeBase + Next));
+			Indices.Add(static_cast<SlateIndex>(ShoulderBase + i));
+			Indices.Add(static_cast<SlateIndex>(EdgeBase + Next));
+			Indices.Add(static_cast<SlateIndex>(ShoulderBase + Next));
+		}
+
+		FSlateDrawElement::MakeCustomVerts(
+			Context.OutDrawElements,
+			Context.LayerId,
+			WhiteHandle,
+			Verts,
+			Indices,
+			nullptr, 0, 0,
+			ESlateDrawEffect::None);
+	}
+}
+
+TArray<int32> UClearanceInstructorPanel::GetRadarCoverageGrid(int32 Resolution, float SectorRadiusNm) const
+{
+	TArray<int32> Out;
+	const int32 Res = FMath::Clamp(Resolution, 4, 256);
+	const float SectorR = FMath::Max(1.f, SectorRadiusNm);
+	Out.SetNumZeroed(Res * Res);
+
+	UWorld* World = GetWorld();
+	if (!World || !CachedController) { return Out; }
+
+	const FVector ControllerOrigin = CachedController->GetActorLocation();
+	const float UnitsPerNm = FMath::Max(1.f, CachedController->WorldUnitsPerNm);
+
+	// Gather enabled radar sites once. Each entry is (sector-nm position,
+	// range in nm). Iterating actors per-cell would be O(N*sites^2). - TripleA
+	struct FSitePosRange { FVector2D PosNm; float RangeNmSq; };
+	TArray<FSitePosRange> Sites;
+	for (TActorIterator<AClearanceRadarSite> It(World); It; ++It)
+	{
+		AClearanceRadarSite* Site = *It;
+		if (!Site || !Site->Radar || !Site->Radar->IsEnabled()) { continue; }
+		const FVector Rel = Site->GetActorLocation() - ControllerOrigin;
+		FSitePosRange S;
+		S.PosNm     = FVector2D(Rel.X, Rel.Y) / UnitsPerNm;
+		S.RangeNmSq = Site->RangeNm * Site->RangeNm;
+		Sites.Add(S);
+	}
+
+	if (Sites.Num() == 0) { return Out; }
+
+	// Sample grid - row 0 is south rim (-Y), row Res-1 is north rim (+Y).
+	// col 0 is west rim (-X), col Res-1 is east rim (+X). Matches the truth
+	// scope's east+X / north-Y convention so the BP can iterate the grid in
+	// the same orientation it paints the scope. - TripleA
+	const float Step = (2.f * SectorR) / static_cast<float>(Res);
+	for (int32 Row = 0; Row < Res; ++Row)
+	{
+		const float CellY = -SectorR + (Row + 0.5f) * Step;
+		for (int32 Col = 0; Col < Res; ++Col)
+		{
+			const float CellX = -SectorR + (Col + 0.5f) * Step;
+			const FVector2D Cell(CellX, CellY);
+
+			int32 Count = 0;
+			for (const FSitePosRange& S : Sites)
+			{
+				if (FVector2D::DistSquared(Cell, S.PosNm) <= S.RangeNmSq)
+				{
+					++Count;
+				}
+			}
+			Out[Row * Res + Col] = Count;
+		}
+	}
+
+	return Out;
 }
 
 FVector2D UClearanceInstructorPanel::GetDeclutteredTrackPx(

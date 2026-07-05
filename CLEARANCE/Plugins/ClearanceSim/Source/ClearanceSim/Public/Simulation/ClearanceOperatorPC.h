@@ -35,8 +35,11 @@ private:
 public:
 	// All RPCs reliable + validated. Each is a thin forwarder - find the local
 	// AClearanceSimulationController on the server and call its method. - TripleA
+	// TimerMinutes lets the instructor override the default countdown -
+	// 5 min fuel / 7 min mayday. Pass <= 0 (default) to keep the built-in
+	// defaults. Hijack and CommsFailure ignore the param. - TripleA
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
-	void Server_InjectEmergency(FName Callsign, EEmergencyType Kind);
+	void Server_InjectEmergency(FName Callsign, EEmergencyType Kind, float TimerMinutes = -1.f);
 
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectClearEmergency(FName Callsign);
@@ -49,6 +52,11 @@ public:
 
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectSetWind(float DirectionDeg, float SpeedKts);
+
+	// Live traffic-density cap. Clamped 1..40 server-side. Existing aircraft
+	// aren't yanked if the cap is lowered - only new spawns are gated. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
+	void Server_InjectSetMaxAircraft(int32 NewMax);
 
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectSpawn();

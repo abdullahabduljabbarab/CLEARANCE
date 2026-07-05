@@ -595,12 +595,17 @@ void AClearanceSimulationController::PushNotification(const FString& Text, FColo
 
 	FClearanceNotification N;
 	N.Text = Text;
-	N.ServerTimeAdded = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+	// Session clock (freezes on pause / scales in replay), not engine world time -
+	// so event-log rows display the same MM:SS as the session timer. - TripleA
+	N.ServerTimeAdded = SessionTime;
 	N.Colour = Colour;
 	N.LifetimeSec = LifetimeSec;
 	RepNotifications.Add(N);
 
-	while (RepNotifications.Num() > 12)
+	// Cap replicated ring buffer size. Client instructor panel event log
+	// caps its own render at MaxNotifications (currently 16), so anything
+	// above ~40 wastes bandwidth without being visible. - TripleA
+	while (RepNotifications.Num() > 40)
 	{
 		RepNotifications.RemoveAt(0);
 	}
@@ -627,9 +632,9 @@ void AClearanceSimulationController::Multicast_PlayTTS_Implementation(FName Call
 	// Role rules:
 	//   - no callsign           -> System (controller voice, broadcasts)
 	//   - registered aircraft   -> Pilot (the actual aircraft is speaking)
-	//   - any other callsign    -> System (TOWER / MET / ACC / AWACS / GCI /
-	//     ATIS - facilities, not aircraft; their callsign goes into Speaker
-	//     so the transcript still shows "TOWER:" instead of "SYS:"). - TripleA
+	//   - facility callsign     -> that facility's own role (Tower / Acc / Awacs
+	//     / Gci / Atis / Met) so the transcript shows each in its own color
+	//     instead of collapsing them all under SYS. - TripleA
 	if (HasAuthority())
 	{
 		EClearanceCommsRole TranscriptRole = EClearanceCommsRole::System;
@@ -644,7 +649,21 @@ void AClearanceSimulationController::Multicast_PlayTTS_Implementation(FName Call
 			// - TripleA
 			const bool bIsAircraft = bPanic
 				|| (AirspaceManager && AirspaceManager->IsCallsignRegistered(Callsign));
-			TranscriptRole = bIsAircraft ? EClearanceCommsRole::Pilot : EClearanceCommsRole::System;
+			if (bIsAircraft)
+			{
+				TranscriptRole = EClearanceCommsRole::Pilot;
+			}
+			else
+			{
+				const FString Cs = Callsign.ToString().ToUpper();
+				if      (Cs == TEXT("TOWER") || Cs == TEXT("TWR"))    { TranscriptRole = EClearanceCommsRole::Tower; }
+				else if (Cs == TEXT("ACC"))                            { TranscriptRole = EClearanceCommsRole::Acc; }
+				else if (Cs == TEXT("AWACS"))                          { TranscriptRole = EClearanceCommsRole::Awacs; }
+				else if (Cs == TEXT("GCI"))                            { TranscriptRole = EClearanceCommsRole::Gci; }
+				else if (Cs == TEXT("ATIS"))                           { TranscriptRole = EClearanceCommsRole::Atis; }
+				else if (Cs == TEXT("MET"))                            { TranscriptRole = EClearanceCommsRole::Met; }
+				else                                                    { TranscriptRole = EClearanceCommsRole::System; }
+			}
 		}
 		AppendTranscriptEntry(TranscriptRole, Callsign, Text);
 	}
@@ -909,7 +928,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 							TEXT("VIOLATION - hostile %s breached %s"), *S.Callsign.ToString(), *Z->ZoneName.ToString()));
 					}
 					{
-						const FString NMsg = FString::Printf(TEXT("*** VIOLATION *** HOSTILE %s REACHED %s (-%d)"),
+						const FString NMsg = FString::Printf(TEXT("VIOLATION: hostile %s reached %s (-%d)"),
 							*S.Callsign.ToString(), *Z->ZoneName.ToString(),
 							Scoring ? Scoring->PenaltyViolationZoneBreached : 1000);
 						PushNotification(NMsg, FColor::Red, 30.f);
@@ -1105,41 +1124,17 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 					// player wondering if anything happened. Routed through the
 					// multicast so every peer hears the declaration, not just whichever
 					// machine the server-side iterator happened to land on. - TripleA
-					switch (S.ActiveEmergency)
-					{
-					case EEmergencyType::GeneralMayday:
-						Multicast_PlayTTS(S.Callsign,
-							S.EmergencyDetail.IsEmpty()
-								? FString::Printf(TEXT("Mayday, mayday, mayday, %s, declaring emergency, request immediate landing"), *S.Callsign.ToString())
-								: FString::Printf(TEXT("Mayday, mayday, mayday, %s, %s, request immediate landing"), *S.Callsign.ToString(), *S.EmergencyDetail),
-							FString(), false);
-						break;
-					case EEmergencyType::FuelLow:
-						Multicast_PlayTTS(S.Callsign,
-							FString::Printf(TEXT("Mayday, mayday, mayday, %s, fuel emergency, request immediate landing"), *S.Callsign.ToString()),
-							FString(), false);
-						break;
-					case EEmergencyType::CommsFailure:
-						// No spoken transmission (radio failure) - just the cockpit static
-						// cue. Manually log a System line so the trainee sees the
-						// squawk change in the transcript. - TripleA
-						Multicast_PlayCockpitCue(S.Callsign, 0, 2.0f);
-						LogTranscriptLine(EClearanceCommsRole::System, S.Callsign, FString::Printf(TEXT("[radio silence - comms failure suspected, %s squawking 7600]"), *S.Callsign.ToString()));
-						break;
-					case EEmergencyType::Hijack:
-						// Same - no TTS, just a brief carrier blip. Manual log so the
-						// squawk change is visible. - TripleA
-						Multicast_PlayCockpitCue(S.Callsign, 0, 0.6f);
-						LogTranscriptLine(EClearanceCommsRole::System, S.Callsign, FString::Printf(TEXT("[brief carrier - %s squawking 7500]"), *S.Callsign.ToString()));
-						break;
-					default: break;
-					}
+					AnnounceEmergency(S.Callsign, S.ActiveEmergency, S.EmergencyDetail);
 					continue;
 				}
 			}
 
 			// Countdown tick + crash for any emergency carrying a timer (fuel or
-			// mayday). Hijack and comms failure don't time out by themselves. - TripleA
+			// mayday). Hijack and comms failure don't time out by themselves.
+			// Deliberately uses wall-clock DeltaTime, NOT SimDelta - the timer
+			// measures operator decision time, not sim-world fuel burn. Instructor's
+			// speed changes shouldn't shrink or stretch how long the trainee has
+			// to work the emergency. - TripleA
 			const bool bHasTimer = (Ro.ActiveEmergency == EEmergencyType::FuelLow)
 				|| (Ro.ActiveEmergency == EEmergencyType::GeneralMayday);
 			if (bHasTimer && Ro.FuelRemainingMinutes > 0.f && !Ro.bCrashing)
@@ -1591,12 +1586,51 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	}
 }
 
-bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergencyType Kind)
+void AClearanceSimulationController::AnnounceEmergency(FName Callsign, EEmergencyType Kind, const FString& EmergencyDetail)
+{
+	// The static cue for hijack is a small concession to gameplay over strict
+	// doctrine; pure silence is more authentic but leaves the player wondering
+	// if anything happened. Routed through Multicast so every peer hears the
+	// declaration, not just whichever machine the server-side iterator happened
+	// to land on. - TripleA
+	switch (Kind)
+	{
+	case EEmergencyType::GeneralMayday:
+		Multicast_PlayTTS(Callsign,
+			EmergencyDetail.IsEmpty()
+				? FString::Printf(TEXT("Mayday, mayday, mayday, %s, declaring emergency, request immediate landing"), *Callsign.ToString())
+				: FString::Printf(TEXT("Mayday, mayday, mayday, %s, %s, request immediate landing"), *Callsign.ToString(), *EmergencyDetail),
+			FString(), false);
+		break;
+	case EEmergencyType::FuelLow:
+		Multicast_PlayTTS(Callsign,
+			FString::Printf(TEXT("Mayday, mayday, mayday, %s, fuel emergency, request immediate landing"), *Callsign.ToString()),
+			FString(), false);
+		break;
+	case EEmergencyType::CommsFailure:
+		Multicast_PlayCockpitCue(Callsign, 0, 2.0f);
+		LogTranscriptLine(EClearanceCommsRole::System, Callsign,
+			FString::Printf(TEXT("[radio silence - comms failure suspected, %s squawking 7600]"), *Callsign.ToString()));
+		break;
+	case EEmergencyType::Hijack:
+		Multicast_PlayCockpitCue(Callsign, 0, 0.6f);
+		LogTranscriptLine(EClearanceCommsRole::System, Callsign,
+			FString::Printf(TEXT("[brief carrier - %s squawking 7500]"), *Callsign.ToString()));
+		break;
+	default: break;
+	}
+}
+
+bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergencyType Kind, float TimerMinutes)
 {
 	if (!AirspaceManager || Kind == EEmergencyType::None) { return false; }
 	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
 	if (!S.bIsValid) { return false; }
 	if (S.ActiveEmergency != EEmergencyType::None) { return false; } // already emergency
+
+	// Instructor override wins if > 0; otherwise fall through to the
+	// class-default for the given emergency type. - TripleA
+	const bool bHasOverride = TimerMinutes > 0.f;
 
 	int32 NewSquawk = S.SquawkCode;
 	switch (Kind)
@@ -1604,7 +1638,11 @@ bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergen
 	case EEmergencyType::GeneralMayday:
 		S.ActiveEmergency = EEmergencyType::GeneralMayday;
 		NewSquawk = 7700;
-		S.EmergencyDetail = TEXT("scripted mayday");
+		// Empty detail -> TTS uses the natural "declaring emergency" phrasing.
+		// Scenario authors can seed a specific reason ("engine failure",
+		// "hydraulic loss", etc) via Params if they want colour. - TripleA
+		S.EmergencyDetail.Empty();
+		S.FuelRemainingMinutes = bHasOverride ? TimerMinutes : MaydayTimeoutMinutes;
 		break;
 	case EEmergencyType::CommsFailure:
 		S.ActiveEmergency = EEmergencyType::CommsFailure;
@@ -1616,7 +1654,7 @@ bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergen
 		break;
 	case EEmergencyType::FuelLow:
 		S.ActiveEmergency = EEmergencyType::FuelLow;
-		S.FuelRemainingMinutes = FuelEmergencyMinutes;
+		S.FuelRemainingMinutes = bHasOverride ? TimerMinutes : FuelEmergencyMinutes;
 		break;
 	default:
 		return false;
@@ -1651,6 +1689,10 @@ bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergen
 			TEXT("EMERGENCY (scripted) - %s declared %d squawk %d"),
 			*Callsign.ToString(), (int32)Kind, NewSquawk));
 	}
+
+	// Voice / cockpit-cue audio - same call the random-tick path makes, so
+	// instructor-injected emergencies sound identical to organic ones. - TripleA
+	AnnounceEmergency(Callsign, Kind, S.EmergencyDetail);
 	return true;
 }
 
@@ -1674,13 +1716,23 @@ bool AClearanceSimulationController::ClearEmergencyOn(FName Callsign)
 // authoritative server-side. - TripleA
 // ============================================================================
 
-bool AClearanceSimulationController::Server_InjectEmergency_Validate(FName Callsign, EEmergencyType Kind)
+bool AClearanceSimulationController::Server_InjectEmergency_Validate(FName Callsign, EEmergencyType Kind, float TimerMinutes)
 {
 	return Callsign != NAME_None;
 }
-void AClearanceSimulationController::Server_InjectEmergency_Implementation(FName Callsign, EEmergencyType Kind)
+void AClearanceSimulationController::Server_InjectEmergency_Implementation(FName Callsign, EEmergencyType Kind, float TimerMinutes)
 {
-	DeclareEmergencyOn(Callsign, Kind);
+	if (!DeclareEmergencyOn(Callsign, Kind, TimerMinutes)) { return; }
+	const TCHAR* KindStr = TEXT("EMERGENCY");
+	switch (Kind)
+	{
+		case EEmergencyType::GeneralMayday: KindStr = TEXT("General Mayday (7700)"); break;
+		case EEmergencyType::CommsFailure:  KindStr = TEXT("Comms Failure (7600)");  break;
+		case EEmergencyType::Hijack:        KindStr = TEXT("Hijack (7500)");         break;
+		case EEmergencyType::FuelLow:       KindStr = TEXT("Fuel Emergency");        break;
+		default: break;
+	}
+	PushNotification(FString::Printf(TEXT("EMERGENCY: %s %s"), *Callsign.ToString(), KindStr), FColor::Red, 6.f);
 }
 
 bool AClearanceSimulationController::Server_InjectClassify_Validate(FName Callsign, EThreatClass NewClass)
@@ -1689,7 +1741,17 @@ bool AClearanceSimulationController::Server_InjectClassify_Validate(FName Callsi
 }
 void AClearanceSimulationController::Server_InjectClassify_Implementation(FName Callsign, EThreatClass NewClass)
 {
-	ClassifyAircraft(Callsign, NewClass);
+	ClassifyAircraft(Callsign, NewClass, /*bAsInstructor=*/true);
+	const TCHAR* ClassStr = TEXT("UNKNOWN");
+	switch (NewClass)
+	{
+		case EThreatClass::Friendly: ClassStr = TEXT("FRIENDLY"); break;
+		case EThreatClass::Hostile:  ClassStr = TEXT("HOSTILE");  break;
+		case EThreatClass::Neutral:  ClassStr = TEXT("NEUTRAL");  break;
+		case EThreatClass::Unknown:  ClassStr = TEXT("UNKNOWN");  break;
+		default: break;
+	}
+	PushNotification(FString::Printf(TEXT("CLASSIFY: %s -> %s"), *Callsign.ToString(), ClassStr), FColor::Cyan, 6.f);
 }
 
 bool AClearanceSimulationController::Server_InjectScramble_Validate(FName BanditCallsign)
@@ -1698,7 +1760,13 @@ bool AClearanceSimulationController::Server_InjectScramble_Validate(FName Bandit
 }
 void AClearanceSimulationController::Server_InjectScramble_Implementation(FName BanditCallsign)
 {
-	ScrambleInterceptors(BanditCallsign);
+	const int32 N = ScrambleInterceptors(BanditCallsign);
+	if (N > 0)
+	{
+		PushNotification(FString::Printf(TEXT("SCRAMBLE: %d interceptor%s on %s"),
+			N, (N == 1 ? TEXT("") : TEXT("s")), *BanditCallsign.ToString()),
+			FColor(255, 140, 0), 6.f);
+	}
 }
 
 bool AClearanceSimulationController::Server_InjectSetWind_Validate(float DirectionDeg, float SpeedKts)
@@ -1708,18 +1776,25 @@ bool AClearanceSimulationController::Server_InjectSetWind_Validate(float Directi
 void AClearanceSimulationController::Server_InjectSetWind_Implementation(float DirectionDeg, float SpeedKts)
 {
 	SetWind(DirectionDeg, SpeedKts);
+	PushNotification(FString::Printf(TEXT("WIND %03d/%d"),
+		FMath::RoundToInt(DirectionDeg) % 360, FMath::RoundToInt(SpeedKts)),
+		FColor::Cyan, 6.f);
 }
 
 bool AClearanceSimulationController::Server_InjectSpawn_Validate() { return true; }
 void AClearanceSimulationController::Server_InjectSpawn_Implementation()
 {
-	SpawnOne();
+	if (SpawnOne())
+	{
+		PushNotification(TEXT("SPAWN: +1 aircraft"), FColor::Cyan, 4.f);
+	}
 }
 
 bool AClearanceSimulationController::Server_InjectClearTraffic_Validate() { return true; }
 void AClearanceSimulationController::Server_InjectClearTraffic_Implementation()
 {
 	ClearTraffic();
+	PushNotification(TEXT("CLEAR TRAFFIC: all aircraft removed"), FColor::Cyan, 6.f);
 }
 
 bool AClearanceSimulationController::Server_InjectLoadScenario_Validate(const FString& ScenarioName)
@@ -1735,23 +1810,31 @@ void AClearanceSimulationController::Server_InjectLoadScenario_Implementation(co
 	if (!ScenarioRunner->LoadFromFile(Path, Err))
 	{
 		UE_LOG(LogTemp, Error, TEXT("[Instructor] scenario load failed: %s"), *Err);
+		PushNotification(FString::Printf(TEXT("SCENARIO LOAD FAILED: %s"), *Err), FColor::Red, 8.f);
 		return;
 	}
 	SetSpawnerScenarioLocked(true); // pre-clear safety - matches the console path
 	ClearTraffic();
 	ScenarioRunner->Start();
+	PushNotification(FString::Printf(TEXT("SCENARIO LOADED: %s"), *Name), FColor::Cyan, 6.f);
 }
 
 bool AClearanceSimulationController::Server_InjectStopScenario_Validate() { return true; }
 void AClearanceSimulationController::Server_InjectStopScenario_Implementation()
 {
-	if (ScenarioRunner) { ScenarioRunner->Stop(); }
+	if (ScenarioRunner)
+	{
+		ScenarioRunner->Stop();
+		PushNotification(TEXT("SCENARIO STOPPED"), FColor::Cyan, 6.f);
+	}
 }
 
 bool AClearanceSimulationController::Server_InjectSetPaused_Validate(bool bNewPaused) { return true; }
 void AClearanceSimulationController::Server_InjectSetPaused_Implementation(bool bNewPaused)
 {
+	if (bPaused == bNewPaused) { return; }
 	bPaused = bNewPaused;
+	PushNotification(bNewPaused ? TEXT("SESSION PAUSED") : TEXT("SESSION RESUMED"), FColor::Cyan, 4.f);
 }
 
 bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass& OutClass, int32& OutSquawk)
@@ -1836,7 +1919,7 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 	}
 	if (TimeToIntercept <= 0.f)
 	{
-		const FString NMsg = FString::Printf(TEXT("INTERCEPT %s -> %s: no solution (too slow)"),
+		const FString NMsg = FString::Printf(TEXT("INTERCEPT: %s -> %s no solution (too slow)"),
 			*FighterCallsign.ToString(), *TargetCallsign.ToString());
 		PushNotification(NMsg, FColor::Red, 4.f);
 		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red, NMsg); }
@@ -1865,7 +1948,7 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 
 	if (bFirstTime)
 	{
-		const FString NMsg = FString::Printf(TEXT("INTERCEPT %s -> %s  vector %03.0f  ETA %.0fs"),
+		const FString NMsg = FString::Printf(TEXT("INTERCEPT: %s -> %s vector %03.0f ETA %.0fs"),
 			*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept);
 		PushNotification(NMsg, FColor::Cyan, 5.f);
 		if (GEngine)
@@ -2034,7 +2117,7 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 	Site.Callsign = S.Callsign;
 	CrashSites.Add(Site);
 	{
-		const FString NMsg = FString::Printf(TEXT("*** CRASH *** %s - %s (-%d)"),
+		const FString NMsg = FString::Printf(TEXT("CRASH: %s - %s (-%d)"),
 			*S.Callsign.ToString(), *Reason,
 			Scoring ? Scoring->PenaltyAircraftCrashed : 500);
 		PushNotification(NMsg, FColor::Red, 30.f);
@@ -3215,9 +3298,9 @@ void AClearanceSimulationController::CheckExits()
 					const int32 Base  = Scoring ? Scoring->PointsIntercept : 0;
 					const int32 Total = bThroughEW ? Base * 2 : Base;
 					const FString NMsg = bThroughEW
-						? FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out through EW  (+%d)"),
+						? FString::Printf(TEXT("INTERCEPT: %d-ship escorted %s out through EW (+%d)"),
 							Fighters.Num(), *BanditCs.ToString(), Total)
-						: FString::Printf(TEXT("INTERCEPT SUCCESSFUL  %d-ship escorted %s out  (+%d)"),
+						: FString::Printf(TEXT("INTERCEPT: %d-ship escorted %s out (+%d)"),
 							Fighters.Num(), *BanditCs.ToString(), Total);
 					PushNotification(NMsg, FColor::Green, 5.f);
 					if (GEngine)
@@ -3724,10 +3807,17 @@ namespace
 	{
 		switch (R)
 		{
-		case EClearanceCommsRole::Operator: return TEXT("ATC");
-		case EClearanceCommsRole::Pilot:    return TEXT("PILOT");
-		case EClearanceCommsRole::System:   return TEXT("SYS");
-		default:                            return TEXT("");
+		case EClearanceCommsRole::Operator:   return TEXT("ATC");
+		case EClearanceCommsRole::Pilot:      return TEXT("PILOT");
+		case EClearanceCommsRole::System:     return TEXT("SYS");
+		case EClearanceCommsRole::Instructor: return TEXT("INSTR");
+		case EClearanceCommsRole::Tower:      return TEXT("TWR");
+		case EClearanceCommsRole::Acc:        return TEXT("ACC");
+		case EClearanceCommsRole::Awacs:      return TEXT("AWACS");
+		case EClearanceCommsRole::Gci:        return TEXT("GCI");
+		case EClearanceCommsRole::Atis:       return TEXT("ATIS");
+		case EClearanceCommsRole::Met:        return TEXT("MET");
+		default:                              return TEXT("");
 		}
 	}
 }
@@ -3914,7 +4004,7 @@ void AClearanceSimulationController::SaveCheckpoint(FName Name)
 		AirspaceManager->GetAllAircraftStates().Num(),
 		Scoring ? Scoring->GetCurrentScore() : 0),
 		FColor(80, 200, 255), 5.f);
-	LogTranscriptSystem(NAME_None, FString::Printf(TEXT("[INSTRUCTOR] Checkpoint saved: \"%s\""), *Name.ToString()));
+	LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None, FString::Printf(TEXT("Checkpoint saved: \"%s\""), *Name.ToString()));
 }
 
 bool AClearanceSimulationController::LoadCheckpoint(FName Name)
@@ -3951,7 +4041,7 @@ bool AClearanceSimulationController::LoadCheckpoint(FName Name)
 	PushNotification(FString::Printf(TEXT("Checkpoint loaded: %s (%d aircraft restored)"),
 		*Name.ToString(), Payload->AircraftStates.Num()),
 		FColor(80, 200, 255), 5.f);
-	LogTranscriptSystem(NAME_None, FString::Printf(TEXT("[INSTRUCTOR] Checkpoint loaded: \"%s\""), *Name.ToString()));
+	LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None, FString::Printf(TEXT("Checkpoint loaded: \"%s\""), *Name.ToString()));
 	return true;
 }
 
@@ -3961,7 +4051,7 @@ void AClearanceSimulationController::DeleteCheckpoint(FName Name)
 	if (CheckpointStore.Remove(Name) > 0)
 	{
 		RebuildRepCheckpoints();
-		LogTranscriptSystem(NAME_None, FString::Printf(TEXT("[INSTRUCTOR] Checkpoint deleted: \"%s\""), *Name.ToString()));
+		LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None, FString::Printf(TEXT("Checkpoint deleted: \"%s\""), *Name.ToString()));
 	}
 }
 
@@ -3997,14 +4087,31 @@ void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole I
 		InRole == EClearanceCommsRole::Operator ? TEXT("OP") : (InRole == EClearanceCommsRole::Pilot ? TEXT("PILOT") : TEXT("SYS")),
 		*Callsign.ToString(), *Text, Transcript.Num() + 1);
 
-	// Speaker label: operator transmissions always show "ATC", pilot lines
-	// show the aircraft callsign, and System lines show their callsign if
-	// they have one (TOWER / MET / ACC / AWACS / GCI / ATIS facilities) or
-	// "SYS" as fallback for genuinely sourceless events. - TripleA
-	const FString SpeakerLabel = (InRole == EClearanceCommsRole::Operator) ? FString(TEXT("ATC"))
-	                          : (InRole == EClearanceCommsRole::Pilot)    ? Callsign.ToString()
-	                          : (!Callsign.IsNone())                       ? Callsign.ToString()
-	                          :                                             FString(TEXT("SYS"));
+	// Speaker label per role:
+	//   Operator   -> "ATC"
+	//   Pilot      -> aircraft callsign
+	//   System     -> Callsign if present, else "SYS"
+	//   Instructor -> "INSTR"
+	//   Tower / Acc / Awacs / Gci / Atis / Met -> the role's short tag
+	//     (TWR / ACC / AWACS / GCI / ATIS / MET) - facility name IS the speaker
+	// - TripleA
+	FString SpeakerLabel;
+	switch (InRole)
+	{
+	case EClearanceCommsRole::Operator:   SpeakerLabel = TEXT("ATC");   break;
+	case EClearanceCommsRole::Pilot:      SpeakerLabel = Callsign.ToString(); break;
+	case EClearanceCommsRole::Instructor: SpeakerLabel = TEXT("INSTR"); break;
+	case EClearanceCommsRole::Tower:      SpeakerLabel = TEXT("TWR");   break;
+	case EClearanceCommsRole::Acc:        SpeakerLabel = TEXT("ACC");   break;
+	case EClearanceCommsRole::Awacs:      SpeakerLabel = TEXT("AWACS"); break;
+	case EClearanceCommsRole::Gci:        SpeakerLabel = TEXT("GCI");   break;
+	case EClearanceCommsRole::Atis:       SpeakerLabel = TEXT("ATIS");  break;
+	case EClearanceCommsRole::Met:        SpeakerLabel = TEXT("MET");   break;
+	case EClearanceCommsRole::System:
+	default:
+		SpeakerLabel = Callsign.IsNone() ? FString(TEXT("SYS")) : Callsign.ToString();
+		break;
+	}
 	FCommsTranscriptEntry Entry;
 	Entry.TimeSec = SessionTime;
 	Entry.Role = InRole;
@@ -5596,10 +5703,10 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 
 	// Surface it on screen until there's a real UI, so conflicts are visible. - TripleA
 	{
-		const FString NMsg = FString::Printf(TEXT("%s  %s / %s  -  %.1f nm, %.0f ft%s"), Lvl,
+		const FString NMsg = FString::Printf(TEXT("%s: %s / %s - %.1f nm, %.0f ft%s"), Lvl,
 			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(),
 			Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
-			Conflict.bRequiresGoAround ? TEXT("  [GO-AROUND]") : TEXT(""));
+			Conflict.bRequiresGoAround ? TEXT(" [GO-AROUND]") : TEXT(""));
 		PushNotification(NMsg, ColourFor(Conflict.AlertLevel), 5.f);
 		if (GEngine)
 		{
@@ -5628,7 +5735,7 @@ void AClearanceSimulationController::HandleConflictResolved(FConflictEvent Confl
 		(Conflict.AlertLevel == EAlertLevel::Warning || Conflict.AlertLevel == EAlertLevel::Critical))
 	{
 		Scoring->LogIncident(EIncidentType::SuccessfulResolution, Conflict.AircraftA, Conflict.AircraftB, TEXT("Conflict resolved"));
-		const FString NMsg = FString::Printf(TEXT("RESOLVED  %s / %s  (+%d)"),
+		const FString NMsg = FString::Printf(TEXT("RESOLVED: %s / %s (+%d)"),
 			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution);
 		PushNotification(NMsg, FColor::Green, 4.f);
 		if (GEngine)

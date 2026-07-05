@@ -27,6 +27,16 @@ struct CLEARANCESIM_API FInstructorAircraftRow
 	UPROPERTY(BlueprintReadOnly) EEmergencyType ActiveEmergency = EEmergencyType::None;
 	UPROPERTY(BlueprintReadOnly) EAlertLevel CurrentAlertLevel = EAlertLevel::None;
 
+	// Minutes remaining on the emergency countdown - reused across FuelLow
+	// (default 5 min via FuelEmergencyMinutes) AND GeneralMayday (default
+	// 7 min via MaydayTimeoutMinutes). Hits zero -> aircraft crashes:
+	// "Fuel exhaustion" for fuel, "Mayday situation deteriorated" for mayday.
+	// Hijack and CommsFailure don't carry a timer (-1 in those cases and
+	// when no emergency is active). Instructor UI shows "FUEL M:SS" or
+	// "MAYDAY M:SS" per active type so the operator faces a live crash
+	// countdown they have to work against. - TripleA
+	UPROPERTY(BlueprintReadOnly) float EmergencyTimerMinutes = -1.f;
+
 	UPROPERTY(BlueprintReadOnly) float Heading = 0.f;
 	UPROPERTY(BlueprintReadOnly) float TargetHeading = 0.f;
 	UPROPERTY(BlueprintReadOnly) float Altitude = 0.f;
@@ -70,6 +80,24 @@ struct CLEARANCESIM_API FInstructorScoreView
 	UPROPERTY(BlueprintReadOnly) int32 Busted = 0;
 
 	UPROPERTY(BlueprintReadOnly) float NextSpawnSec = 0.f;
+};
+
+// One section of the in-station instructor manual - authored as terse
+// operator-oriented reference text. Title is the display heading; Anchor
+// is the stable key BP uses to select it from the TOC; Body is plain
+// text with `\n\n` paragraph breaks and simple inline markers:
+//   **bold**   -> BP decorator swaps to bold weight
+//   `code`     -> BP decorator swaps to monospace + cyan-accent tint
+//   [ACCENT]   -> UPPERCASE-BRACKETED tokens colored cyan-primary (button names)
+// - TripleA
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FManualSection
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Anchor;
+	UPROPERTY(BlueprintReadOnly) FString Title;
+	UPROPERTY(BlueprintReadOnly) FString Body;
 };
 
 USTRUCT(BlueprintType)

@@ -602,9 +602,25 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAdvisoryWarning, FString, Messag
 UENUM(BlueprintType)
 enum class EClearanceCommsRole : uint8
 {
-	Operator	UMETA(DisplayName = "Operator"),
-	Pilot		UMETA(DisplayName = "Pilot"),
-	System		UMETA(DisplayName = "System")
+	Operator	UMETA(DisplayName = "Operator"),   // The trainee - ATC on frequency
+	Pilot		UMETA(DisplayName = "Pilot"),      // Aircraft transmissions
+	System		UMETA(DisplayName = "System"),     // Auto sim events - squawk changes, wake-turbulence advisories
+
+	// Instructor-scripted injects (emergency declared, threat reclassified,
+	// scramble ordered, checkpoint saved etc). Distinct from System so the
+	// transcript reader can tell "instructor caused this" from "sim ticked
+	// and produced this". - TripleA
+	Instructor	UMETA(DisplayName = "Instructor"),
+
+	// External / support facilities that are neither the trainee nor the
+	// pilots. Each renders in its own color so the transcript scans as a
+	// real multi-facility comms log. - TripleA
+	Tower		UMETA(DisplayName = "Tower"),      // Airport tower
+	Acc		    UMETA(DisplayName = "ACC"),        // Area Control (enroute)
+	Awacs		UMETA(DisplayName = "AWACS"),      // Airborne early warning
+	Gci		    UMETA(DisplayName = "GCI"),        // Ground Control Intercept
+	Atis		UMETA(DisplayName = "ATIS"),       // Automated terminal info
+	Met		    UMETA(DisplayName = "MET")         // Meteorological
 };
 
 USTRUCT(BlueprintType)

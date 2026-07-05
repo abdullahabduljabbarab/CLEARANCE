@@ -317,6 +317,12 @@ bool UClearanceInstructorPanel::BuildAircraftRows(TArray<FInstructorAircraftRow>
 		R.FlightPhase             = S.FlightPhase;
 		R.ActiveEmergency    = S.ActiveEmergency;
 		R.CurrentAlertLevel  = S.CurrentAlertLevel;
+		// FuelRemainingMinutes on FAircraftState is a misnomer - it's the
+		// shared countdown for both FuelLow AND GeneralMayday. Expose it
+		// only when one of those two types is active. - TripleA
+		R.EmergencyTimerMinutes = (S.ActiveEmergency == EEmergencyType::FuelLow
+		                        || S.ActiveEmergency == EEmergencyType::GeneralMayday)
+			? S.FuelRemainingMinutes : -1.f;
 		R.Heading            = S.Heading;
 		R.TargetHeading      = S.TargetHeading;
 		R.Altitude           = S.Altitude;
@@ -552,6 +558,28 @@ void UClearanceInstructorPanel::DrawCameraOverlayLines(FPaintContext& Context, U
 	}
 }
 
+void UClearanceInstructorPanel::DrawCameraFeedBorder(FPaintContext& Context, UImage* CameraImage)
+{
+	if (!CameraImage) { return; }
+
+	const FGeometry& ImageGeo = CameraImage->GetPaintSpaceGeometry();
+	const FVector2D ImageSize = ImageGeo.GetLocalSize();
+	if (ImageSize.X <= 0.f || ImageSize.Y <= 0.f) { return; }
+
+	const FVector2D PanelAbs = Context.AllottedGeometry.GetAbsolutePosition();
+	const FVector2D ImageAbs = ImageGeo.GetAbsolutePosition();
+	const float Scale = FMath::Max(KINDA_SMALL_NUMBER, Context.AllottedGeometry.Scale);
+	const FVector2D Origin = (ImageAbs - PanelAbs) / Scale;
+	const FVector2D Far(Origin.X + ImageSize.X, Origin.Y + ImageSize.Y);
+
+	const FLinearColor Cyan(0.20f, 0.85f, 1.00f, 0.6f);
+	constexpr float Thick = 1.f;
+	UWidgetBlueprintLibrary::DrawLine(Context, FVector2D(Origin.X, Origin.Y), FVector2D(Far.X,    Origin.Y), Cyan, true, Thick);
+	UWidgetBlueprintLibrary::DrawLine(Context, FVector2D(Far.X,    Origin.Y), FVector2D(Far.X,    Far.Y),    Cyan, true, Thick);
+	UWidgetBlueprintLibrary::DrawLine(Context, FVector2D(Far.X,    Far.Y),    FVector2D(Origin.X, Far.Y),    Cyan, true, Thick);
+	UWidgetBlueprintLibrary::DrawLine(Context, FVector2D(Origin.X, Far.Y),    FVector2D(Origin.X, Origin.Y), Cyan, true, Thick);
+}
+
 void UClearanceInstructorPanel::DrawCameraOverlayText(FPaintContext& Context, UImage* CameraImage)
 {
 	if (!CameraImage) { return; }
@@ -620,11 +648,212 @@ TArray<FClearanceNotification> UClearanceInstructorPanel::GetRecentNotifications
 	return Out;
 }
 
+TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
+{
+	auto Make = [](const TCHAR* Anchor, const TCHAR* Title, const TCHAR* Body)
+	{
+		FManualSection S;
+		S.Anchor = Anchor;
+		S.Title  = Title;
+		S.Body   = Body;
+		return S;
+	};
+
+	TArray<FManualSection> Sections;
+
+	Sections.Add(Make(TEXT("overview"), TEXT("Overview"),
+		TEXT("The instructor station is a single-window control surface with three primary tabs plus this **MANUAL** reference.\n\n"
+		"[TRUTH SCOPE] shows god-view radar with every aircraft visible regardless of what the trainee sees - the instructor's picture of ground truth.\n\n"
+		"[CAMERA VIEW] gives live 3D observation of aircraft or airport across five modes: Overview / Tower / Chase / Approach / Operator.\n\n"
+		"[PERFORMANCE] is the real-time scoring dashboard, incident log, comms transcript, and AAR export.\n\n"
+		"The right-hand column persists across all tabs. It holds the inject controls: **EMERGENCY** / **THREAT CLASS** / **EW** (jamming / chaff / scramble) / **SECTOR CONTROLS** (scenarios / traffic) / **WIND** and the destructive-action buttons **SCRAMBLE**, **CLEAR ALL**, **RESET SCENARIO**.\n\n"
+		"The bottom row also persists: session controls ([PAUSE] / [SAVE] / [LOAD] / [DEL] checkpoint / speed) and replay scrub for reviewing past events without disrupting the live session.")));
+
+	Sections.Add(Make(TEXT("session"), TEXT("Session Lifecycle"),
+		TEXT("**Starting a fresh session**\n\n"
+		"1. Verify the trainee's operator station is connected. Aircraft list on the top-left populates once the trainee spawns into the tower.\n"
+		"2. Confirm the scenario dropdown shows the intended exercise (default `baltic_intercept`).\n"
+		"3. Set initial wind if the scenario requires non-default conditions. [APPLY WIND] commits.\n"
+		"4. [LOAD] the scenario to start from t=0. Otherwise leave the session in freeplay and inject manually.\n\n"
+		"**Pause and speed**\n\n"
+		"Pause via the [PAUSE] button in the SESSION row (bottom, amber-striped). Speed controls (`0.25x` through `4x`) time-dilate the live simulation - compress quiet stretches, slow down dense conflicts for teaching moments. Pause and speed apply to the LIVE simulation. Replay playback uses its own controls and does not affect the live session.\n\n"
+		"**Ending a session**\n\n"
+		"1. [STOP] the scenario if one is running.\n"
+		"2. Optional [CLEAR ALL] removes all live traffic without ending the session - useful between back-to-back exercises.\n"
+		"3. Switch to PERFORMANCE tab, click [EXPORT AAR]. Report is written to `<ProjectSavedDir>/Reports/Session_YYYYMMDD_HHMMSS.md`. The absolute path is announced in the event log.\n"
+		"4. [RESET SCENARIO] (top-right, red) wipes the entire session state - scores, transcript, checkpoints, live traffic. **Irreversible**. Use only between complete training days.")));
+
+	Sections.Add(Make(TEXT("truth-scope"), TEXT("Truth Scope"),
+		TEXT("The truth scope shows the airspace as it really is - every aircraft, their true classification (friendly / hostile / neutral / unknown), their actual position and vector, without any operator-side degradation.\n\n"
+		"**Reading the scope**\n\n"
+		"- North reference: 000 at top, 090 right, 180 bottom, 270 left. 36 minor tick marks around the perimeter (every 10 deg), 12 major labels every 30 deg.\n"
+		"- Range rings at approximately 33% / 66% / 100% of scope range, labelled in nautical miles.\n"
+		"- Sector features: airway centerlines (thin green), restricted zones (dashed red rings), protected zones (dashed red), runways (thick strips + extended centerline + designator), waypoints (green squares + 5-letter name).\n\n"
+		"**Aircraft symbology (MIL-STD-2525 affiliation)**\n\n"
+		"- Rectangle - Friendly (cyan)\n"
+		"- Diamond - Hostile (red)\n"
+		"- Hexagon - Unknown (amber)\n"
+		"- Square - Neutral (green)\n\n"
+		"Each symbol has a data block (callsign + FL + heading), a leader line to the block, and a bearing vector along the current heading. Clustered aircraft auto-fan into a small circle - the \"Datablock Stagger\" convention from real STARS displays.\n\n"
+		"**Instructor overlays** (buttons under the scope)\n\n"
+		"- [FULL DATA BLOCKS] expands compact 2-line blocks into full 4-line ATC-style blocks.\n"
+		"- [TRUTH] / [OPERATOR] toggle switches between ground-truth view and the fused radar picture the trainee sees. In OPERATOR mode, EW-jammed tracks fade proportional to confidence, chaff ghost contacts appear, radar gaps show as missing tracks.\n"
+		"- [COVERAGE] overlays radial-gradient discs per radar site showing coverage areas. Overlapping discs indicate multi-sensor fusion. Absence of green = coverage gap.")));
+
+	Sections.Add(Make(TEXT("camera"), TEXT("Camera View"),
+		TEXT("Switches from radar to 3D observation. Five sub-modes plus persistent HUD overlays.\n\n"
+		"**OVERVIEW** - fixed elevated view of the entire sector. Wide-area situational awareness.\n\n"
+		"**TOWER** - first-person from the airport control tower. Pan left/right with the chevron overlays on the feed edges. Simulates the visual picture a tower controller has.\n\n"
+		"**CHASE** - trailing camera behind the currently-selected aircraft. Chevrons cycle different camera angles on the same aircraft.\n\n"
+		"**APPROACH** - camera at an approach corridor end, looking along the approach path back toward the runway. The runway picker row appears below the feed - [RWY 36R] / [RWY 36L] / [RWY 18L] / [RWY 18R]. The currently-selected approach lights up cyan.\n\n"
+		"**OPERATOR** - POV from the selected aircraft, as if looking through the pilot's or radar-operator's eyes.\n\n"
+		"**Persistent HUD overlays** across all modes:\n\n"
+		"- Runway centerline projections\n"
+		"- Approach corridor lines\n"
+		"- Sector boundary\n"
+		"- Zone boundaries\n"
+		"- Aircraft callsign + altitude tags on visible traffic\n"
+		"- 1px cyan frame around the feed itself")));
+
+	Sections.Add(Make(TEXT("injects"), TEXT("Injects"),
+		TEXT("Right-hand column. All injects require an aircraft target selected (except APPLY WIND, LOAD scenario, and CLEAR ALL which are global).\n\n"
+		"**EMERGENCY**\n\n"
+		"Dropdown selects the type. [INJECT] applies.\n\n"
+		"- **Mayday (7700)** - general distress. Countdown default 7 minutes.\n"
+		"- **Comms Failure (7600)** - lost radio. No countdown; aircraft auto-flies lost-comms procedure.\n"
+		"- **Hijack (7500)** - hostile takeover. No countdown; needs SCRAMBLE authorization.\n"
+		"- **Fuel Emergency** - fuel-critical. Countdown default 5 minutes.\n\n"
+		"Fuel and Mayday carry crash countdowns. If the aircraft is not brought to safe landing before expiry, it crashes. Timer countdowns display on the aircraft row as `FUEL M:SS` or `MAYDAY M:SS` with color thresholds - red under 1 min, amber under 3 min.\n\n"
+		"The **timer input** next to the dropdown lets you override the default duration (0.5 to 30 min). Short timers for high-tempo panic training, long timers for gentle-training observation exercises. [CLEAR EMER] resolves the current emergency - squawk returns to 1200, timer stops.\n\n"
+		"**THREAT CLASS**\n\n"
+		"Instructor-side reclassification. [RECLASSIFY] commits. **Only affects the TRUE affiliation** (truth scope) - does NOT change the operator's view. The operator must independently classify via radar picture, IFF interrogation, and voice challenges. Instructor can flip a hidden hostile mid-session to test operator identification.\n\n"
+		"**EW - Electronic Warfare**\n\n"
+		"- [JAM ON] - selected aircraft begins EW jamming. Degrades radar confidence on all tracks in its jamming radius. Operator scope tracks fade.\n"
+		"- [JAM OFF] - cancels jamming.\n"
+		"- [DROP CHAFF] - releases chaff cloud. Radar paints ghost contacts around the aircraft's true position.\n\n"
+		"**SCRAMBLE** (red, destructive)\n\n"
+		"Launches interceptors against the selected aircraft. Announcement: `SCRAMBLE: N interceptors on <CS>` in the event log (amber).\n\n"
+		"**SECTOR CONTROLS**\n\n"
+		"- Scenario dropdown + [LOAD] - starts the selected scenario.\n"
+		"- [STOP] - halts the running scenario. Aircraft remain.\n"
+		"- [CLEAR ALL] (red) - removes ALL aircraft immediately.\n"
+		"- [SPAWN +1] - adds one random aircraft.\n"
+		"- **MAX AIRCRAFT** slider - tune the traffic-density cap live (range 8-40). Existing aircraft aren't yanked, only new spawns are gated.\n\n"
+		"**WIND**\n\n"
+		"DIR slider (0-360 deg) + SPD slider (0-200 kt). [APPLY WIND] commits. Wind affects: aircraft ground track (crab on approach), active runway selection (crosswind component), fuel burn calculations. Force runway changes, degrade approach performance, introduce wind-shear-like conditions.")));
+
+	Sections.Add(Make(TEXT("scenarios"), TEXT("Scenarios"),
+		TEXT("Scenarios are JSON files defining timed spawn events, injects, and scoring rules. Located at `Plugins/ClearanceSim/Scenarios/`.\n\n"
+		"**Loading**\n\n"
+		"1. Select scenario name from the SECTOR CONTROLS dropdown.\n"
+		"2. Click [LOAD]. Sim clears existing traffic, resets the scenario timer, begins ticking scenario events.\n"
+		"3. Event log announces `SCENARIO LOADED: <name>` in cyan.\n\n"
+		"**Stopping**\n\n"
+		"[STOP] halts new events but aircraft remain. Event log announces `SCENARIO STOPPED`.\n\n"
+		"**Baseline scenarios shipped**\n\n"
+		"- `baltic_intercept` - hostile inbound from east, requires SCRAMBLE authorization.\n"
+		"- `hijack_response` - commercial traffic squawks 7500 mid-flight.\n"
+		"- `mass_divert` - multiple emergencies simultaneously; tests prioritization.\n"
+		"- `mayday_engine_fire` - single high-priority emergency, tests procedural clearances.\n"
+		"- `nordo_inbound` - comms failure aircraft approaches from outside the sector.\n"
+		"- `cold_war_probe` - unidentified track probes the sector edge, tests interrogation.\n"
+		"- `mixed_ops` - mixed civilian and military traffic, tests general competence.")));
+
+	Sections.Add(Make(TEXT("checkpoints"), TEXT("Checkpoints"),
+		TEXT("SESSION row (bottom). Multi-attempt rehearsal workflow.\n\n"
+		"**Workflow**\n\n"
+		"1. Advance session to the state you want to rehearse from.\n"
+		"2. Type a name into the checkpoint text field.\n"
+		"3. [SAVE] (green stripe). Checkpoint snapshots all aircraft states, wind, session time, current score, full scoring log.\n"
+		"4. Trainee attempts the scenario from this state.\n"
+		"5. If the attempt fails or completes, [LOAD] (cyan stripe), select the checkpoint from the dropdown, hit LOAD.\n"
+		"6. Aircraft return to their exact positions at save time. Score resets to save-time value. Wind restores.\n"
+		"7. [DEL] (red stripe) permanently removes the selected checkpoint.\n\n"
+		"**What's preserved across a LOAD**\n\n"
+		"- Every aircraft position, altitude, heading, speed, phase, emergency, and IFF state.\n"
+		"- Wind direction and speed.\n"
+		"- Session time counter.\n"
+		"- Total score and per-category incident log.\n"
+		"- Difficulty tuning (spawn intervals).\n\n"
+		"**What's NOT touched on LOAD**\n\n"
+		"- **Transcript** - the full voice/text comms log from ALL attempts is preserved. Reviewing AAR after multiple attempts shows the trainee's full progression.\n"
+		"- **Recorder** - the DVR-style session recorder continues capturing through checkpoint loads. Replay scrub can navigate across load boundaries.\n\n"
+		"**Recommended usage**\n\n"
+		"- Save `trainee_start` at the beginning of each training block.\n"
+		"- Save `pre_intercept` immediately before the critical decision point in a scenario.\n"
+		"- Save `post_conflict` after a successful resolution as a reference state for follow-up exercises.\n"
+		"- Delete outdated checkpoints between training days to keep the list manageable.")));
+
+	Sections.Add(Make(TEXT("performance"), TEXT("Performance & AAR"),
+		TEXT("Real-time debrief screen. Four sections.\n\n"
+		"**SCORE hero**\n\n"
+		"Large SCORE value (white when >= 0, red when < 0). EFFICIENCY % colored by threshold - green >= 90%, amber 70-89%, red < 70%.\n\n"
+		"**OPERATIONS card** (green-bordered) - positive metrics\n\n"
+		"Landings / Handoffs / Resolved conflicts / Intercepts / Emergencies successfully handled.\n\n"
+		"**INCIDENTS card** (red-bordered) - penalty metrics\n\n"
+		"Go-Arounds / Sep Loss / Wake Busts / TCAS RA / Strayed (amber tint when > 0) then Mis-ID / Violated / Crashed / Busted (red tint when > 0). Rows dim grey when zero.\n\n"
+		"**SESSION SUMMARY** - Duration / Scenario / Aircraft count / Wind.\n\n"
+		"**[EXPORT AAR]** (green) writes a full Markdown AAR to `<ProjectSavedDir>/Reports/Session_YYYYMMDD_HHMMSS.md`. Report structure: header (timestamp, session duration, scenario, wind), summary (score, efficiency, ops totals, incident counts), chronological timeline table, critical incidents drilldown with 60-second comms window, score breakdown, full transcript.\n\n"
+		"**TRANSCRIPT sub-tab**\n\n"
+		"Live scroll of voice and text comms. Each entry: timestamp `MM:SS` + role stripe + role tag + speaker callsign + text content. Roles are color-coded - PILOT cyan, OPERATOR green, SYS grey, INSTR magenta, TWR/ACC/AWACS/GCI amber-family, ATIS/MET muted cyan.\n\n"
+		"**Filter dropdown** at the top lets you multi-select which roles to show. Click a role to toggle it in the filter set. Click **All** to select or deselect everything. Useful presets by selecting multiple: Voice Only (PILOT + OPERATOR + facilities), Instructor Actions Only (INSTR), Facility Broadcasts (TWR + ACC + AWACS + GCI + ATIS + MET).")));
+
+	Sections.Add(Make(TEXT("reference"), TEXT("Button Reference"),
+		TEXT("**Right panel**\n\n"
+		"- [INJECT] cyan - Apply selected emergency type to selected aircraft\n"
+		"- [CLEAR EMER] amber - Cancel active emergency on selected aircraft\n"
+		"- [RECLASSIFY] cyan - Set true affiliation of selected aircraft\n"
+		"- [JAM ON] amber - Selected aircraft begins EW jamming\n"
+		"- [JAM OFF] green - Cancel EW jamming\n"
+		"- [DROP CHAFF] amber - Selected aircraft releases chaff cloud\n"
+		"- [SCRAMBLE] red - Launch interceptors on selected aircraft\n"
+		"- [LOAD] scenario cyan - Load selected scenario, clear existing traffic, start\n"
+		"- [STOP] amber - Halt running scenario (aircraft remain)\n"
+		"- [CLEAR ALL] red - Remove all aircraft from sector\n"
+		"- [SPAWN +1] cyan - Add one random aircraft\n"
+		"- [APPLY WIND] cyan - Commit wind direction and speed\n\n"
+		"**Header**\n\n"
+		"- [RESET SCENARIO] red - Full session wipe. Irreversible.\n\n"
+		"**SESSION row (bottom)**\n\n"
+		"- [PAUSE] amber - Pause the live simulation\n"
+		"- [SAVE] green - Save checkpoint with typed name\n"
+		"- [LOAD] cyan - Restore selected checkpoint\n"
+		"- [DEL] red - Delete selected checkpoint\n"
+		"- `0.25x` / `0.5x` / `1x` / `2x` / `4x` - Live time dilation\n\n"
+		"**REPLAY row (above SESSION)**\n\n"
+		"- [PLAY] cyan - Start replay playback\n"
+		"- `0.25x` / `0.5x` / `1x` / `2x` / `4x` - Replay playback speed\n"
+		"- [GO LIVE] red - Exit replay, return to live session\n\n"
+		"**Performance tab**\n\n"
+		"- [EXPORT AAR] green - Write Markdown AAR to disk")));
+
+	Sections.Add(Make(TEXT("console"), TEXT("Console Commands"),
+		TEXT("Press `~` in-game to open the console. Commands take effect immediately through the same authoritative server path as the GUI buttons.\n\n"
+		"**Traffic**\n\n"
+		"- `clearance.spawn <callsign> <lat> <lon> <alt> <hdg>` - spawn an aircraft at a specific position\n"
+		"- `clearance.clear` - clear all aircraft\n\n"
+		"**Emergency and classification**\n\n"
+		"- `clearance.emergency <callsign> <type>` - trigger emergency (types: mayday / 7700 / comms / 7600 / hijack / 7500 / fuel)\n"
+		"- `clearance.classify <callsign> <class>` - reclassify (friendly / hostile / unknown / neutral)\n\n"
+		"**Electronic warfare and intercept**\n\n"
+		"- `clearance.ew.jam <callsign>` - begin jamming from callsign\n"
+		"- `clearance.ew.chaff <callsign>` - drop chaff\n"
+		"- `clearance.scramble <bandit_callsign>` - launch interceptors\n\n"
+		"**Environment and scenarios**\n\n"
+		"- `clearance.wind <dir_deg> <speed_kts>` - set wind\n"
+		"- `clearance.scenario load <name>` - load and start scenario\n"
+		"- `clearance.scenario stop` - stop running scenario\n\n"
+		"**Voice testing**\n\n"
+		"- `clearance.say <role> <callsign> <text>` - inject a scripted comms line (useful for testing operator response)")));
+
+	return Sections;
+}
+
 // --- Inject forwarders ----------------------------------------------------
 
-void UClearanceInstructorPanel::InjectEmergency(FName Callsign, EEmergencyType Kind)
+void UClearanceInstructorPanel::InjectEmergency(FName Callsign, EEmergencyType Kind, float TimerMinutes)
 {
-	if (CachedOperatorPC) { CachedOperatorPC->Server_InjectEmergency(Callsign, Kind); }
+	if (CachedOperatorPC) { CachedOperatorPC->Server_InjectEmergency(Callsign, Kind, TimerMinutes); }
 }
 void UClearanceInstructorPanel::InjectClearEmergency(FName Callsign)
 {
@@ -731,46 +960,186 @@ void UClearanceInstructorPanel::PopulateAircraftScrollBox(UScrollBox* ScrollBox,
 		return;
 	}
 
-	// In-place update when the same callsign set is on screen in the same order.
-	// Rebuilding every refresh tears down + recreates the widget tree, which
-	// stutters visibly when state ticks at 5Hz. - TripleA
-	bool bSameSet = (CurrentRowCallsigns.Num() == Rows.Num())
-		&& (ScrollBox->GetChildrenCount() == Rows.Num());
-	if (bSameSet)
+	// Minimal-diff reflow. Walk both lists in order looking for the first
+	// index where CurrentRowCallsigns disagrees with Rows. Everything before
+	// that stays untouched (in-place data push only) - Slate widgets keep
+	// their existing layout, no flash. Everything after gets rebuilt.
+	// ClearChildren has to be avoided entirely because it invalidates the
+	// panel's Slate tree even when the same widget instances get re-added,
+	// which is what was still causing the visible blink. - TripleA
+	int32 InSync = 0;
+	while (InSync < Rows.Num()
+	    && InSync < CurrentRowCallsigns.Num()
+	    && InSync < ScrollBox->GetChildrenCount()
+	    && CurrentRowCallsigns[InSync] == Rows[InSync].Callsign)
 	{
-		for (int32 i = 0; i < Rows.Num(); ++i)
-		{
-			if (CurrentRowCallsigns[i] != Rows[i].Callsign) { bSameSet = false; break; }
-		}
+		++InSync;
 	}
 
-	if (bSameSet)
+	// Data-push the in-sync prefix. No structural change to the panel.
+	for (int32 i = 0; i < InSync; ++i)
 	{
-		for (int32 i = 0; i < Rows.Num(); ++i)
-		{
-			UUserWidget* RowWidget = Cast<UUserWidget>(ScrollBox->GetChildAt(i));
-			PushRowData(RowWidget, Rows[i]);
-			PushRowSelected(RowWidget, Rows[i].Callsign == SelectedCallsign && SelectedCallsign != NAME_None);
-		}
-		return;
+		UUserWidget* RowWidget = Cast<UUserWidget>(ScrollBox->GetChildAt(i));
+		PushRowData(RowWidget, Rows[i]);
+		PushRowSelected(RowWidget, Rows[i].Callsign == SelectedCallsign && SelectedCallsign != NAME_None);
 	}
 
-	// Aircraft entered or left - full rebuild. Only happens on actual list
-	// composition change, not on per-aircraft state ticks. - TripleA
-	ScrollBox->ClearChildren();
-	CurrentRowCallsigns.Reset();
-	CurrentRowCallsigns.Reserve(Rows.Num());
-
-	for (const FInstructorAircraftRow& Row : Rows)
+	// Trim the mismatched suffix from the panel. Widget objects survive via
+	// AircraftRowByCallsign strong refs. - TripleA
+	while (ScrollBox->GetChildrenCount() > InSync)
 	{
-		UUserWidget* RowWidget = CreateWidget<UUserWidget>(this, AircraftRowClass);
-		if (!RowWidget) { continue; }
+		ScrollBox->RemoveChildAt(ScrollBox->GetChildrenCount() - 1);
+	}
 
+	// Append the new suffix, reusing widget instances when the callsign is
+	// familiar.
+	for (int32 i = InSync; i < Rows.Num(); ++i)
+	{
+		const FInstructorAircraftRow& Row = Rows[i];
+		UUserWidget* RowWidget = nullptr;
+		if (TObjectPtr<UUserWidget>* Existing = AircraftRowByCallsign.Find(Row.Callsign))
+		{
+			RowWidget = Existing->Get();
+		}
+		if (!RowWidget)
+		{
+			RowWidget = CreateWidget<UUserWidget>(this, AircraftRowClass);
+			if (!RowWidget) { continue; }
+			AircraftRowByCallsign.Add(Row.Callsign, RowWidget);
+		}
 		PushRowData(RowWidget, Row);
 		PushRowSelected(RowWidget, Row.Callsign == SelectedCallsign && SelectedCallsign != NAME_None);
-
 		ScrollBox->AddChild(RowWidget);
+	}
+
+	// Sync bookkeeping.
+	CurrentRowCallsigns.Reset(Rows.Num());
+	for (const FInstructorAircraftRow& Row : Rows)
+	{
 		CurrentRowCallsigns.Add(Row.Callsign);
+	}
+
+	// Drop widgets whose callsigns left the sim.
+	TSet<FName> LiveCallsigns;
+	LiveCallsigns.Reserve(Rows.Num());
+	for (const FInstructorAircraftRow& Row : Rows) { LiveCallsigns.Add(Row.Callsign); }
+	for (auto It = AircraftRowByCallsign.CreateIterator(); It; ++It)
+	{
+		if (!LiveCallsigns.Contains(It.Key()))
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+namespace
+{
+	void PushEventRowData(UUserWidget* RowWidget, const FClearanceNotification& Entry)
+	{
+		if (!RowWidget) { return; }
+		if (UFunction* Fn = RowWidget->FindFunction(TEXT("SetNotification")))
+		{
+			struct FSetEntryParam { FClearanceNotification E; } P;
+			P.E = Entry;
+			RowWidget->ProcessEvent(Fn, &P);
+		}
+	}
+}
+
+void UClearanceInstructorPanel::PopulateEventLogScrollBox(UScrollBox* ScrollBox,
+	TSubclassOf<UUserWidget> RowClass,
+	const TArray<FClearanceNotification>& Entries)
+{
+	if (!ScrollBox || !RowClass) { return; }
+
+	auto ToMs = [](float SecondsFloat)
+	{
+		return FMath::RoundToInt(SecondsFloat * 1000.f);
+	};
+
+	// Server's RepNotifications ring buffer caps at 12 and trims front by
+	// RemoveAt(0) when it overflows. So every new notification past the cap
+	// shifts every existing entry left by one. Detect the front-trim by
+	// looking for the first NEW entry's time inside CurrentEventTimesMs -
+	// its index there is how many entries were trimmed. Remove that many
+	// widgets from the FRONT of the ScrollBox before the prefix-diff runs,
+	// so what SHOULD be the prefix actually aligns. - TripleA
+	int32 FrontTrim = 0;
+	if (Entries.Num() > 0 && CurrentEventTimesMs.Num() > 0)
+	{
+		const int32 FirstNewMs = ToMs(Entries[0].ServerTimeAdded);
+		for (int32 i = 0; i < CurrentEventTimesMs.Num(); ++i)
+		{
+			if (CurrentEventTimesMs[i] == FirstNewMs) { FrontTrim = i; break; }
+		}
+	}
+	// If nothing matched, the sim reset - fall through and let the prefix
+	// diff below rebuild everything.
+	if (FrontTrim > 0)
+	{
+		const int32 TrimCount = FMath::Min(FrontTrim, ScrollBox->GetChildrenCount());
+		for (int32 k = 0; k < TrimCount; ++k)
+		{
+			ScrollBox->RemoveChildAt(0);
+		}
+		CurrentEventTimesMs.RemoveAt(0, FMath::Min(FrontTrim, CurrentEventTimesMs.Num()));
+	}
+
+	// Prefix-diff on the (now-aligned) arrays. - TripleA
+	int32 InSync = 0;
+	while (InSync < Entries.Num()
+	    && InSync < CurrentEventTimesMs.Num()
+	    && InSync < ScrollBox->GetChildrenCount()
+	    && CurrentEventTimesMs[InSync] == ToMs(Entries[InSync].ServerTimeAdded))
+	{
+		++InSync;
+	}
+
+	for (int32 i = 0; i < InSync; ++i)
+	{
+		UUserWidget* RowWidget = Cast<UUserWidget>(ScrollBox->GetChildAt(i));
+		PushEventRowData(RowWidget, Entries[i]);
+	}
+
+	while (ScrollBox->GetChildrenCount() > InSync)
+	{
+		ScrollBox->RemoveChildAt(ScrollBox->GetChildrenCount() - 1);
+	}
+
+	for (int32 i = InSync; i < Entries.Num(); ++i)
+	{
+		const FClearanceNotification& Entry = Entries[i];
+		const int32 KeyMs = ToMs(Entry.ServerTimeAdded);
+		UUserWidget* RowWidget = nullptr;
+		if (TObjectPtr<UUserWidget>* Existing = EventRowByTimeMs.Find(KeyMs))
+		{
+			RowWidget = Existing->Get();
+		}
+		if (!RowWidget)
+		{
+			RowWidget = CreateWidget<UUserWidget>(this, RowClass);
+			if (!RowWidget) { continue; }
+			EventRowByTimeMs.Add(KeyMs, RowWidget);
+		}
+		PushEventRowData(RowWidget, Entry);
+		ScrollBox->AddChild(RowWidget);
+	}
+
+	CurrentEventTimesMs.Reset(Entries.Num());
+	for (const FClearanceNotification& Entry : Entries)
+	{
+		CurrentEventTimesMs.Add(ToMs(Entry.ServerTimeAdded));
+	}
+
+	TSet<int32> LiveKeys;
+	LiveKeys.Reserve(Entries.Num());
+	for (const FClearanceNotification& Entry : Entries) { LiveKeys.Add(ToMs(Entry.ServerTimeAdded)); }
+	for (auto It = EventRowByTimeMs.CreateIterator(); It; ++It)
+	{
+		if (!LiveKeys.Contains(It.Key()))
+		{
+			It.RemoveCurrent();
+		}
 	}
 }
 

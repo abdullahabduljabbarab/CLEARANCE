@@ -169,8 +169,18 @@ public:
 	// scheduled emergencies. Mirrors the random-injection path: sets emergency type,
 	// squawk code, timestamp, and (for fuel) starting fuel. Comms-failure aircraft
 	// auto-fly the published lost-comms procedure on next tick. - TripleA
+	// TimerMinutes overrides the default countdown - 5 min fuel / 7 min
+	// mayday. Pass <= 0 to use the class-default values. Ignored for Hijack
+	// and CommsFailure (no timer). - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
-	bool DeclareEmergencyOn(FName Callsign, EEmergencyType Kind);
+	bool DeclareEmergencyOn(FName Callsign, EEmergencyType Kind, float TimerMinutes = -1.f);
+
+	// Multicast the appropriate audible cue for a declared emergency:
+	// Mayday / FuelLow -> voiced pilot mayday call; CommsFailure -> 2-sec
+	// static (broken radio); Hijack -> brief carrier blip. Shared by the
+	// random-tick emergency path AND the instructor inject path so both
+	// sound identical on the client. - TripleA
+	void AnnounceEmergency(FName Callsign, EEmergencyType Kind, const FString& EmergencyDetail);
 
 	// Reset an active emergency back to normal flight: clears ActiveEmergency,
 	// resets squawk to 1200 (civilian VFR default), drops EmergencyDetail. The
@@ -201,7 +211,7 @@ public:
 	// Clients (instructor station) call these to mutate the authoritative sim.
 	// All inject paths route through here so the server stays the only writer. - TripleA
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
-	void Server_InjectEmergency(FName Callsign, EEmergencyType Kind);
+	void Server_InjectEmergency(FName Callsign, EEmergencyType Kind, float TimerMinutes = -1.f);
 
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Simulation|Instructor")
 	void Server_InjectClassify(FName Callsign, EThreatClass NewClass);

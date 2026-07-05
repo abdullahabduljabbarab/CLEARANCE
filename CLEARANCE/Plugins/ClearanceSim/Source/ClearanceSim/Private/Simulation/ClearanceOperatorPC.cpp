@@ -1,6 +1,8 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Simulation/ClearanceSimulationController.h"
 #include "Airspace/ClearanceAirspaceManager.h"
+#include "Aircraft/ClearanceAircraftSpawner.h"
+#include "Scoring/ClearanceScoring.h"
 #include "Scenario/ClearanceScenarioRunner.h"
 #include "UI/ClearanceInstructorPanel.h"
 #include "Blueprint/UserWidget.h"
@@ -136,18 +138,18 @@ void AClearanceOperatorPC::Server_PushOperatorView_Implementation(FRotator NewRo
 
 // --- Emergency -------------------------------------------------------------
 
-bool AClearanceOperatorPC::Server_InjectEmergency_Validate(FName Callsign, EEmergencyType Kind)
+bool AClearanceOperatorPC::Server_InjectEmergency_Validate(FName Callsign, EEmergencyType Kind, float TimerMinutes)
 {
 	return true;  // Never kick the client — graceful no-op in Implementation instead
 }
-void AClearanceOperatorPC::Server_InjectEmergency_Implementation(FName Callsign, EEmergencyType Kind)
+void AClearanceOperatorPC::Server_InjectEmergency_Implementation(FName Callsign, EEmergencyType Kind, float TimerMinutes)
 {
 	if (Callsign == NAME_None) { return; }
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, Callsign,
-			FString::Printf(TEXT("[INSTRUCTOR] Injected %s on %s"), EmergencyLabel(Kind), *Callsign.ToString()));
-		C->DeclareEmergencyOn(Callsign, Kind);
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, Callsign,
+			FString::Printf(TEXT("Injected %s on %s"), EmergencyLabel(Kind), *Callsign.ToString()));
+		C->DeclareEmergencyOn(Callsign, Kind, TimerMinutes);
 	}
 }
 
@@ -160,8 +162,8 @@ void AClearanceOperatorPC::Server_InjectClearEmergency_Implementation(FName Call
 	if (Callsign == NAME_None) { return; }
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, Callsign,
-			FString::Printf(TEXT("[INSTRUCTOR] Cleared emergency on %s"), *Callsign.ToString()));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, Callsign,
+			FString::Printf(TEXT("Cleared emergency on %s"), *Callsign.ToString()));
 		C->ClearEmergencyOn(Callsign);
 	}
 }
@@ -177,8 +179,8 @@ void AClearanceOperatorPC::Server_InjectClassify_Implementation(FName Callsign, 
 	if (Callsign == NAME_None) { return; }
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, Callsign,
-			FString::Printf(TEXT("[INSTRUCTOR] Reclassified %s as %s"), *Callsign.ToString(), ThreatClassLabel(NewClass)));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, Callsign,
+			FString::Printf(TEXT("Reclassified %s as %s"), *Callsign.ToString(), ThreatClassLabel(NewClass)));
 		// "Inject" path = instructor panel reclassification; bypass mis-ID
 		// scoring so changing a contact's threat class from god view doesn't
 		// log a doctrine failure against the trainee. Operator voice
@@ -199,8 +201,8 @@ void AClearanceOperatorPC::Server_InjectScramble_Implementation(FName BanditCall
 	if (BanditCallsign == NAME_None) { return; }
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, BanditCallsign,
-			FString::Printf(TEXT("[INSTRUCTOR] Scrambled interceptors on %s"), *BanditCallsign.ToString()));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, BanditCallsign,
+			FString::Printf(TEXT("Scrambled interceptors on %s"), *BanditCallsign.ToString()));
 		C->ScrambleInterceptors(BanditCallsign);
 	}
 }
@@ -216,9 +218,38 @@ void AClearanceOperatorPC::Server_InjectSetWind_Implementation(float DirectionDe
 	SpeedKts = FMath::Clamp(SpeedKts, 0.f, 200.f);
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None,
-			FString::Printf(TEXT("[INSTRUCTOR] Wind set to %03.0f / %.0fkt"), DirectionDeg, SpeedKts));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None,
+			FString::Printf(TEXT("Wind set to %03.0f / %.0fkt"), DirectionDeg, SpeedKts));
 		C->SetWind(DirectionDeg, SpeedKts);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectSetMaxAircraft_Validate(int32 NewMax)
+{
+	return true;
+}
+void AClearanceOperatorPC::Server_InjectSetMaxAircraft_Implementation(int32 NewMax)
+{
+	const int32 Clamped = FMath::Clamp(NewMax, 1, 40);
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		// Three separate caps have to move together:
+		//   - AirspaceManager::MaxAircraftCount  gates state registration
+		//   - Spawner::MaxConcurrentAircraft     gates spawn tick
+		//   - Controller::MaxConcurrentAircraft  is the mirror re-applied on
+		//     future spawner (re)inits
+		// Setting only one leaves the smallest-cap gate winning - which is
+		// why sliding the value up to 24 was still capping at 10. - TripleA
+		if (AClearanceAirspaceManager* Mgr = C->GetAirspaceManager())
+		{
+			Mgr->MaxAircraftCount = Clamped;
+		}
+		if (C->Spawner)
+		{
+			C->Spawner->MaxConcurrentAircraft = Clamped;
+		}
+		C->MaxConcurrentAircraft = Clamped;
+		C->PushNotification(FString::Printf(TEXT("TRAFFIC: max aircraft set to %d"), Clamped), FColor::Cyan, 4.f);
 	}
 }
 
@@ -229,7 +260,7 @@ void AClearanceOperatorPC::Server_InjectSpawn_Implementation()
 {
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None, TEXT("[INSTRUCTOR] Spawned aircraft"));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None, TEXT("Spawned aircraft"));
 		C->SpawnOne();
 	}
 }
@@ -239,7 +270,7 @@ void AClearanceOperatorPC::Server_InjectClearTraffic_Implementation()
 {
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None, TEXT("[INSTRUCTOR] Cleared all traffic"));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None, TEXT("Cleared all traffic"));
 		C->ClearTraffic();
 	}
 }
@@ -255,8 +286,8 @@ void AClearanceOperatorPC::Server_InjectLoadScenario_Implementation(const FStrin
 	if (ScenarioName.IsEmpty()) { return; }
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None,
-			FString::Printf(TEXT("[INSTRUCTOR] Loaded scenario \"%s\""), *ScenarioName));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None,
+			FString::Printf(TEXT("Loaded scenario \"%s\""), *ScenarioName));
 		C->Server_InjectLoadScenario(ScenarioName); // reuse the controller-side path
 	}
 }
@@ -266,7 +297,7 @@ void AClearanceOperatorPC::Server_InjectStopScenario_Implementation()
 {
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None, TEXT("[INSTRUCTOR] Stopped scenario"));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None, TEXT("Stopped scenario"));
 		C->Server_InjectStopScenario();
 	}
 }
@@ -278,8 +309,8 @@ void AClearanceOperatorPC::Server_InjectSetPaused_Implementation(bool bNewPaused
 {
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
-		C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None,
-			bNewPaused ? TEXT("[INSTRUCTOR] Sim paused") : TEXT("[INSTRUCTOR] Sim resumed"));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None,
+			bNewPaused ? TEXT("Sim paused") : TEXT("Sim resumed"));
 		C->Server_InjectSetPaused(bNewPaused);
 	}
 }
@@ -297,8 +328,8 @@ void AClearanceOperatorPC::Server_InjectJamming_Implementation(FName Callsign, b
 	if (!C || !C->GetAirspaceManager()) { return; }
 	FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
 	if (!S.bIsValid) { return; }
-	C->LogTranscriptLine(EClearanceCommsRole::System, Callsign,
-		FString::Printf(TEXT("[INSTRUCTOR] Jammer %s on %s"), bOn ? TEXT("on") : TEXT("off"), *Callsign.ToString()));
+	C->LogTranscriptLine(EClearanceCommsRole::Instructor, Callsign,
+		FString::Printf(TEXT("Jammer %s on %s"), bOn ? TEXT("on") : TEXT("off"), *Callsign.ToString()));
 	S.bJammingOn = bOn;
 	C->GetAirspaceManager()->RequestStateUpdate(S);
 }
@@ -314,8 +345,8 @@ void AClearanceOperatorPC::Server_InjectChaff_Implementation(FName Callsign)
 	if (!C || !C->GetAirspaceManager()) { return; }
 	const FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
 	if (!S.bIsValid) { return; }
-	C->LogTranscriptLine(EClearanceCommsRole::System, Callsign,
-		FString::Printf(TEXT("[INSTRUCTOR] Chaff dropped from %s"), *Callsign.ToString()));
+	C->LogTranscriptLine(EClearanceCommsRole::Instructor, Callsign,
+		FString::Printf(TEXT("Chaff dropped from %s"), *Callsign.ToString()));
 	C->GetAirspaceManager()->DropChaff(S.Position, S.Altitude);
 }
 
@@ -330,8 +361,8 @@ void AClearanceOperatorPC::Server_InjectSetTimeScale_Implementation(float Scale)
 	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
 	{
 		const float Clamped = FMath::Max(0.f, Scale);
-		C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None,
-			FString::Printf(TEXT("[INSTRUCTOR] Time scale set to %.2fx"), Clamped));
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None,
+			FString::Printf(TEXT("Time scale set to %.2fx"), Clamped));
 		C->SimulationTimeScale = Clamped;
 	}
 }
@@ -343,12 +374,33 @@ void AClearanceOperatorPC::Server_InjectResetScenario_Implementation()
 {
 	AClearanceSimulationController* C = FindSimController(GetWorld());
 	if (!C || !C->GetScenarioRunner()) { return; }
-	const FString Loaded = C->GetScenarioRunner()->GetLoadedName();
-	if (Loaded.IsEmpty()) { return; }
-	C->LogTranscriptLine(EClearanceCommsRole::System, NAME_None,
-		FString::Printf(TEXT("[INSTRUCTOR] Reset scenario \"%s\""), *Loaded));
+
+	// Round-trip via the file name, not the display name. Metadata.Name is
+	// the human title ("Baltic Intercept" with spaces); Server_InjectLoad-
+	// Scenario expects the file stem ("baltic_intercept") so it can resolve
+	// Plugins/ClearanceSim/Scenarios/<stem>.json. - TripleA
+	const FString FileStem = C->GetScenarioRunner()->GetLoadedFileName();
+	const FString Display  = C->GetScenarioRunner()->GetLoadedName();
+	if (FileStem.IsEmpty())
+	{
+		C->PushNotification(TEXT("RESET: no scenario loaded"), FColor::Yellow, 4.f);
+		return;
+	}
+
+	C->LogTranscriptLine(EClearanceCommsRole::Instructor, NAME_None,
+		FString::Printf(TEXT("Reset scenario \"%s\""), *Display));
+
+	if (AClearanceAirspaceManager* Mgr = C->GetAirspaceManager())
+	{
+		Mgr->ClearAllAircraft();
+	}
+	if (UClearanceScoring* Sc = C->GetScoring())
+	{
+		Sc->ResetSession();
+	}
 	C->Server_InjectStopScenario();
-	C->Server_InjectLoadScenario(Loaded);
+	C->Server_InjectLoadScenario(FileStem);
+	C->PushNotification(FString::Printf(TEXT("SESSION: reset (scenario \"%s\" reloaded)"), *Display), FColor::Red, 6.f);
 }
 
 // --- AAR replay control ----------------------------------------------------

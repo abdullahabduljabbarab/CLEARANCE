@@ -50,6 +50,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Scenario")
 	FString GetLoadedName() const { return Scenario.Metadata.Name; }
 
+	// The file name (basename, no dir, no .json) the current scenario was
+	// loaded from. Distinct from GetLoadedName() which returns the human
+	// display title from metadata. Use this for round-trips through
+	// Server_InjectLoadScenario since that expects the file stem. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Scenario")
+	FString GetLoadedFileName() const { return LoadedFileName; }
+
 	UFUNCTION(BlueprintCallable, Category = "Scenario")
 	int32 GetFiredEventCount() const { return FiredEvents; }
 
@@ -82,6 +89,9 @@ private:
 
 	UPROPERTY()
 	FClearanceScenario Scenario;
+
+	UPROPERTY()
+	FString LoadedFileName;
 
 	UPROPERTY()
 	TSet<FName> Flags;

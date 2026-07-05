@@ -79,6 +79,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
 	TArray<FClearanceNotification> GetRecentNotifications() const;
 
+	// In-station operator's manual - one entry per section. Content is
+	// hardcoded server-side so any packaged build carries the manual with it
+	// (no data-only content dependency). BP renders each section's Title in
+	// the TOC and Body in the content pane. Simple inline markup: **bold**,
+	// `code`, [ACCENT]. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Manual")
+	TArray<FManualSection> GetManualSections() const;
+
+	// Event log populator - append-only aware. Reuses existing WBP_EventLogRow
+	// widget instances keyed on ServerTimeAdded so new entries append without
+	// destroying + recreating the whole list (which flashes visibly at 5Hz).
+	// Full reflow only when the server ring-buffer trims from the front.
+	// Pass ScrollBox_EventLog + WBP_EventLogRow class + the array from
+	// GetRecentNotifications(). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
+	void PopulateEventLogScrollBox(class UScrollBox* ScrollBox,
+		TSubclassOf<UUserWidget> RowClass,
+		const TArray<FClearanceNotification>& Entries);
+
 	// Restricted (civilian-must-avoid) + protected (hostile-must-not-reach)
 	// airspace zones in the level, converted to sector-relative nm. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
@@ -200,6 +219,14 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Camera")
 	void DrawCameraOverlayText(UPARAM(ref) struct FPaintContext& Context, class UImage* CameraImage);
 
+	// 1px cyan frame around the camera feed - reads as a real PIP display
+	// rather than a raw texture. UMG Border widgets fill their whole area
+	// so they can't be used for outline-only; this is the C++ paint path.
+	// Call from BP_PaintCameraOverlay with Img_CameraFeed - fires on every
+	// camera mode, the frame is a permanent HUD element. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Camera")
+	void DrawCameraFeedBorder(UPARAM(ref) struct FPaintContext& Context, class UImage* CameraImage);
+
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
 	void SetSelectedCallsign(FName NewSelection);
 
@@ -223,7 +250,7 @@ public:
 	// instantiate in dev situations without the proper GameMode wired. - TripleA
 
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Inject")
-	void InjectEmergency(FName Callsign, EEmergencyType Kind);
+	void InjectEmergency(FName Callsign, EEmergencyType Kind, float TimerMinutes = -1.f);
 
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Inject")
 	void InjectClearEmergency(FName Callsign);
@@ -534,7 +561,7 @@ public:
 
 	// Cap on recent notifications surfaced to the event log. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor")
-	int32 MaxNotifications = 16;
+	int32 MaxNotifications = 40;
 
 	// How often the panel polls replicated state. 0.2s = 5Hz, plenty for an
 	// instructor view without thrashing the BP layer. - TripleA
@@ -619,6 +646,25 @@ private:
 	// enter/leave the list. - TripleA
 	UPROPERTY(Transient)
 	TArray<FName> CurrentRowCallsigns;
+
+	// Persistent row widget instances keyed by callsign. Holds strong refs so
+	// widgets survive the ScrollBox reflow when the list order changes. Only
+	// re-created when a genuinely new callsign appears. - TripleA
+	UPROPERTY(Transient)
+	TMap<FName, TObjectPtr<UUserWidget>> AircraftRowByCallsign;
+
+	// Same idea for the event log - key is ServerTimeAdded rounded to ms
+	// (int32). Rounding avoids float-precision mismatches after replication
+	// that would otherwise fail exact equality every refresh and invalidate
+	// the whole panel. Value is the row widget. - TripleA
+	UPROPERTY(Transient)
+	TMap<int32, TObjectPtr<UUserWidget>> EventRowByTimeMs;
+
+	// Ordered ServerTimeAdded-in-ms of the entries currently in the ScrollBox.
+	// Lets the populate helper find the in-sync prefix in O(N) so only the
+	// diverged suffix gets re-added (avoids ClearChildren flash). - TripleA
+	UPROPERTY(Transient)
+	TArray<int32> CurrentEventTimesMs;
 
 	void RefreshLocalRefs();
 	bool BuildAircraftRows(TArray<FInstructorAircraftRow>& Out) const;

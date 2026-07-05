@@ -160,6 +160,10 @@ bool UClearanceScenarioRunner::LoadFromFile(const FString& AbsolutePath, FString
 
 	Scenario = FClearanceScenario();
 	Flags.Reset();
+	// Cache the file basename (no dir, no .json) so RESET SCENARIO can round-
+	// trip through Server_InjectLoadScenario without hitting Metadata.Name
+	// (which is a human display title with spaces). - TripleA
+	LoadedFileName = FPaths::GetBaseFilename(AbsolutePath);
 
 	// metadata
 	const TSharedPtr<FJsonObject>* MetaObj = nullptr;

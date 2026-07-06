@@ -47,6 +47,7 @@ bool AClearanceRadarSite::TryWireUp()
 	Radar->TrackFadeSeconds = TrackFadeSeconds;
 	Radar->SitePositionNm = SiteNm;
 	Radar->SiteName = SiteName;
+	Radar->EmissionSignature = EmissionSignature;
 	Radar->SetEnabled(true);
 	return true;
 }

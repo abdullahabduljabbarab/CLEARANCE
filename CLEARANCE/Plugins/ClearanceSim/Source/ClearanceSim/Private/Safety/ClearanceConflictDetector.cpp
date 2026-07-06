@@ -49,9 +49,16 @@ void UClearanceConflictDetector::DetectConflicts()
 			// Mixed pairs (GCI-controlled fighter vs ordinary civilian) STAY alerted:
 			// keeping civilians clear of the engagement is the GCI controller's job.
 			// Unknown contacts are suppressed too - the operator can't talk to them,
-			// they're a GCI problem, civilian TCAS/wake/sep penalties don't apply. - TripleA
+			// they're a GCI problem, civilian TCAS/wake/sep penalties don't apply.
+			// We look at BOTH ThreatClass (what the operator sees) and TrueAffiliation
+			// (the god-view truth). A Scandinavian probe that the operator hasn't
+			// declared yet still shows as Neutral on the scope, but its truth is
+			// Hostile - and vipers scrambled against it must not trigger TCAS
+			// penalties for closing on their assigned target. - TripleA
 			const bool bThreatInvolved = (A.ThreatClass == EThreatClass::Hostile || B.ThreatClass == EThreatClass::Hostile
-			                            || A.ThreatClass == EThreatClass::Unknown || B.ThreatClass == EThreatClass::Unknown);
+			                            || A.ThreatClass == EThreatClass::Unknown || B.ThreatClass == EThreatClass::Unknown
+			                            || A.TrueAffiliation == EThreatClass::Hostile || B.TrueAffiliation == EThreatClass::Hostile
+			                            || A.TrueAffiliation == EThreatClass::Unknown || B.TrueAffiliation == EThreatClass::Unknown);
 			const bool bBothUnderGCI    = (A.bUnderGCIControl && B.bUnderGCIControl);
 			const bool bShadowPair      = (A.bUnderGCIControl && B.ActiveEmergency == EEmergencyType::Hijack)
 			                           || (B.bUnderGCIControl && A.ActiveEmergency == EEmergencyType::Hijack);

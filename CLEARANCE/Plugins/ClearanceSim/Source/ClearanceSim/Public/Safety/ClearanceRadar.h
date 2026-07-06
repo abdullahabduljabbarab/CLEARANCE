@@ -75,6 +75,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Tuning")
 	FName SiteName = TEXT("CENTRE");
 
+	// Emission signature - what this radar looks like to external ELINT.
+	// Carried on the DIS Emission PDU (Type 23) beam block. Defaults to a
+	// civil airport surveillance profile (ASR-9-ish). Set per-radar for
+	// mixed civil/military deployments. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Emission")
+	FEmissionSignature EmissionSignature;
+
 private:
 	UPROPERTY()
 	TObjectPtr<AClearanceAirspaceManager> Manager;

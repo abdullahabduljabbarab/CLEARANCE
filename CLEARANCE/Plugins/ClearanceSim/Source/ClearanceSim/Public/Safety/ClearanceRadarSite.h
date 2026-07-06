@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Core/CLEARANCETypes.h"
 #include "ClearanceRadarSite.generated.h"
 
 class USceneComponent;
@@ -54,6 +55,12 @@ public:
 	// Display colour for the site's coverage ring on the debug view.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar Site|Visual")
 	FColor CoverageColour = FColor(80, 180, 220);
+
+	// Emission signature forwarded to the owned radar at BeginPlay. Level
+	// designers set the emitter fingerprint here per site so a mixed civil /
+	// military deployment can carry realistic ELINT contrast. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar Site|Emission")
+	FEmissionSignature EmissionSignature;
 
 protected:
 	virtual void BeginPlay() override;

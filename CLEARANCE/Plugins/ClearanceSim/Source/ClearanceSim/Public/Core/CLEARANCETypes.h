@@ -525,6 +525,155 @@ struct CLEARANCESIM_API FRadarTrack
 	float PaintConfidence = 1.f;
 };
 
+/** Radar emission signature - the IEEE 1278.1 fingerprint an ELINT receiver would
+ * see for this radar. Everything here maps directly to Emission PDU (Type 23)
+ * Fundamental Parameter Data fields. Real-world catalogues:
+ *   Emitter Name (Annex A tab. 8): 3110 AN/APG-63, 3151 AN/APG-73,
+ *     4830 ASR-9 (civil airport surveillance), 28810 generic surveillance
+ *   Emitter Function (tab. 9): 3 Early-Warning/Surveillance, 5 Fire Control,
+ *     6 Acquisition/Detection, 7 Tracker
+ *   Beam Function (tab. 10): 2 Search, 3 Height Finder, 5 Tracking,
+ *     6 Track-While-Scan
+ * Bands: L 1-2 GHz, S 2-4 GHz, C 4-8 GHz, X 8-12 GHz, Ku 12-18 GHz.
+ * - TripleA */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FEmissionSignature
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission")
+	float FrequencyLowHz = 9.5e9f;   // X-band search default
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission")
+	float FrequencyHighHz = 10.5e9f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission")
+	float PulseRepetitionFreqHz = 1000.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission")
+	float PulseWidthMicrosec = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission")
+	float EffectiveRadiatedPowerDbm = 80.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission")
+	int32 EmitterName = 4830;   // ASR-9 civil airport surveillance
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission", meta = (ClampMin = "0", ClampMax = "255"))
+	int32 EmitterFunction = 3;  // Early Warning / Surveillance
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission", meta = (ClampMin = "0", ClampMax = "255"))
+	int32 BeamFunction = 2;     // Search
+};
+
+/** Per-tick snapshot handed to the DIS emitter for building an Emission PDU.
+ * Assembled server-side by the SimulationController each tick from the active
+ * radar sites. The emitter uses this to fill the PDU's per-emitter-system + per-
+ * beam + per-target blocks without needing to reach back into the radar
+ * objects. - TripleA */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FRadarEmissionSnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FName SiteName;
+	UPROPERTY(BlueprintReadOnly) FVector2D SitePositionNm = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FEmissionSignature Signature;
+	UPROPERTY(BlueprintReadOnly) float SweepAngleDeg = 0.f;
+	UPROPERTY(BlueprintReadOnly) float RangeNm = 0.f;
+	UPROPERTY(BlueprintReadOnly) TArray<FName> PaintedCallsigns;   // for beam Track/Jam block
+	UPROPERTY(BlueprintReadOnly) bool bEnabled = false;
+};
+
+/** Snapshot of a weapons-fire event, handed to the DIS emitter for building a
+ * Fire PDU (Type 2). Fired from SCRAMBLE / intercept launch, gun kills, and
+ * any other point in the sim where a munition leaves an aircraft. - TripleA */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FWeaponsFireEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FName FiringCallsign;    // aircraft that fired
+	UPROPERTY(BlueprintReadOnly) FName TargetCallsign;    // intended target (NAME_None if untargeted)
+	UPROPERTY(BlueprintReadOnly) FVector2D LocationNm = FVector2D::ZeroVector;   // world XY in sector nm
+	UPROPERTY(BlueprintReadOnly) float AltitudeFt = 0.f;
+	UPROPERTY(BlueprintReadOnly) float VelocityXKts = 0.f;     // launch velocity components
+	UPROPERTY(BlueprintReadOnly) float VelocityYKts = 0.f;
+	UPROPERTY(BlueprintReadOnly) float VelocityZKts = 0.f;
+
+	// IEEE 1278.1 Munition Entity Type (Annex A):
+	//   Kind 2 = Munition, Domain 2 = Air, Country 225 = US,
+	//   Category 1 = Guided (missile), 2 = Ballistic, 3 = Fixed
+	// Combined with sensible defaults into a single lookup key for now.
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionKind = 1;       // 1 = missile, 2 = gun round, 3 = bomb
+	UPROPERTY(BlueprintReadOnly) int32 WarheadKind = 1000;     // Annex A Warhead code, 1000 = HE
+	UPROPERTY(BlueprintReadOnly) int32 FuseKind = 1000;        // Annex A Fuse code, 1000 = contact
+	UPROPERTY(BlueprintReadOnly) int32 Quantity = 1;
+	UPROPERTY(BlueprintReadOnly) int32 Rate = 0;               // rounds/min for cannon, 0 for missile
+	UPROPERTY(BlueprintReadOnly) float RangeMeters = 0.f;      // effective range at launch
+	UPROPERTY(BlueprintReadOnly) int32 EventNumber = 0;       // unique per launch, referenced by Detonation
+};
+
+/** Snapshot of a weapons-detonation event, handed to the DIS emitter for
+ * building a Detonation PDU (Type 3). Fired when the earlier Fire event
+ * resolves - hit, miss, or timeout. The EventNumber links back to the
+ * originating Fire PDU so a federation observer can pair the two. - TripleA */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FWeaponsDetonationEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FName FiringCallsign;     // aircraft that originally fired
+	UPROPERTY(BlueprintReadOnly) FName TargetCallsign;     // aircraft that was hit (NAME_None if miss)
+	UPROPERTY(BlueprintReadOnly) FVector2D LocationNm = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) float AltitudeFt = 0.f;
+	UPROPERTY(BlueprintReadOnly) float VelocityXKts = 0.f;
+	UPROPERTY(BlueprintReadOnly) float VelocityYKts = 0.f;
+	UPROPERTY(BlueprintReadOnly) float VelocityZKts = 0.f;
+
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionKind = 1;
+	UPROPERTY(BlueprintReadOnly) int32 WarheadKind = 1000;
+	UPROPERTY(BlueprintReadOnly) int32 FuseKind = 1000;
+	UPROPERTY(BlueprintReadOnly) int32 Quantity = 1;
+	UPROPERTY(BlueprintReadOnly) int32 Rate = 0;
+
+	// IEEE 1278.1 Detonation Result codes (table 7-4):
+	//   0 = Other, 1 = Entity Impact, 2 = Entity Proximate Detonation,
+	//   3 = Ground Impact, 4 = Ground Proximate Detonation, 5 = Detonation,
+	//   6 = None (dud/no detonation)
+	UPROPERTY(BlueprintReadOnly) uint8 DetonationResult = 1;
+	UPROPERTY(BlueprintReadOnly) int32 EventNumber = 0;   // matches the originating Fire PDU
+};
+
+/** Snapshot of a single radio transmission, handed to the DIS emitter for
+ * building a Signal PDU (Type 26). Every voice / phraseology line the sim
+ * produces - operator command, aircraft readback, controller inject - flows
+ * through here so a federation observer can see the whole comms picture as
+ * live traffic. Payload is opaque raw-binary per §7.7.3, which lets us carry
+ * the ASCII transcript directly without a codec dependency. - TripleA */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FVoiceCommsEvent
+{
+	GENERATED_BODY()
+
+	// Radio owner. NAME_None => operator / ground station (uses a fixed entity
+	// number so downstream federates can still identify the source uniquely).
+	UPROPERTY(BlueprintReadOnly) FName SpeakerCallsign;
+
+	// The words on the wire (ASCII, trimmed). Length is capped in the emitter
+	// so an oversize line can't blow the UDP MTU.
+	UPROPERTY(BlueprintReadOnly) FString Transcript;
+
+	// Which radio on the entity is transmitting. Most aircraft only ever use
+	// radio 1; a full ATC federate might separate tower / approach / ground.
+	UPROPERTY(BlueprintReadOnly) int32 RadioId = 1;
+
+	// Carrier frequency in Hz. Defaulted to 121.500 MHz (international ATC
+	// guard channel) since it's a plausible common frequency for the
+	// federation to receive on.
+	UPROPERTY(BlueprintReadOnly) int64 FrequencyHz = 121500000;
+};
+
 /** One snapshot of the whole sector at a moment in time, captured by the recorder. */
 USTRUCT(BlueprintType)
 struct CLEARANCESIM_API FRecordedSnapshot

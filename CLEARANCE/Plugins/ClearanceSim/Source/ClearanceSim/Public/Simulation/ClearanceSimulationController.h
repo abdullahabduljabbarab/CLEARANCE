@@ -898,6 +898,26 @@ private:
 	UPROPERTY()
 	TObjectPtr<UClearanceDISReceiver> DISReceiver;
 
+	// Pending Fire / Detonation events queued between DIS emit ticks. The sim
+	// event points (SCRAMBLE launch, intercept success) push here; the emitter
+	// tick drains and publishes them, then clears the queue. Keeps the event
+	// sites free of DIS-emitter dependency and ensures no lost PDUs even if
+	// several events fire between ticks. - TripleA
+	UPROPERTY()
+	TArray<FWeaponsFireEvent> PendingFireEvents;
+
+	UPROPERTY()
+	TArray<FWeaponsDetonationEvent> PendingDetonationEvents;
+
+	// Queue of transcribed radio transmissions waiting to be published as
+	// Signal PDUs on the next DIS tick. LogTranscriptLine feeds this. - TripleA
+	UPROPERTY()
+	TArray<FVoiceCommsEvent> PendingVoiceEvents;
+
+	// Monotonic per-launch counter for the Event ID field. Wraps at 16 bits
+	// which is DIS's natural width for the field. - TripleA
+	uint32 NextFireEventNumber = 1;
+
 	UPROPERTY()
 	TObjectPtr<UClearanceRadar> Radar;
 

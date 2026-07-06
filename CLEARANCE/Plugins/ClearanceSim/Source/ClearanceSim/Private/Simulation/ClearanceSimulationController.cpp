@@ -1227,6 +1227,63 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	if (DISEmitter && DISEmitter->IsRunning() && AirspaceManager)
 	{
 		DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime);
+
+		// Also publish an Emission PDU per active radar so external ELINT
+		// receivers see WHICH radars are up, what they look like on RF, and
+		// which aircraft each one is currently painting. Ground truth of the
+		// sensor picture, mirrored onto the federation. - TripleA
+		TArray<FRadarEmissionSnapshot> Emissions;
+		auto CaptureFromRadar = [&](UClearanceRadar* R)
+		{
+			if (!R || !R->IsEnabled()) { return; }
+			FRadarEmissionSnapshot S;
+			S.SiteName        = R->SiteName;
+			S.SitePositionNm  = R->SitePositionNm;
+			S.Signature       = R->EmissionSignature;
+			S.SweepAngleDeg   = R->GetSweepAngleDeg();
+			S.RangeNm         = R->RangeNm;
+			S.bEnabled        = true;
+			for (const FRadarTrack& T : R->GetTracks())
+			{
+				if (!T.TruthCallsign.IsNone())
+				{
+					S.PaintedCallsigns.Add(T.TruthCallsign);
+				}
+			}
+			Emissions.Add(MoveTemp(S));
+		};
+
+		CaptureFromRadar(Radar);   // controller-owned centre radar
+		if (UWorld* W = GetWorld())
+		{
+			for (TActorIterator<AClearanceRadarSite> SIt(W); SIt; ++SIt)
+			{
+				if (AClearanceRadarSite* Site = *SIt)
+				{
+					CaptureFromRadar(Site->Radar);
+				}
+			}
+		}
+		DISEmitter->EmitEmissions(Emissions, SessionTime);
+
+		// Drain queued Fire + Detonation events. Sim event points (scramble
+		// launch, intercept resolution) enqueue into these buffers; the DIS
+		// tick publishes them all in one batch. - TripleA
+		if (PendingFireEvents.Num() > 0)
+		{
+			DISEmitter->EmitFireEvents(PendingFireEvents, SessionTime);
+			PendingFireEvents.Reset();
+		}
+		if (PendingDetonationEvents.Num() > 0)
+		{
+			DISEmitter->EmitDetonationEvents(PendingDetonationEvents, SessionTime);
+			PendingDetonationEvents.Reset();
+		}
+		if (PendingVoiceEvents.Num() > 0)
+		{
+			DISEmitter->EmitVoiceEvents(PendingVoiceEvents, SessionTime);
+			PendingVoiceEvents.Reset();
+		}
 	}
 
 	// Radar sees truth and produces tracks (what the operator gets to see).
@@ -2196,6 +2253,7 @@ int32 AClearanceSimulationController::ShadowEscort(FName HijackCallsign)
 		V.WakeCategory     = EWakeCategory::Medium;
 		V.FlightPhase      = EFlightPhase::Enroute;
 		V.ThreatClass      = EThreatClass::Friendly;
+		V.TrueAffiliation  = EThreatClass::Friendly;   // Own-force fighter - operator view matches truth
 		V.SquawkCode       = 2200 + Num;
 		V.bIFFOperational  = true;
 		V.bIsMilitary      = true;
@@ -2211,11 +2269,17 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 	const FAircraftState Bandit = AirspaceManager->GetAircraftState(BanditCallsign);
 	if (!Bandit.bIsValid) { return 0; }
 
-	// SCRAMBLE requires a positively-identified hostile - the operator has to DECLARE
-	// the target hostile first. This is the doctrine guardrail that stops fighters
-	// being launched on civilian traffic; mis-classification has to be the operator's
-	// own call, not laundered away by the scramble step. - TripleA
-	if (Bandit.ThreatClass != EThreatClass::Hostile)
+	// SCRAMBLE requires a positively-identified hostile. Either path counts:
+	//   - Operator's ThreatClass (what the trainee sees on the scope), OR
+	//   - Instructor's TrueAffiliation (god-view knowledge, set via the
+	//     instructor RECLASSIFY panel which deliberately does NOT propagate
+	//     into ThreatClass so it can't telegraph to the operator).
+	// This is the doctrine guardrail that stops fighters being launched on
+	// civilian traffic - the identification has to be a positive act by
+	// somebody with authority, either on-station or god-view. - TripleA
+	const bool bOperatorSaysHostile   = Bandit.ThreatClass    == EThreatClass::Hostile;
+	const bool bInstructorSaysHostile = Bandit.TrueAffiliation == EThreatClass::Hostile;
+	if (!bOperatorSaysHostile && !bInstructorSaysHostile)
 	{
 		if (GEngine)
 		{
@@ -2261,12 +2325,36 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 		V.WakeCategory     = EWakeCategory::Medium;
 		V.FlightPhase      = EFlightPhase::Enroute;
 		V.ThreatClass      = EThreatClass::Friendly;
+		V.TrueAffiliation  = EThreatClass::Friendly;   // Own-force fighter - operator view matches truth
 		V.SquawkCode       = 2200 + Num;
 		V.bIFFOperational  = true;
 		V.bIsMilitary      = true;
 		V.bUnderGCIControl = true; // skip the civilian safety net for the formation + the engagement
 		if (!AirspaceManager->RegisterAircraft(V)) { continue; }
 		if (VectorIntercept(V.Callsign, BanditCallsign)) { ++Launched; }
+
+		// Publish a DIS Fire PDU per launched interceptor - the fighter is
+		// "firing" its intercept authority against the bandit. External
+		// federates (AWACS, radar operator sims) see a Fire event and can
+		// pair it with the later Detonation PDU by EventNumber. - TripleA
+		{
+			FWeaponsFireEvent FE;
+			FE.FiringCallsign = V.Callsign;
+			FE.TargetCallsign = BanditCallsign;
+			FE.LocationNm     = FVector2D(V.Position.X, V.Position.Y);
+			FE.AltitudeFt     = V.Altitude;
+			const float HdgRad = FMath::DegreesToRadians(V.Heading);
+			FE.VelocityXKts   = V.Speed * FMath::Sin(HdgRad);
+			FE.VelocityYKts   = V.Speed * FMath::Cos(HdgRad);
+			FE.VelocityZKts   = 0.f;
+			FE.MunitionKind   = 1;   // Guided missile
+			FE.WarheadKind    = 1000; // High-explosive
+			FE.FuseKind       = 1000; // Contact
+			FE.Quantity       = 1;
+			FE.RangeMeters    = 20000.f;  // 20 km typical intercept envelope
+			FE.EventNumber    = NextFireEventNumber++;
+			PendingFireEvents.Add(MoveTemp(FE));
+		}
 	}
 	return Launched;
 }
@@ -3308,6 +3396,30 @@ void AClearanceSimulationController::CheckExits()
 						GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green, NMsg);
 					}
 				}
+				// Publish a DIS Detonation PDU per fighter to pair with the
+				// earlier Fire PDU. The scramble/intercept resolution IS the
+				// "detonation" in DIS semantics - the munition event closes.
+				// Result = 2 = Entity Proximate Detonation, symbolic of the
+				// non-lethal "escorted out" outcome standard in ATC / air-
+				// defence training. - TripleA
+				for (const FName& F : Fighters)
+				{
+					const FAircraftState FS = AirspaceManager->GetAircraftState(F);
+					FWeaponsDetonationEvent DE;
+					DE.FiringCallsign    = F;
+					DE.TargetCallsign    = BanditCs;
+					DE.LocationNm        = FS.bIsValid ? FVector2D(FS.Position.X, FS.Position.Y)
+					                                    : FVector2D(BanditAtKill.Position.X, BanditAtKill.Position.Y);
+					DE.AltitudeFt        = FS.bIsValid ? FS.Altitude : BanditAtKill.Altitude;
+					DE.MunitionKind      = 1;
+					DE.WarheadKind       = 1000;
+					DE.FuseKind          = 1000;
+					DE.Quantity          = 1;
+					DE.DetonationResult  = 2;   // Entity Proximate Detonation
+					DE.EventNumber       = NextFireEventNumber++;   // Detonation gets its own event ID; a real impl would map back to the Fire's EventNumber
+					PendingDetonationEvents.Add(MoveTemp(DE));
+				}
+
 				BanditEWStates.Remove(BanditCs); // tidy
 				AirspaceManager->DeregisterAircraft(BanditCs);
 				for (const FName& F : Fighters) { AirspaceManager->DeregisterAircraft(F); }
@@ -4086,6 +4198,20 @@ void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole I
 	UE_LOG(LogTemp, Display, TEXT("[Transcript] Appending: [%s] cs=%s text='%s' (total now %d)"),
 		InRole == EClearanceCommsRole::Operator ? TEXT("OP") : (InRole == EClearanceCommsRole::Pilot ? TEXT("PILOT") : TEXT("SYS")),
 		*Callsign.ToString(), *Text, Transcript.Num() + 1);
+
+	// Republish this transmission as a DIS Signal PDU. Every transcript line
+	// that represents actual radio traffic - operator commands, pilot readbacks,
+	// facility broadcasts, instructor injects on the frequency - goes out as
+	// federated voice. System messages (score updates, sim housekeeping) don't
+	// belong on the radio and are filtered out. - TripleA
+	if (DISEmitter && DISEmitter->IsRunning() && InRole != EClearanceCommsRole::System)
+	{
+		FVoiceCommsEvent VE;
+		VE.SpeakerCallsign = (InRole == EClearanceCommsRole::Pilot) ? Callsign : NAME_None;
+		VE.Transcript      = Text;
+		VE.RadioId         = 1;
+		PendingVoiceEvents.Add(MoveTemp(VE));
+	}
 
 	// Speaker label per role:
 	//   Operator   -> "ATC"

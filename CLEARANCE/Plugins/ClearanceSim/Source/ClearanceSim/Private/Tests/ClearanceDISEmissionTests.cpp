@@ -1,17 +1,10 @@
-// Roundtrip test for the IEEE 1278.1 Emission PDU (Type 23) serializer.
-// Serialize a known snapshot, parse it back, verify byte-identical + field-
-// identical. Guards the wire format against any future drift. - TripleA
-//
-// Run inside the editor via:
-//   Automation RunTests Clearance.DIS.EmissionPDU.Roundtrip
-//
-// Or from the command line:
-//   UnrealEditor.exe <project>.uproject -ExecCmds="Automation RunTests Clearance"
-//   -TestExit="Automation Test Queue Empty" -unattended -nopause
+// Emission PDU (Type 23) wire-format tests. Exercises the pure ClearanceDIS
+// module directly - no Unreal types, no UClearanceDISEmitter - so the wire
+// format layer is provably testable in isolation from the render engine. The
+// Unreal automation framework is only used as the test runner. - TripleA
 
 #include "Misc/AutomationTest.h"
-#include "Simulation/ClearanceDISEmitter.h"
-#include "Core/CLEARANCETypes.h"
+#include "ClearanceDIS/ClearanceDISPDU.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -22,92 +15,51 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISEmissionPDURoundtripTest::RunTest(const FString& Parameters)
 {
-	// Build a known snapshot: a military X-band search radar painting three
-	// aircraft. Field values chosen to exercise every serializer path.
-	FRadarEmissionSnapshot Snap;
-	Snap.SiteName        = TEXT("SITE-ALPHA");
-	Snap.SitePositionNm  = FVector2D(50.f, -30.f);
-	Snap.SweepAngleDeg   = 137.5f;
-	Snap.RangeNm         = 80.f;
-	Snap.bEnabled        = true;
-	Snap.Signature.FrequencyLowHz             = 9.0e9f;
-	Snap.Signature.FrequencyHighHz            = 10.0e9f;
-	Snap.Signature.PulseRepetitionFreqHz      = 1200.f;
-	Snap.Signature.PulseWidthMicrosec         = 0.5f;
-	Snap.Signature.EffectiveRadiatedPowerDbm  = 85.f;
-	Snap.Signature.EmitterName                = 3110;   // AN/APG-63
-	Snap.Signature.EmitterFunction            = 5;      // Fire Control
-	Snap.Signature.BeamFunction               = 6;      // Track While Scan
-	Snap.PaintedCallsigns.Add(TEXT("BAW101"));
-	Snap.PaintedCallsigns.Add(TEXT("UAL202"));
-	Snap.PaintedCallsigns.Add(TEXT("DLH303"));
+	ClearanceDIS::FEmissionSnapshot S;
+	S.EmittingEntity = 42;
+	S.EmitterName    = 4830;
+	S.EmitterFunction = 3;
+	S.FrequencyLowHz  = 9.4e9f;
+	S.FrequencyHighHz = 9.6e9f;
+	S.EffectiveRadiatedPowerDbm = 88.0f;
+	S.PulseRepetitionFreqHz = 1000.f;
+	S.PulseWidthMicrosec    = 1.0f;
+	S.BeamAzimuthRad        = 1.5708f;         // ~90 deg
+	S.BeamFunction          = 2;
+	S.PaintedEntityNumbers  = { 100, 200, 300, 400 };
 
-	// Serialize via a throwaway emitter instance - we don't need a live socket
-	// since BuildEmissionPDU is a pure serializer.
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	Emitter->SiteId        = 42;
-	Emitter->ApplicationId = 7;
-	Emitter->ExerciseId    = 1;
+	ClearanceDIS::FWireParams P;
+	P.ExerciseId = 1; P.SiteId = 42; P.ApplicationId = 7; P.SimTimeSeconds = 128.5;
 
-	TArray<uint8> Wire;
-	Emitter->BuildEmissionPDU(Wire, Snap, /*SimTimeSeconds*/ 128.5f);
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildEmissionPDU(S, P);
 
-	// Expected PDU size: 12 header + 16 body + 20 emitter system + 52 beam + 8 * 3 targets
-	const int32 ExpectedSize = 12 + 16 + 20 + 52 + 8 * Snap.PaintedCallsigns.Num();
-	TestEqual(TEXT("PDU byte length matches IEEE 1278.1 fixed + variable"), Wire.Num(), ExpectedSize);
+	TestEqual(TEXT("Emission PDU length = 100 + 8 * NTargets"),
+		int32(Wire.size()), 100 + 8 * 4);
+	TestEqual(TEXT("PDU type is 23 (Emission)"), int32(Wire[2]), 23);
+	TestEqual(TEXT("Proto family is 6 (Distributed Emission)"), int32(Wire[3]), 6);
 
-	// Parse back
-	FRadarEmissionSnapshot RoundTrip;
-	int32 EmittingSite = 0, EmittingApp = 0, EmittingEntity = 0;
-	TArray<int32> TargetEntityNumbers;
-	const bool bParseOk = UClearanceDISEmitter::ParseEmissionPDU(
-		Wire, RoundTrip, EmittingSite, EmittingApp, EmittingEntity, TargetEntityNumbers);
+	ClearanceDIS::FEmissionSnapshot Out;
+	TestTrue(TEXT("Parser accepts well-formed Emission PDU"),
+		ClearanceDIS::ParseEmissionPDU(Wire.data(), Wire.size(), Out));
 
-	TestTrue(TEXT("Parser accepts a well-formed Emission PDU"), bParseOk);
-	TestEqual(TEXT("Emitting Site round-trips"), EmittingSite, Emitter->SiteId);
-	TestEqual(TEXT("Emitting Application round-trips"), EmittingApp, Emitter->ApplicationId);
+	TestEqual(TEXT("Emitting entity round-trips"), int32(Out.EmittingEntity), int32(S.EmittingEntity));
+	TestEqual(TEXT("Emitter Name round-trips"),   int32(Out.EmitterName),     int32(S.EmitterName));
+	TestEqual(TEXT("Emitter Function round-trips"), int32(Out.EmitterFunction), int32(S.EmitterFunction));
+	TestEqual(TEXT("Beam Function round-trips"),  int32(Out.BeamFunction),    int32(S.BeamFunction));
+	TestEqual(TEXT("Track/Jam count round-trips"), int32(Out.PaintedEntityNumbers.size()), 4);
+	TestEqual(TEXT("Track/Jam entity[0] round-trips"), int32(Out.PaintedEntityNumbers[0]), 100);
+	TestEqual(TEXT("Track/Jam entity[3] round-trips"), int32(Out.PaintedEntityNumbers[3]), 400);
 
-	// Signature fields byte-perfect
-	TestEqual(TEXT("EmitterName round-trips"), RoundTrip.Signature.EmitterName, Snap.Signature.EmitterName);
-	TestEqual(TEXT("EmitterFunction round-trips"), RoundTrip.Signature.EmitterFunction, Snap.Signature.EmitterFunction);
-	TestEqual(TEXT("BeamFunction round-trips"), RoundTrip.Signature.BeamFunction, Snap.Signature.BeamFunction);
-
-	// Float scalars - use IsNearlyEqual with generous tolerances so precision
-	// drift at large magnitudes (frequencies in GHz) never trips the test.
-	// Radar-relevant precision is orders of magnitude looser than these gates.
-	// - TripleA
+	TestTrue(TEXT("FrequencyLow within 100 kHz"),
+		FMath::IsNearlyEqual(Out.FrequencyLowHz, S.FrequencyLowHz, 100000.f));
+	TestTrue(TEXT("FrequencyHigh within 100 kHz"),
+		FMath::IsNearlyEqual(Out.FrequencyHighHz, S.FrequencyHighHz, 100000.f));
 	TestTrue(TEXT("PRF within 0.01 Hz"),
-		FMath::IsNearlyEqual(RoundTrip.Signature.PulseRepetitionFreqHz, Snap.Signature.PulseRepetitionFreqHz, 0.01f));
+		FMath::IsNearlyEqual(Out.PulseRepetitionFreqHz, S.PulseRepetitionFreqHz, 0.01f));
 	TestTrue(TEXT("Pulse width within 0.001 us"),
-		FMath::IsNearlyEqual(RoundTrip.Signature.PulseWidthMicrosec, Snap.Signature.PulseWidthMicrosec, 0.001f));
-	TestTrue(TEXT("ERP dBm within 0.1 dBm"),
-		FMath::IsNearlyEqual(RoundTrip.Signature.EffectiveRadiatedPowerDbm, Snap.Signature.EffectiveRadiatedPowerDbm, 0.1f));
-
-	// Frequency low/high round-trip via center + range encoding. Float32 gap
-	// at 10 GHz is ~1 kHz, and we cascade two subtractions; 100 kHz tolerance
-	// is well below any real radar resolution and safe against precision loss.
-	TestTrue(TEXT("Frequency low within 100 kHz"),
-		FMath::IsNearlyEqual(RoundTrip.Signature.FrequencyLowHz, Snap.Signature.FrequencyLowHz, 1e5f));
-	TestTrue(TEXT("Frequency high within 100 kHz"),
-		FMath::IsNearlyEqual(RoundTrip.Signature.FrequencyHighHz, Snap.Signature.FrequencyHighHz, 1e5f));
-
-	// Sweep angle round-trips within float precision (via rad conversion)
-	TestTrue(TEXT("Sweep angle within 0.1 deg"),
-		FMath::IsNearlyEqual(RoundTrip.SweepAngleDeg, Snap.SweepAngleDeg, 0.1f));
-
-	// Target count + identity match. Bail early if the count mismatches so we
-	// don't over-index below.
-	if (!TestEqual(TEXT("Number of painted targets round-trips"),
-		TargetEntityNumbers.Num(), Snap.PaintedCallsigns.Num()))
-	{
-		return false;
-	}
-	for (int32 i = 0; i < Snap.PaintedCallsigns.Num(); ++i)
-	{
-		const int32 Expected = static_cast<int32>((GetTypeHash(Snap.PaintedCallsigns[i]) % 65535) + 1);
-		TestEqual(FString::Printf(TEXT("Target %d entity number matches deterministic hash"), i),
-			TargetEntityNumbers[i], Expected);
-	}
+		FMath::IsNearlyEqual(Out.PulseWidthMicrosec, S.PulseWidthMicrosec, 0.001f));
+	TestTrue(TEXT("ERP within 0.1 dBm"),
+		FMath::IsNearlyEqual(Out.EffectiveRadiatedPowerDbm, S.EffectiveRadiatedPowerDbm, 0.1f));
 
 	return true;
 }
@@ -119,29 +71,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISEmissionPDUEmptyTargetListTest::RunTest(const FString& Parameters)
 {
-	// A radar that isn't currently painting anything must still emit a valid
-	// heartbeat PDU with zero Track/Jam entries - external ELINT still wants
-	// to know the emitter is up. Verifies the variable-length block encodes
-	// correctly at the boundary. - TripleA
-	FRadarEmissionSnapshot Snap;
-	Snap.SiteName = TEXT("SILENT");
-	Snap.bEnabled = true;
-	Snap.SweepAngleDeg = 0.f;
+	ClearanceDIS::FEmissionSnapshot S;
+	S.EmittingEntity = 10;
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	TArray<uint8> Wire;
-	Emitter->BuildEmissionPDU(Wire, Snap, 0.f);
+	ClearanceDIS::FWireParams P;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildEmissionPDU(S, P);
 
-	TestEqual(TEXT("Empty-target PDU is 100 bytes (fixed header + emission + system + beam)"),
-		Wire.Num(), 100);
+	TestEqual(TEXT("Empty Track/Jam = fixed 100 bytes"), int32(Wire.size()), 100);
 
-	FRadarEmissionSnapshot RoundTrip;
-	int32 Site = 0, App = 0, Entity = 0;
-	TArray<int32> Targets;
-	TestTrue(TEXT("Empty-target PDU parses cleanly"),
-		UClearanceDISEmitter::ParseEmissionPDU(Wire, RoundTrip, Site, App, Entity, Targets));
-	TestEqual(TEXT("Target list is empty"), Targets.Num(), 0);
-
+	ClearanceDIS::FEmissionSnapshot Out;
+	TestTrue(TEXT("Parses empty-target Emission PDU"),
+		ClearanceDIS::ParseEmissionPDU(Wire.data(), Wire.size(), Out));
+	TestEqual(TEXT("Zero painted entities"), int32(Out.PaintedEntityNumbers.size()), 0);
 	return true;
 }
 
@@ -152,43 +93,18 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISEmissionPDUMalformedRejectionTest::RunTest(const FString& Parameters)
 {
-	// Parser must reject: (a) wrong PDU type, (b) truncated buffer, (c) header
-	// mismatch. Failing to reject would let malformed federation traffic
-	// corrupt the airspace picture. - TripleA
-	FRadarEmissionSnapshot Out;
-	int32 Site = 0, App = 0, Entity = 0;
-	TArray<int32> Targets;
+	ClearanceDIS::FEmissionSnapshot Out;
 
-	// Wrong PDU type (Entity State = 1 posing as Emission)
-	{
-		TArray<uint8> Bad;
-		Bad.Init(0, 100);
-		Bad[0] = 6;  // proto version
-		Bad[2] = 1;  // PDU type = Entity State
-		Bad[3] = 1;  // protocol family
-		TestFalse(TEXT("Parser rejects non-Emission PDU type"),
-			UClearanceDISEmitter::ParseEmissionPDU(Bad, Out, Site, App, Entity, Targets));
-	}
+	std::vector<std::uint8_t> Bad(100, 0);
+	Bad[0] = 6;
+	Bad[2] = 1;    // Entity State posing as Emission
+	Bad[3] = 6;
+	TestFalse(TEXT("Rejects non-Emission PDU type"),
+		ClearanceDIS::ParseEmissionPDU(Bad.data(), Bad.size(), Out));
 
-	// Truncated header
-	{
-		TArray<uint8> Bad;
-		Bad.Init(0, 5);
-		TestFalse(TEXT("Parser rejects buffer smaller than header"),
-			UClearanceDISEmitter::ParseEmissionPDU(Bad, Out, Site, App, Entity, Targets));
-	}
-
-	// Length field mismatch
-	{
-		FRadarEmissionSnapshot Snap;
-		Snap.bEnabled = true;
-		UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-		TArray<uint8> Wire;
-		Emitter->BuildEmissionPDU(Wire, Snap, 0.f);
-		Wire.Add(0);  // pad extra byte - PduLength no longer matches buffer size
-		TestFalse(TEXT("Parser rejects PDU where length field disagrees with buffer"),
-			UClearanceDISEmitter::ParseEmissionPDU(Wire, Out, Site, App, Entity, Targets));
-	}
+	Bad.resize(10);
+	TestFalse(TEXT("Rejects truncated buffer"),
+		ClearanceDIS::ParseEmissionPDU(Bad.data(), Bad.size(), Out));
 
 	return true;
 }

@@ -16,6 +16,11 @@
 	"Installed": false,
 	"Modules": [
 		{
+			"Name": "ClearanceDIS",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "ClearanceSim",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"

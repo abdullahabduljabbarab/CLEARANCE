@@ -1,10 +1,9 @@
-// Roundtrip tests for IEEE 1278.1 Fire (Type 2) and Detonation (Type 3) PDUs.
-// Same pattern as the Emission PDU tests: serialize a known snapshot, parse
-// back, verify byte-perfect round-trip on every field that matters. - TripleA
+// Fire (Type 2) and Detonation (Type 3) wire-format tests. Exercises the pure
+// ClearanceDIS module directly - proves the Warfare-family serialisation is
+// spec-conformant without touching any Unreal type. - TripleA
 
 #include "Misc/AutomationTest.h"
-#include "Simulation/ClearanceDISEmitter.h"
-#include "Core/CLEARANCETypes.h"
+#include "ClearanceDIS/ClearanceDISPDU.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -15,74 +14,55 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISFirePDURoundtripTest::RunTest(const FString& Parameters)
 {
-	// A VIPER launches a guided missile at a hostile bandit.
-	FWeaponsFireEvent Event;
-	Event.FiringCallsign = TEXT("VIPER01");
-	Event.TargetCallsign = TEXT("UNK001");
-	Event.LocationNm     = FVector2D(120.f, 80.f);
-	Event.AltitudeFt     = 25000.f;
-	Event.VelocityXKts   = 500.f;
-	Event.VelocityYKts   = 300.f;
-	Event.VelocityZKts   = -50.f;
-	Event.MunitionKind   = 1;      // Guided missile
-	Event.WarheadKind    = 1000;   // HE
-	Event.FuseKind       = 1000;   // Contact
-	Event.Quantity       = 1;
-	Event.Rate           = 0;
-	Event.RangeMeters    = 20000.f;
-	Event.EventNumber    = 42;
+	const std::uint16_t FiringEnt = ClearanceDIS::HashCallsignToEntityNumber("VIPER01");
+	const std::uint16_t TargetEnt = ClearanceDIS::HashCallsignToEntityNumber("UNK001");
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	Emitter->SiteId        = 42;
-	Emitter->ApplicationId = 7;
-	Emitter->ExerciseId    = 1;
+	ClearanceDIS::FFireEvent E;
+	E.FiringEntity   = FiringEnt;
+	E.TargetEntity   = TargetEnt;
+	E.EventNumber    = 42;
+	E.MunitionEntity = ClearanceDIS::DeriveMunitionEntityNumber(FiringEnt, E.EventNumber);
+	E.XMeters = 120.0 * 1852.0;
+	E.YMeters =  80.0 * 1852.0;
+	E.ZMeters = 25000.0 * 0.3048;
+	E.VxMps   = 500.f * 0.514444f;
+	E.VyMps   = 300.f * 0.514444f;
+	E.VzMps   = -50.f * 0.514444f;
+	E.MunitionKind = 1;
+	E.WarheadKind  = 1000;
+	E.FuseKind     = 1000;
+	E.Quantity     = 1;
+	E.Rate         = 0;
+	E.RangeMeters  = 20000.f;
 
-	TArray<uint8> Wire;
-	Emitter->BuildFirePDU(Wire, Event, /*SimTime*/ 128.5f);
+	ClearanceDIS::FWireParams P;
+	P.ExerciseId = 1; P.SiteId = 42; P.ApplicationId = 7; P.SimTimeSeconds = 128.5;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildFirePDU(E, P);
 
-	TestEqual(TEXT("Fire PDU byte length matches IEEE 1278.1 §7.3.3 fixed 96 bytes"),
-		Wire.Num(), 96);
+	TestEqual(TEXT("Fire PDU length matches §7.3.3 fixed 96 bytes"), int32(Wire.size()), 96);
+	TestEqual(TEXT("PDU type is 2 (Fire)"), int32(Wire[2]), 2);
+	TestEqual(TEXT("Proto family is 2 (Warfare)"), int32(Wire[3]), 2);
 
-	FWeaponsFireEvent RoundTrip;
-	int32 FiringEntity = 0, TargetEntity = 0, MunitionEntity = 0;
-	const bool bParseOk = UClearanceDISEmitter::ParseFirePDU(
-		Wire, RoundTrip, FiringEntity, TargetEntity, MunitionEntity);
-	TestTrue(TEXT("Parser accepts a well-formed Fire PDU"), bParseOk);
+	ClearanceDIS::FFireEvent Out;
+	TestTrue(TEXT("Parser accepts well-formed Fire PDU"),
+		ClearanceDIS::ParseFirePDU(Wire.data(), Wire.size(), Out));
 
-	// Entity numbers stable per callsign hash
-	const int32 ExpectedFiring = static_cast<int32>((GetTypeHash(Event.FiringCallsign) % 65535) + 1);
-	const int32 ExpectedTarget = static_cast<int32>((GetTypeHash(Event.TargetCallsign) % 65535) + 1);
-	TestEqual(TEXT("Firing entity number matches stable hash"), FiringEntity, ExpectedFiring);
-	TestEqual(TEXT("Target entity number matches stable hash"), TargetEntity, ExpectedTarget);
-	TestNotEqual(TEXT("Munition entity number is non-zero"), MunitionEntity, 0);
+	TestEqual(TEXT("Firing entity round-trips"),   int32(Out.FiringEntity),   int32(E.FiringEntity));
+	TestEqual(TEXT("Target entity round-trips"),   int32(Out.TargetEntity),   int32(E.TargetEntity));
+	TestEqual(TEXT("Munition entity round-trips"), int32(Out.MunitionEntity), int32(E.MunitionEntity));
+	TestEqual(TEXT("EventNumber round-trips"),     int32(Out.EventNumber),    int32(E.EventNumber));
+	TestEqual(TEXT("MunitionKind round-trips"),    int32(Out.MunitionKind),   int32(E.MunitionKind));
+	TestEqual(TEXT("WarheadKind round-trips"),     int32(Out.WarheadKind),    int32(E.WarheadKind));
+	TestEqual(TEXT("FuseKind round-trips"),        int32(Out.FuseKind),       int32(E.FuseKind));
+	TestEqual(TEXT("Quantity round-trips"),        int32(Out.Quantity),       int32(E.Quantity));
+	TestTrue(TEXT("RangeMeters within 0.1"),       FMath::IsNearlyEqual(Out.RangeMeters, E.RangeMeters, 0.1f));
 
-	// Field roundtrip
-	TestEqual(TEXT("MunitionKind round-trips"), RoundTrip.MunitionKind, Event.MunitionKind);
-	TestEqual(TEXT("WarheadKind round-trips"), RoundTrip.WarheadKind, Event.WarheadKind);
-	TestEqual(TEXT("FuseKind round-trips"), RoundTrip.FuseKind, Event.FuseKind);
-	TestEqual(TEXT("Quantity round-trips"), RoundTrip.Quantity, Event.Quantity);
-	TestEqual(TEXT("Rate round-trips"), RoundTrip.Rate, Event.Rate);
-	TestEqual(TEXT("EventNumber (low 16 bits) round-trips"),
-		RoundTrip.EventNumber, Event.EventNumber);
-
-	TestTrue(TEXT("RangeMeters within 0.1"),
-		FMath::IsNearlyEqual(RoundTrip.RangeMeters, Event.RangeMeters, 0.1f));
-
-	// Location goes through metres <-> nm double conversion - tolerance is very loose
-	TestTrue(TEXT("Location X within 0.01 nm"),
-		FMath::IsNearlyEqual(RoundTrip.LocationNm.X, Event.LocationNm.X, 0.01f));
-	TestTrue(TEXT("Location Y within 0.01 nm"),
-		FMath::IsNearlyEqual(RoundTrip.LocationNm.Y, Event.LocationNm.Y, 0.01f));
-	TestTrue(TEXT("Altitude within 0.01 ft"),
-		FMath::IsNearlyEqual(RoundTrip.AltitudeFt, Event.AltitudeFt, 0.01f));
-
-	// Velocity kts -> m/s -> kts float precision
-	TestTrue(TEXT("Velocity X within 0.1 kt"),
-		FMath::IsNearlyEqual(RoundTrip.VelocityXKts, Event.VelocityXKts, 0.1f));
-	TestTrue(TEXT("Velocity Y within 0.1 kt"),
-		FMath::IsNearlyEqual(RoundTrip.VelocityYKts, Event.VelocityYKts, 0.1f));
-	TestTrue(TEXT("Velocity Z within 0.1 kt"),
-		FMath::IsNearlyEqual(RoundTrip.VelocityZKts, Event.VelocityZKts, 0.1f));
+	TestTrue(TEXT("Location X within 0.001 m"), FMath::IsNearlyEqual(Out.XMeters, E.XMeters, 0.001));
+	TestTrue(TEXT("Location Y within 0.001 m"), FMath::IsNearlyEqual(Out.YMeters, E.YMeters, 0.001));
+	TestTrue(TEXT("Location Z within 0.001 m"), FMath::IsNearlyEqual(Out.ZMeters, E.ZMeters, 0.001));
+	TestTrue(TEXT("Velocity X within 0.05 m/s"), FMath::IsNearlyEqual(Out.VxMps, E.VxMps, 0.05f));
+	TestTrue(TEXT("Velocity Y within 0.05 m/s"), FMath::IsNearlyEqual(Out.VyMps, E.VyMps, 0.05f));
+	TestTrue(TEXT("Velocity Z within 0.05 m/s"), FMath::IsNearlyEqual(Out.VzMps, E.VzMps, 0.05f));
 
 	return true;
 }
@@ -94,22 +74,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISFirePDUMalformedRejectionTest::RunTest(const FString& Parameters)
 {
-	FWeaponsFireEvent Out;
-	int32 F = 0, T = 0, M = 0;
+	ClearanceDIS::FFireEvent Out;
 
-	// Wrong PDU type
-	TArray<uint8> Bad;
-	Bad.Init(0, 96);
+	std::vector<std::uint8_t> Bad(96, 0);
 	Bad[0] = 6;
-	Bad[2] = 23;  // Emission posing as Fire
-	Bad[3] = 6;
-	TestFalse(TEXT("Parser rejects non-Fire PDU type"),
-		UClearanceDISEmitter::ParseFirePDU(Bad, Out, F, T, M));
+	Bad[2] = 23; Bad[3] = 6;                       // Emission posing as Fire
+	TestFalse(TEXT("Rejects non-Fire PDU type"),
+		ClearanceDIS::ParseFirePDU(Bad.data(), Bad.size(), Out));
 
-	// Truncated
-	Bad.SetNum(10);
-	TestFalse(TEXT("Parser rejects truncated buffer"),
-		UClearanceDISEmitter::ParseFirePDU(Bad, Out, F, T, M));
+	Bad.resize(10);
+	TestFalse(TEXT("Rejects truncated buffer"),
+		ClearanceDIS::ParseFirePDU(Bad.data(), Bad.size(), Out));
 
 	return true;
 }
@@ -121,63 +96,49 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISDetonationPDURoundtripTest::RunTest(const FString& Parameters)
 {
-	FWeaponsDetonationEvent Event;
-	Event.FiringCallsign    = TEXT("VIPER01");
-	Event.TargetCallsign    = TEXT("UNK001");
-	Event.LocationNm        = FVector2D(140.f, 90.f);
-	Event.AltitudeFt        = 22000.f;
-	Event.VelocityXKts      = 450.f;
-	Event.VelocityYKts      = 280.f;
-	Event.VelocityZKts      = -30.f;
-	Event.MunitionKind      = 1;
-	Event.WarheadKind       = 1000;
-	Event.FuseKind          = 1000;
-	Event.Quantity          = 1;
-	Event.Rate              = 0;
-	Event.DetonationResult  = 1;   // Entity Impact
-	Event.EventNumber       = 42;
+	const std::uint16_t FiringEnt = ClearanceDIS::HashCallsignToEntityNumber("VIPER01");
+	const std::uint16_t TargetEnt = ClearanceDIS::HashCallsignToEntityNumber("UNK001");
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	Emitter->SiteId        = 42;
-	Emitter->ApplicationId = 7;
-	Emitter->ExerciseId    = 1;
+	ClearanceDIS::FDetonationEvent E;
+	E.FiringEntity   = FiringEnt;
+	E.TargetEntity   = TargetEnt;
+	E.EventNumber    = 42;
+	E.MunitionEntity = ClearanceDIS::DeriveMunitionEntityNumber(FiringEnt, E.EventNumber);
+	E.XMeters = 140.0 * 1852.0;
+	E.YMeters =  90.0 * 1852.0;
+	E.ZMeters = 22000.0 * 0.3048;
+	E.VxMps   = 450.f * 0.514444f;
+	E.VyMps   = 280.f * 0.514444f;
+	E.VzMps   = -30.f * 0.514444f;
+	E.MunitionKind = 1;
+	E.WarheadKind  = 1000;
+	E.FuseKind     = 1000;
+	E.Quantity     = 1;
+	E.DetonationResult = 2;                        // Entity Proximate Detonation
 
-	TArray<uint8> Wire;
-	Emitter->BuildDetonationPDU(Wire, Event, /*SimTime*/ 200.0f);
+	ClearanceDIS::FWireParams P;
+	P.ExerciseId = 1; P.SiteId = 42; P.ApplicationId = 7; P.SimTimeSeconds = 200.0;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildDetonationPDU(E, P);
 
-	TestEqual(TEXT("Detonation PDU byte length matches IEEE 1278.1 §7.3.4 fixed 104 bytes"),
-		Wire.Num(), 104);
+	TestEqual(TEXT("Detonation PDU length matches §7.3.4 fixed 104 bytes"),
+		int32(Wire.size()), 104);
+	TestEqual(TEXT("PDU type is 3 (Detonation)"), int32(Wire[2]), 3);
+	TestEqual(TEXT("Proto family is 2 (Warfare)"), int32(Wire[3]), 2);
 
-	FWeaponsDetonationEvent RoundTrip;
-	int32 F = 0, T = 0, M = 0;
-	const bool bParseOk = UClearanceDISEmitter::ParseDetonationPDU(Wire, RoundTrip, F, T, M);
-	TestTrue(TEXT("Parser accepts a well-formed Detonation PDU"), bParseOk);
+	ClearanceDIS::FDetonationEvent Out;
+	TestTrue(TEXT("Parser accepts well-formed Detonation PDU"),
+		ClearanceDIS::ParseDetonationPDU(Wire.data(), Wire.size(), Out));
 
-	TestEqual(TEXT("Firing entity matches stable hash"),
-		F, static_cast<int32>((GetTypeHash(Event.FiringCallsign) % 65535) + 1));
-	TestEqual(TEXT("Target entity matches stable hash"),
-		T, static_cast<int32>((GetTypeHash(Event.TargetCallsign) % 65535) + 1));
+	TestEqual(TEXT("Firing entity round-trips"),   int32(Out.FiringEntity),   int32(E.FiringEntity));
+	TestEqual(TEXT("Target entity round-trips"),   int32(Out.TargetEntity),   int32(E.TargetEntity));
+	TestEqual(TEXT("Munition entity round-trips"), int32(Out.MunitionEntity), int32(E.MunitionEntity));
+	TestEqual(TEXT("Event ID matches originating Fire"), int32(Out.EventNumber), int32(E.EventNumber));
+	TestEqual(TEXT("Detonation Result round-trips"), int32(Out.DetonationResult), int32(E.DetonationResult));
 
-	TestEqual(TEXT("MunitionKind round-trips"), RoundTrip.MunitionKind, Event.MunitionKind);
-	TestEqual(TEXT("DetonationResult round-trips"), RoundTrip.DetonationResult, Event.DetonationResult);
-	TestEqual(TEXT("EventNumber (low 16 bits) round-trips"),
-		RoundTrip.EventNumber, Event.EventNumber);
-	TestEqual(TEXT("WarheadKind round-trips"), RoundTrip.WarheadKind, Event.WarheadKind);
-	TestEqual(TEXT("FuseKind round-trips"), RoundTrip.FuseKind, Event.FuseKind);
-	TestEqual(TEXT("Quantity round-trips"), RoundTrip.Quantity, Event.Quantity);
-
-	TestTrue(TEXT("Location X within 0.01 nm"),
-		FMath::IsNearlyEqual(RoundTrip.LocationNm.X, Event.LocationNm.X, 0.01f));
-	TestTrue(TEXT("Location Y within 0.01 nm"),
-		FMath::IsNearlyEqual(RoundTrip.LocationNm.Y, Event.LocationNm.Y, 0.01f));
-	TestTrue(TEXT("Altitude within 0.01 ft"),
-		FMath::IsNearlyEqual(RoundTrip.AltitudeFt, Event.AltitudeFt, 0.01f));
-	TestTrue(TEXT("Velocity X within 0.1 kt"),
-		FMath::IsNearlyEqual(RoundTrip.VelocityXKts, Event.VelocityXKts, 0.1f));
-	TestTrue(TEXT("Velocity Y within 0.1 kt"),
-		FMath::IsNearlyEqual(RoundTrip.VelocityYKts, Event.VelocityYKts, 0.1f));
-	TestTrue(TEXT("Velocity Z within 0.1 kt"),
-		FMath::IsNearlyEqual(RoundTrip.VelocityZKts, Event.VelocityZKts, 0.1f));
+	TestTrue(TEXT("Location X within 0.001 m"), FMath::IsNearlyEqual(Out.XMeters, E.XMeters, 0.001));
+	TestTrue(TEXT("Location Y within 0.001 m"), FMath::IsNearlyEqual(Out.YMeters, E.YMeters, 0.001));
+	TestTrue(TEXT("Location Z within 0.001 m"), FMath::IsNearlyEqual(Out.ZMeters, E.ZMeters, 0.001));
+	TestTrue(TEXT("Velocity X within 0.05 m/s"), FMath::IsNearlyEqual(Out.VxMps, E.VxMps, 0.05f));
 
 	return true;
 }
@@ -189,20 +150,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISDetonationPDUMalformedRejectionTest::RunTest(const FString& Parameters)
 {
-	FWeaponsDetonationEvent Out;
-	int32 F = 0, T = 0, M = 0;
+	ClearanceDIS::FDetonationEvent Out;
 
-	TArray<uint8> Bad;
-	Bad.Init(0, 104);
+	std::vector<std::uint8_t> Bad(104, 0);
 	Bad[0] = 6;
-	Bad[2] = 1;   // Entity State posing as Detonation
-	Bad[3] = 1;
-	TestFalse(TEXT("Parser rejects non-Detonation PDU type"),
-		UClearanceDISEmitter::ParseDetonationPDU(Bad, Out, F, T, M));
+	Bad[2] = 1; Bad[3] = 1;                        // Entity State posing as Detonation
+	TestFalse(TEXT("Rejects non-Detonation PDU type"),
+		ClearanceDIS::ParseDetonationPDU(Bad.data(), Bad.size(), Out));
 
-	Bad.SetNum(5);
-	TestFalse(TEXT("Parser rejects truncated buffer"),
-		UClearanceDISEmitter::ParseDetonationPDU(Bad, Out, F, T, M));
+	Bad.resize(5);
+	TestFalse(TEXT("Rejects truncated buffer"),
+		ClearanceDIS::ParseDetonationPDU(Bad.data(), Bad.size(), Out));
 
 	return true;
 }

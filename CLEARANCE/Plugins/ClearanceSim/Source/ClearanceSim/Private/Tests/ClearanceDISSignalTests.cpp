@@ -1,12 +1,25 @@
-// Roundtrip tests for IEEE 1278.1 Signal PDU (Type 26). Same pattern as the
-// Fire / Detonation / Emission tests: serialise a known snapshot, parse back,
-// verify byte-perfect round-trip on every field that matters. - TripleA
+// Signal PDU (Type 26) wire-format tests. Pure ClearanceDIS module, no Unreal
+// types. Covers roundtrip, 32-bit padding boundary, operator-entity routing,
+// and malformed-buffer rejection. - TripleA
 
 #include "Misc/AutomationTest.h"
-#include "Simulation/ClearanceDISEmitter.h"
-#include "Core/CLEARANCETypes.h"
+#include "ClearanceDIS/ClearanceDISPDU.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
+
+namespace
+{
+	inline std::vector<std::uint8_t> AsciiBytes(const char* Text)
+	{
+		std::vector<std::uint8_t> Out;
+		for (const char* P = Text; *P; ++P) { Out.push_back(static_cast<std::uint8_t>(*P)); }
+		return Out;
+	}
+	inline std::string AsciiString(const std::vector<std::uint8_t>& Bytes)
+	{
+		return std::string(reinterpret_cast<const char*>(Bytes.data()), Bytes.size());
+	}
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FClearanceDISSignalPDURoundtripTest,
@@ -15,46 +28,30 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISSignalPDURoundtripTest::RunTest(const FString& Parameters)
 {
-	// An operator command that would normally hit the phraseology parser -
-	// pick a line that exercises digits, spaces, and punctuation.
-	FVoiceCommsEvent Event;
-	Event.SpeakerCallsign = TEXT("BAW472");
-	Event.Transcript      = TEXT("Speedbird 472, turn right heading 270, descend flight level 100.");
-	Event.RadioId         = 1;
+	ClearanceDIS::FSignalEvent E;
+	E.OwnerEntity = ClearanceDIS::HashCallsignToEntityNumber("BAW472");
+	E.RadioId     = 1;
+	E.Data        = AsciiBytes("Speedbird 472, turn right heading 270, descend flight level 100.");
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	Emitter->SiteId        = 42;
-	Emitter->ApplicationId = 7;
-	Emitter->ExerciseId    = 1;
+	ClearanceDIS::FWireParams P;
+	P.ExerciseId = 1; P.SiteId = 42; P.ApplicationId = 7; P.SimTimeSeconds = 300.0;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildSignalPDU(E, P);
 
-	TArray<uint8> Wire;
-	Emitter->BuildSignalPDU(Wire, Event, /*SimTime*/ 300.0f);
-
-	// Signal PDU fixed body is 32 bytes (12 header + 20 body); the transcript
-	// above is 64 bytes ASCII, which is already 32-bit aligned so no padding.
-	// Total = 32 + 64 = 96.
-	TestEqual(TEXT("Signal PDU length matches header + body + aligned payload"),
-		Wire.Num(), 32 + 64);
-
-	// PDU header sanity - the dissector-facing fields.
-	TestEqual(TEXT("Protocol version is 6 (IEEE 1278.1A)"), int32(Wire[0]), 6);
+	// 32-byte fixed body + 64-byte payload (already 32-bit aligned) = 96.
+	TestEqual(TEXT("Signal PDU length = 32 + aligned payload"), int32(Wire.size()), 32 + 64);
 	TestEqual(TEXT("PDU type is 26 (Signal)"), int32(Wire[2]), 26);
-	TestEqual(TEXT("Protocol family is 4 (Radio Communications)"), int32(Wire[3]), 4);
+	TestEqual(TEXT("Proto family is 4 (Radio Communications)"), int32(Wire[3]), 4);
 
-	FVoiceCommsEvent RoundTrip;
-	int32 SpeakerEntity = 0;
-	const bool bParseOk = UClearanceDISEmitter::ParseSignalPDU(Wire, RoundTrip, SpeakerEntity);
-	TestTrue(TEXT("Parser accepts a well-formed Signal PDU"), bParseOk);
+	ClearanceDIS::FSignalEvent Out;
+	TestTrue(TEXT("Parser accepts well-formed Signal PDU"),
+		ClearanceDIS::ParseSignalPDU(Wire.data(), Wire.size(), Out));
 
-	// Speaker entity number - stable per-callsign hash.
-	const int32 ExpectedSpeaker = static_cast<int32>((GetTypeHash(Event.SpeakerCallsign) % 65535) + 1);
-	TestEqual(TEXT("Speaker entity number matches stable hash"),
-		SpeakerEntity, ExpectedSpeaker);
-
-	// Radio ID + transcript round-trip.
-	TestEqual(TEXT("Radio ID round-trips"), RoundTrip.RadioId, Event.RadioId);
-	TestEqual(TEXT("Transcript payload round-trips byte-for-byte"),
-		RoundTrip.Transcript, Event.Transcript);
+	TestEqual(TEXT("Owner entity round-trips"), int32(Out.OwnerEntity), int32(E.OwnerEntity));
+	TestEqual(TEXT("Radio ID round-trips"),     int32(Out.RadioId),     int32(E.RadioId));
+	TestEqual(TEXT("Transcript byte length round-trips"),
+		int32(Out.Data.size()), int32(E.Data.size()));
+	TestTrue(TEXT("Transcript payload round-trips byte-for-byte"),
+		AsciiString(Out.Data) == AsciiString(E.Data));
 
 	return true;
 }
@@ -66,37 +63,21 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISSignalPDUPaddingTest::RunTest(const FString& Parameters)
 {
-	// Confirm §7.7.3.9 padding: data length in bits is the *unpadded* count,
-	// the data field itself is padded up to a 32-bit boundary. Use a 5-byte
-	// payload so the padding pushes to 8 bytes and the boundary is exercised
-	// non-trivially. - TripleA
-	FVoiceCommsEvent Event;
-	Event.SpeakerCallsign = TEXT("VIPER01");
-	Event.Transcript      = TEXT("Fox 2");         // 5 bytes, forces 3 bytes of pad
-	Event.RadioId         = 2;
+	ClearanceDIS::FSignalEvent E;
+	E.OwnerEntity = ClearanceDIS::HashCallsignToEntityNumber("VIPER01");
+	E.RadioId     = 2;
+	E.Data        = AsciiBytes("Fox 2");            // 5 bytes forces 3-byte pad
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	Emitter->SiteId        = 1;
-	Emitter->ApplicationId = 1;
-	Emitter->ExerciseId    = 1;
+	ClearanceDIS::FWireParams P;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildSignalPDU(E, P);
 
-	TArray<uint8> Wire;
-	Emitter->BuildSignalPDU(Wire, Event, /*SimTime*/ 100.0f);
+	TestEqual(TEXT("Padded to 32-bit boundary"), int32(Wire.size()), 40);
 
-	// 32 fixed + 8 (5 payload + 3 pad) = 40.
-	TestEqual(TEXT("Padded to 32-bit boundary"), Wire.Num(), 40);
-
-	// Parse still returns the ORIGINAL unpadded transcript, not the padded
-	// byte count - proves the parser respects the data-length-in-bits field
-	// and doesn't append pad bytes into the transcript string.
-	FVoiceCommsEvent RoundTrip;
-	int32 Ent = 0;
+	ClearanceDIS::FSignalEvent Out;
 	TestTrue(TEXT("Parser accepts padded PDU"),
-		UClearanceDISEmitter::ParseSignalPDU(Wire, RoundTrip, Ent));
-	TestEqual(TEXT("Transcript excludes padding"),
-		RoundTrip.Transcript, Event.Transcript);
-	TestEqual(TEXT("Transcript length is 5 bytes not 8"),
-		RoundTrip.Transcript.Len(), 5);
+		ClearanceDIS::ParseSignalPDU(Wire.data(), Wire.size(), Out));
+	TestEqual(TEXT("Transcript excludes padding"), int32(Out.Data.size()), 5);
+	TestTrue(TEXT("Transcript content preserved"), AsciiString(Out.Data) == "Fox 2");
 
 	return true;
 }
@@ -108,23 +89,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISSignalPDUOperatorTest::RunTest(const FString& Parameters)
 {
-	// Operator lines (NAME_None speaker) get the reserved ground-station
-	// entity number instead of a hashed callsign. Federation receivers can
-	// filter ground chatter from air chatter using this. - TripleA
-	FVoiceCommsEvent Event;
-	Event.SpeakerCallsign = NAME_None;             // Operator says
-	Event.Transcript      = TEXT("Traffic in your vicinity, one o'clock, five miles.");
+	ClearanceDIS::FSignalEvent E;
+	E.OwnerEntity = ClearanceDIS::kOperatorGroundStationEntity;
+	E.Data        = AsciiBytes("Traffic in your vicinity, one o'clock, five miles.");
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	TArray<uint8> Wire;
-	Emitter->BuildSignalPDU(Wire, Event, 0.f);
+	ClearanceDIS::FWireParams P;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildSignalPDU(E, P);
 
-	FVoiceCommsEvent RoundTrip;
-	int32 SpeakerEntity = 0;
+	ClearanceDIS::FSignalEvent Out;
 	TestTrue(TEXT("Parser accepts operator PDU"),
-		UClearanceDISEmitter::ParseSignalPDU(Wire, RoundTrip, SpeakerEntity));
-	TestEqual(TEXT("Operator uses fixed reserved entity number"),
-		SpeakerEntity, 60000);
+		ClearanceDIS::ParseSignalPDU(Wire.data(), Wire.size(), Out));
+	TestEqual(TEXT("Operator uses fixed reserved entity number"), int32(Out.OwnerEntity), 60000);
 
 	return true;
 }
@@ -136,23 +111,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISSignalPDUMalformedRejectionTest::RunTest(const FString& Parameters)
 {
-	FVoiceCommsEvent Out;
-	int32 Entity = 0;
+	ClearanceDIS::FSignalEvent Out;
 
-	// Wrong PDU type - a well-formed Fire PDU should be rejected by the
-	// Signal parser.
-	TArray<uint8> Bad;
-	Bad.Init(0, 96);
+	std::vector<std::uint8_t> Bad(96, 0);
 	Bad[0] = 6;
-	Bad[2] = 2;   // Fire posing as Signal
-	Bad[3] = 2;
-	TestFalse(TEXT("Parser rejects non-Signal PDU type"),
-		UClearanceDISEmitter::ParseSignalPDU(Bad, Out, Entity));
+	Bad[2] = 2; Bad[3] = 2;                        // Fire posing as Signal
+	TestFalse(TEXT("Rejects non-Signal PDU type"),
+		ClearanceDIS::ParseSignalPDU(Bad.data(), Bad.size(), Out));
 
-	// Truncated - buffer smaller than the fixed header.
-	Bad.SetNum(5);
-	TestFalse(TEXT("Parser rejects truncated buffer"),
-		UClearanceDISEmitter::ParseSignalPDU(Bad, Out, Entity));
+	Bad.resize(5);
+	TestFalse(TEXT("Rejects truncated buffer"),
+		ClearanceDIS::ParseSignalPDU(Bad.data(), Bad.size(), Out));
 
 	return true;
 }

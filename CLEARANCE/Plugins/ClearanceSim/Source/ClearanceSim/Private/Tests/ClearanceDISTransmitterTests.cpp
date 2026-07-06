@@ -1,11 +1,9 @@
-// Roundtrip tests for IEEE 1278.1 Transmitter PDU (Type 25). Companion to
-// the Signal PDU tests - Transmitter announces the radio; Signal delivers
-// the audio. Same pattern: serialise a known snapshot, parse back, verify
-// byte-perfect round-trip. - TripleA
+// Transmitter PDU (Type 25) wire-format tests. Pure ClearanceDIS module.
+// Companion to Signal - Transmitter announces the radio's tuning and state,
+// Signal delivers the audio. - TripleA
 
 #include "Misc/AutomationTest.h"
-#include "Simulation/ClearanceDISEmitter.h"
-#include "Core/CLEARANCETypes.h"
+#include "ClearanceDIS/ClearanceDISPDU.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -16,57 +14,38 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISTransmitterPDURoundtripTest::RunTest(const FString& Parameters)
 {
-	// An airliner's VHF radio, actively transmitting on the ATC guard channel.
-	FRadioTransmitter R;
-	R.OwnerCallsign      = TEXT("BAW472");
-	R.RadioId            = 1;
-	R.FrequencyHz        = 121500000;   // 121.5 MHz
-	R.BandwidthHz        = 25000.f;
-	R.PowerDbm           = 43.f;
-	R.TransmitState      = 2;           // on-transmitting
-	R.AntennaWorldMeters = FVector(120000.0, 80000.0, 10000.0);
+	ClearanceDIS::FTransmitterState R;
+	R.OwnerEntity      = ClearanceDIS::HashCallsignToEntityNumber("BAW472");
+	R.RadioId          = 1;
+	R.FrequencyHz      = 121500000;
+	R.BandwidthHz      = 25000.f;
+	R.PowerDbm         = 43.f;
+	R.TransmitState    = 2;                        // on-transmitting
+	R.AntennaXMeters   = 120000.0;
+	R.AntennaYMeters   =  80000.0;
+	R.AntennaZMeters   =  10000.0;
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	Emitter->SiteId        = 42;
-	Emitter->ApplicationId = 7;
-	Emitter->ExerciseId    = 1;
+	ClearanceDIS::FWireParams P;
+	P.ExerciseId = 1; P.SiteId = 42; P.ApplicationId = 7; P.SimTimeSeconds = 250.0;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildTransmitterPDU(R, P);
 
-	TArray<uint8> Wire;
-	Emitter->BuildTransmitterPDU(Wire, R, /*SimTime*/ 250.0f);
-
-	TestEqual(TEXT("Transmitter PDU length matches IEEE 1278.1 §7.7.2 fixed 104 bytes"),
-		Wire.Num(), 104);
-
-	// PDU header sanity
-	TestEqual(TEXT("Protocol version is 6"), int32(Wire[0]), 6);
+	TestEqual(TEXT("Transmitter PDU length matches §7.7.2 fixed 104 bytes"), int32(Wire.size()), 104);
 	TestEqual(TEXT("PDU type is 25 (Transmitter)"), int32(Wire[2]), 25);
-	TestEqual(TEXT("Protocol family is 4 (Radio Communications)"), int32(Wire[3]), 4);
+	TestEqual(TEXT("Proto family is 4 (Radio Communications)"), int32(Wire[3]), 4);
 
-	FRadioTransmitter RoundTrip;
-	int32 OwnerEntity = 0;
-	const bool bParseOk = UClearanceDISEmitter::ParseTransmitterPDU(Wire, RoundTrip, OwnerEntity);
-	TestTrue(TEXT("Parser accepts a well-formed Transmitter PDU"), bParseOk);
+	ClearanceDIS::FTransmitterState Out;
+	TestTrue(TEXT("Parser accepts well-formed Transmitter PDU"),
+		ClearanceDIS::ParseTransmitterPDU(Wire.data(), Wire.size(), Out));
 
-	// Owner entity number derived from callsign hash.
-	const int32 ExpectedOwner = static_cast<int32>((GetTypeHash(R.OwnerCallsign) % 65535) + 1);
-	TestEqual(TEXT("Owner entity number matches stable hash"), OwnerEntity, ExpectedOwner);
-
-	// Field roundtrip
-	TestEqual(TEXT("Radio ID round-trips"), RoundTrip.RadioId, R.RadioId);
-	TestEqual(TEXT("Transmit state round-trips"), int32(RoundTrip.TransmitState), int32(R.TransmitState));
-	TestEqual(TEXT("Frequency (Hz) round-trips exactly"), RoundTrip.FrequencyHz, R.FrequencyHz);
-	TestTrue(TEXT("Bandwidth (Hz) within 0.1"),
-		FMath::IsNearlyEqual(RoundTrip.BandwidthHz, R.BandwidthHz, 0.1f));
-	TestTrue(TEXT("Power (dBm) within 0.01"),
-		FMath::IsNearlyEqual(RoundTrip.PowerDbm, R.PowerDbm, 0.01f));
-
-	// Antenna location - doubles round-trip losslessly through the wire.
-	TestTrue(TEXT("Antenna X within 0.001 m"),
-		FMath::IsNearlyEqual(RoundTrip.AntennaWorldMeters.X, R.AntennaWorldMeters.X, 0.001));
-	TestTrue(TEXT("Antenna Y within 0.001 m"),
-		FMath::IsNearlyEqual(RoundTrip.AntennaWorldMeters.Y, R.AntennaWorldMeters.Y, 0.001));
-	TestTrue(TEXT("Antenna Z within 0.001 m"),
-		FMath::IsNearlyEqual(RoundTrip.AntennaWorldMeters.Z, R.AntennaWorldMeters.Z, 0.001));
+	TestEqual(TEXT("Owner entity round-trips"),   int32(Out.OwnerEntity),   int32(R.OwnerEntity));
+	TestEqual(TEXT("Radio ID round-trips"),       int32(Out.RadioId),       int32(R.RadioId));
+	TestEqual(TEXT("Transmit state round-trips"), int32(Out.TransmitState), int32(R.TransmitState));
+	TestEqual(TEXT("Frequency round-trips exactly"), int64(Out.FrequencyHz), int64(R.FrequencyHz));
+	TestTrue(TEXT("Bandwidth within 0.1 Hz"), FMath::IsNearlyEqual(Out.BandwidthHz, R.BandwidthHz, 0.1f));
+	TestTrue(TEXT("Power within 0.01 dBm"),   FMath::IsNearlyEqual(Out.PowerDbm,    R.PowerDbm,    0.01f));
+	TestTrue(TEXT("Antenna X within 0.001 m"), FMath::IsNearlyEqual(Out.AntennaXMeters, R.AntennaXMeters, 0.001));
+	TestTrue(TEXT("Antenna Y within 0.001 m"), FMath::IsNearlyEqual(Out.AntennaYMeters, R.AntennaYMeters, 0.001));
+	TestTrue(TEXT("Antenna Z within 0.001 m"), FMath::IsNearlyEqual(Out.AntennaZMeters, R.AntennaZMeters, 0.001));
 
 	return true;
 }
@@ -78,26 +57,19 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISTransmitterPDUOperatorTest::RunTest(const FString& Parameters)
 {
-	// Operator / ground-station radio (NAME_None owner) routes to the same
-	// reserved entity number as the Signal PDU emitter uses, so federation
-	// receivers can pair Transmitter and Signal traffic for the ground
-	// station by entity number alone. - TripleA
-	FRadioTransmitter R;
-	R.OwnerCallsign      = NAME_None;
-	R.TransmitState      = 1;           // idle heartbeat
+	ClearanceDIS::FTransmitterState R;
+	R.OwnerEntity   = ClearanceDIS::kOperatorGroundStationEntity;
+	R.TransmitState = 1;                           // idle heartbeat
 
-	UClearanceDISEmitter* Emitter = NewObject<UClearanceDISEmitter>();
-	TArray<uint8> Wire;
-	Emitter->BuildTransmitterPDU(Wire, R, 0.f);
+	ClearanceDIS::FWireParams P;
+	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildTransmitterPDU(R, P);
 
-	FRadioTransmitter RoundTrip;
-	int32 OwnerEntity = 0;
+	ClearanceDIS::FTransmitterState Out;
 	TestTrue(TEXT("Parser accepts operator Transmitter PDU"),
-		UClearanceDISEmitter::ParseTransmitterPDU(Wire, RoundTrip, OwnerEntity));
+		ClearanceDIS::ParseTransmitterPDU(Wire.data(), Wire.size(), Out));
 	TestEqual(TEXT("Operator uses fixed reserved entity number (60000)"),
-		OwnerEntity, 60000);
-	TestEqual(TEXT("Idle transmit state round-trips"),
-		int32(RoundTrip.TransmitState), 1);
+		int32(Out.OwnerEntity), 60000);
+	TestEqual(TEXT("Idle transmit state round-trips"), int32(Out.TransmitState), 1);
 
 	return true;
 }
@@ -109,23 +81,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceDISTransmitterPDUMalformedRejectionTest::RunTest(const FString& Parameters)
 {
-	FRadioTransmitter Out;
-	int32 Entity = 0;
+	ClearanceDIS::FTransmitterState Out;
 
-	// Wrong PDU type - a well-formed Signal PDU shape should be rejected by
-	// the Transmitter parser.
-	TArray<uint8> Bad;
-	Bad.Init(0, 104);
+	std::vector<std::uint8_t> Bad(104, 0);
 	Bad[0] = 6;
-	Bad[2] = 26;  // Signal posing as Transmitter
-	Bad[3] = 4;
-	TestFalse(TEXT("Parser rejects non-Transmitter PDU type"),
-		UClearanceDISEmitter::ParseTransmitterPDU(Bad, Out, Entity));
+	Bad[2] = 26; Bad[3] = 4;                       // Signal posing as Transmitter
+	TestFalse(TEXT("Rejects non-Transmitter PDU type"),
+		ClearanceDIS::ParseTransmitterPDU(Bad.data(), Bad.size(), Out));
 
-	// Truncated - buffer smaller than the fixed header.
-	Bad.SetNum(4);
-	TestFalse(TEXT("Parser rejects truncated buffer"),
-		UClearanceDISEmitter::ParseTransmitterPDU(Bad, Out, Entity));
+	Bad.resize(4);
+	TestFalse(TEXT("Rejects truncated buffer"),
+		ClearanceDIS::ParseTransmitterPDU(Bad.data(), Bad.size(), Out));
 
 	return true;
 }

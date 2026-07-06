@@ -11,9 +11,10 @@ public class ClearanceSim : ModuleRules
 			"Core",
 			"CoreUObject",
 			"Engine",
-			"UMG",         // UUserWidget base class for the instructor panel
-			"Slate",       // FSlateApplication for the renderer resource handle (coverage gradients)
-			"SlateCore"    // FCanvasItem / FGeometry types the widget uses
+			"UMG",          // UUserWidget base class for the instructor panel
+			"Slate",        // FSlateApplication for the renderer resource handle (coverage gradients)
+			"SlateCore",    // FCanvasItem / FGeometry types the widget uses
+			"ClearanceDIS"  // Pure-C++ wire format for DIS PDU serialisation / parsing
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

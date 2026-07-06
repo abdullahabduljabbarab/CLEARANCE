@@ -1266,6 +1266,51 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		}
 		DISEmitter->EmitEmissions(Emissions, SessionTime);
 
+		// Publish a Transmitter PDU per active radio so a federation receiver
+		// knows who is on the air and can tune to their frequency before
+		// hearing the audio traffic carried by the Signal PDU. The transmit
+		// state is derived from PendingVoiceEvents: any owner with a pending
+		// voice line this tick is currently transmitting; everyone else is
+		// on-idle. Operator gets one heartbeat radio too. §7.7.2. - TripleA
+		{
+			TSet<FName> ActiveTransmitters;
+			bool bOperatorTransmitting = false;
+			for (const FVoiceCommsEvent& V : PendingVoiceEvents)
+			{
+				if (V.SpeakerCallsign.IsNone()) { bOperatorTransmitting = true; }
+				else                            { ActiveTransmitters.Add(V.SpeakerCallsign); }
+			}
+
+			TArray<FRadioTransmitter> Radios;
+			Radios.Reserve(AirspaceManager->GetAllAircraftStates().Num() + 1);
+			for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
+			{
+				if (!S.bIsValid) { continue; }
+				FRadioTransmitter R;
+				R.OwnerCallsign      = S.Callsign;
+				R.RadioId            = 1;
+				R.FrequencyHz        = 121500000;   // ATC guard channel default
+				R.BandwidthHz        = 25000.f;     // VHF AM airband spacing
+				R.PowerDbm           = 43.f;        // ~20 W typical airliner VHF
+				R.TransmitState      = ActiveTransmitters.Contains(S.Callsign) ? 2 : 1;
+				R.AntennaWorldMeters = FVector(S.Position.X * 1852.0, S.Position.Y * 1852.0, S.Altitude * 0.3048);
+				Radios.Add(MoveTemp(R));
+			}
+			// Operator / ground-station heartbeat.
+			{
+				FRadioTransmitter R;
+				R.OwnerCallsign      = NAME_None;
+				R.RadioId            = 1;
+				R.FrequencyHz        = 121500000;
+				R.BandwidthHz        = 25000.f;
+				R.PowerDbm           = 50.f;        // 100 W tower transmitter
+				R.TransmitState      = bOperatorTransmitting ? 2 : 1;
+				R.AntennaWorldMeters = FVector::ZeroVector;   // sector centre
+				Radios.Add(MoveTemp(R));
+			}
+			DISEmitter->EmitTransmitters(Radios, SessionTime);
+		}
+
 		// Drain queued Fire + Detonation events. Sim event points (scramble
 		// launch, intercept resolution) enqueue into these buffers; the DIS
 		// tick publishes them all in one batch. - TripleA

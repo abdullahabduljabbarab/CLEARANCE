@@ -69,6 +69,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "DIS")
 	void EmitVoiceEvents(const TArray<FVoiceCommsEvent>& Events, float SimTimeSeconds);
 
+	// Build a Transmitter PDU (Type 25, Radio Communications family) per
+	// active radio and fire it out. Announces the radio's frequency, power,
+	// modulation, and current transmit state so a federation receiver can
+	// tune before hearing the audio traffic carried by the Signal PDU. This
+	// is the heartbeat companion to Signal - Transmitter says "there is a
+	// radio here doing X"; Signal says "here's the actual bytes on it".
+	// §7.7.2 IEEE 1278.1. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "DIS")
+	void EmitTransmitters(const TArray<FRadioTransmitter>& Transmitters, float SimTimeSeconds);
+
 	// Public for test-suite access. The runtime path is through EmitEmissions
 	// which fires each Buf out over the wire; this variant is exposed so the
 	// automation tests can verify byte-level format without a socket. - TripleA
@@ -78,6 +88,7 @@ public:
 	void BuildFirePDU(TArray<uint8>& Out, const FWeaponsFireEvent& Event, float SimTimeSeconds) const;
 	void BuildDetonationPDU(TArray<uint8>& Out, const FWeaponsDetonationEvent& Event, float SimTimeSeconds) const;
 	void BuildSignalPDU(TArray<uint8>& Out, const FVoiceCommsEvent& Event, float SimTimeSeconds) const;
+	void BuildTransmitterPDU(TArray<uint8>& Out, const FRadioTransmitter& Radio, float SimTimeSeconds) const;
 
 	// Standard DIS site / app / exercise identifiers - tells a federation who you are.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DIS|Identity")
@@ -119,6 +130,12 @@ public:
 	// the raw-binary data block. - TripleA
 	static bool ParseSignalPDU(const TArray<uint8>& In, FVoiceCommsEvent& Out,
 		int32& OutSpeakerEntity);
+
+	// Parser for Transmitter PDU (Type 25). OutOwnerEntity is the entity
+	// number the owner was hashed to; frequency / bandwidth / power / state /
+	// antenna location roundtrip through Out. - TripleA
+	static bool ParseTransmitterPDU(const TArray<uint8>& In, FRadioTransmitter& Out,
+		int32& OutOwnerEntity);
 
 private:
 	// Big-endian writers - DIS is network byte order. - TripleA

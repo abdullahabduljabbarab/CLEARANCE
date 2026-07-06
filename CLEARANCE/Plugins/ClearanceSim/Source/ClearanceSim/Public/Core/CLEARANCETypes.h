@@ -674,6 +674,42 @@ struct CLEARANCESIM_API FVoiceCommsEvent
 	UPROPERTY(BlueprintReadOnly) int64 FrequencyHz = 121500000;
 };
 
+/** Snapshot of a single radio's current state, handed to the DIS emitter for
+ * building a Transmitter PDU (Type 25). Announces "I have a radio at this
+ * position on this frequency, currently in this transmit state". Federation
+ * observers use this to discover who's on the air and what to tune to
+ * before hearing the actual traffic on the paired Signal PDU. §7.7.2. - TripleA */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FRadioTransmitter
+{
+	GENERATED_BODY()
+
+	// Radio owner. NAME_None => operator / ground station.
+	UPROPERTY(BlueprintReadOnly) FName OwnerCallsign;
+
+	// Which radio on the entity (1 = primary).
+	UPROPERTY(BlueprintReadOnly) int32 RadioId = 1;
+
+	// Carrier frequency in Hz. 121.500 MHz = international ATC guard channel.
+	UPROPERTY(BlueprintReadOnly) int64 FrequencyHz = 121500000;
+
+	// Channel bandwidth in Hz. 25 kHz = VHF AM airband spacing.
+	UPROPERTY(BlueprintReadOnly) float BandwidthHz = 25000.f;
+
+	// Transmit power in decibel-milliwatts (dBm). 40 dBm = 10 W typical for
+	// tower / handheld radios; airliner VHF is ~35-45 dBm.
+	UPROPERTY(BlueprintReadOnly) float PowerDbm = 40.f;
+
+	// Transmit state per §7.7.2.6: 0 = off, 1 = on-not-transmitting,
+	// 2 = on-transmitting. Set to 2 for one tick when a voice line fires
+	// for this radio, otherwise 1 (on-idle heartbeat).
+	UPROPERTY(BlueprintReadOnly) uint8 TransmitState = 1;
+
+	// World position of the antenna, ECEF metres. Aircraft radios report the
+	// aircraft position; ground stations report their fixed location.
+	UPROPERTY(BlueprintReadOnly) FVector AntennaWorldMeters = FVector::ZeroVector;
+};
+
 /** One snapshot of the whole sector at a moment in time, captured by the recorder. */
 USTRUCT(BlueprintType)
 struct CLEARANCESIM_API FRecordedSnapshot

@@ -1000,3 +1000,229 @@ bool UClearanceDISEmitter::ParseSignalPDU(const TArray<uint8>& In, FVoiceCommsEv
 
 	return bOk;
 }
+
+// ============================================================================
+// Transmitter PDU (Type 25) - IEEE 1278.1 §7.7.2. "There is a radio at this
+// location on this frequency in this transmit state." The heartbeat side of
+// Radio Communications - a federation observer uses these to build a picture
+// of who is on the air and what to tune to, before the paired Signal PDU
+// delivers the actual bytes. - TripleA
+// ============================================================================
+
+namespace
+{
+	// Reserved entity for operator / ground-station radios - kept in sync with
+	// the same reservation the Signal PDU emitter uses so both PDU streams
+	// route the same physical radio to the same federation entity. - TripleA
+	constexpr uint16 kOperatorRadioEntity = 60000;
+}
+
+void UClearanceDISEmitter::EmitTransmitters(const TArray<FRadioTransmitter>& Transmitters, float SimTimeSeconds)
+{
+	if (!Socket || !TargetAddr.IsValid()) { return; }
+
+	TArray<uint8> Buf;
+	Buf.Reserve(128);
+
+	for (const FRadioTransmitter& R : Transmitters)
+	{
+		Buf.Reset();
+		BuildTransmitterPDU(Buf, R, SimTimeSeconds);
+		int32 Sent = 0;
+		if (Socket->SendTo(Buf.GetData(), Buf.Num(), Sent, *TargetAddr) && Sent > 0)
+		{
+			++LastPacketsSent;
+		}
+	}
+}
+
+void UClearanceDISEmitter::BuildTransmitterPDU(TArray<uint8>& Out, const FRadioTransmitter& R, float SimTimeSeconds) const
+{
+	const uint16 OwnerEntity = R.OwnerCallsign.IsNone()
+		? kOperatorRadioEntity
+		: static_cast<uint16>((GetTypeHash(R.OwnerCallsign) % 65535) + 1);
+
+	// Fixed PDU length - Transmitter PDU §7.7.2 table 7-14 is 104 bytes when
+	// modulation parameters + antenna pattern data are both empty (which is
+	// the standard VHF AM airband case). - TripleA
+	const uint16 PduLength = 104;
+
+	const double SecondsInHour = FMath::Fmod(static_cast<double>(SimTimeSeconds), 3600.0);
+	const uint32 DISTimestamp = static_cast<uint32>((SecondsInHour * (2147483648.0 / 3600.0))) & 0xFFFFFFFE;
+
+	// ---- PDU Header (12 bytes) ----
+	WriteU8(Out, 6);                              // Protocol version
+	WriteU8(Out, static_cast<uint8>(ExerciseId));
+	WriteU8(Out, 25);                             // PDU type 25 = Transmitter
+	WriteU8(Out, 4);                              // Protocol family 4 = Radio Communications
+	WriteU32BE(Out, DISTimestamp);
+	WriteU16BE(Out, PduLength);
+	WriteU16BE(Out, 0);                           // padding
+
+	// ---- Radio Reference ID (6 bytes) ----
+	WriteU16BE(Out, static_cast<uint16>(SiteId));
+	WriteU16BE(Out, static_cast<uint16>(ApplicationId));
+	WriteU16BE(Out, OwnerEntity);
+
+	// ---- Radio ID (2 bytes) ----
+	WriteU16BE(Out, static_cast<uint16>(R.RadioId));
+
+	// ---- Radio Entity Type (8 bytes) - Kind + Domain + Country + 4 x 1-byte
+	// classifiers per Annex A. Kind 7 = Radio, Domain 2 = Air, Country 225 =
+	// US, Category 5 = VHF/UHF radio. Zero for the fine-grained subfields. ---
+	WriteU8(Out, 7);                              // Kind = Radio
+	WriteU8(Out, 2);                              // Domain = Air
+	WriteU16BE(Out, 225);                         // Country = US
+	WriteU8(Out, 5);                              // Category = VHF/UHF
+	WriteU8(Out, 0);                              // Subcategory
+	WriteU8(Out, 0);                              // Specific
+	WriteU8(Out, 0);                              // Extra
+
+	// ---- Transmit State (1 byte) - §7.7.2.6 ----
+	WriteU8(Out, R.TransmitState);
+
+	// ---- Input Source (1 byte) - §7.7.2.7. 1 = Pilot. ----
+	WriteU8(Out, 1);
+
+	// ---- Padding (2 bytes) ----
+	WriteU16BE(Out, 0);
+
+	// ---- Antenna Location in World Coordinates (24 bytes) - 3 x double ECEF ---
+	WriteDoubleBE(Out, R.AntennaWorldMeters.X);
+	WriteDoubleBE(Out, R.AntennaWorldMeters.Y);
+	WriteDoubleBE(Out, R.AntennaWorldMeters.Z);
+
+	// ---- Relative Antenna Location (12 bytes) - 3 x float, relative to
+	// entity origin. Zero for CLEARANCE - we treat the antenna as at the
+	// aircraft's reference point. - TripleA
+	WriteFloatBE(Out, 0.f);
+	WriteFloatBE(Out, 0.f);
+	WriteFloatBE(Out, 0.f);
+
+	// ---- Antenna Pattern Type (2 bytes) - 0 = Omni-directional. §7.7.2.10 ---
+	WriteU16BE(Out, 0);
+
+	// ---- Antenna Pattern Parameter Length (2 bytes) - 0 = no params. ----
+	WriteU16BE(Out, 0);
+
+	// ---- Frequency (8 bytes) - uint64, in Hz. §7.7.2.12 ----
+	{
+		const uint64 F = static_cast<uint64>(R.FrequencyHz);
+		for (int32 i = 7; i >= 0; --i) { WriteU8(Out, static_cast<uint8>((F >> (i * 8)) & 0xFF)); }
+	}
+
+	// ---- Transmit Frequency Bandwidth (4 bytes) - float, Hz. §7.7.2.13 ----
+	WriteFloatBE(Out, R.BandwidthHz);
+
+	// ---- Power (4 bytes) - float, dBm. §7.7.2.14 ----
+	WriteFloatBE(Out, R.PowerDbm);
+
+	// ---- Modulation Type (8 bytes) - 4 x uint16 per §7.7.2.15:
+	// Spread Spectrum = 0, Major Modulation = 2 (Amplitude), Detail = 2 (AM),
+	// System = 1 (Generic). Standard VHF AM airband profile. - TripleA
+	WriteU16BE(Out, 0);                           // Spread Spectrum
+	WriteU16BE(Out, 2);                           // Major Modulation = Amplitude
+	WriteU16BE(Out, 2);                           // Detail = AM
+	WriteU16BE(Out, 1);                           // System = Generic
+
+	// ---- Crypto System (2 bytes) - 0 = No Encryption. §7.7.2.16 ----
+	WriteU16BE(Out, 0);
+
+	// ---- Crypto Key ID (2 bytes) - unused when crypto system is 0. ----
+	WriteU16BE(Out, 0);
+
+	// ---- Modulation Parameter Length (1 byte) - 0 = no params. ----
+	WriteU8(Out, 0);
+
+	// ---- Padding3 (3 bytes) to reach the 32-bit boundary before optional
+	// variable data. Even with zero variable data we still pad here per
+	// §7.7.2 table 7-14. - TripleA
+	WriteU8(Out, 0);
+	WriteU16BE(Out, 0);
+}
+
+bool UClearanceDISEmitter::ParseTransmitterPDU(const TArray<uint8>& In, FRadioTransmitter& Out,
+	int32& OutOwnerEntity)
+{
+	int32 Cursor = 0;
+	bool bOk = true;
+
+	// Header
+	const uint8 ProtoVersion = ReadU8(In, Cursor, bOk);
+	(void)ReadU8(In, Cursor, bOk);                // Exercise
+	const uint8 PduType      = ReadU8(In, Cursor, bOk);
+	const uint8 ProtoFamily  = ReadU8(In, Cursor, bOk);
+	(void)ReadU32BE(In, Cursor, bOk);             // Timestamp
+	const uint16 PduLength   = ReadU16BE(In, Cursor, bOk);
+	(void)ReadU16BE(In, Cursor, bOk);             // padding
+	if (!bOk || ProtoVersion == 0 || PduType != 25 || ProtoFamily != 4) { return false; }
+	if (PduLength != static_cast<uint16>(In.Num())) { return false; }
+
+	// Radio Reference ID
+	(void)ReadU16BE(In, Cursor, bOk);
+	(void)ReadU16BE(In, Cursor, bOk);
+	OutOwnerEntity = ReadU16BE(In, Cursor, bOk);
+
+	// Radio ID
+	Out.RadioId = ReadU16BE(In, Cursor, bOk);
+
+	// Radio Entity Type (skip - fixed profile)
+	for (int32 i = 0; i < 8; ++i) { (void)ReadU8(In, Cursor, bOk); }
+
+	// Transmit State + Input Source + padding
+	Out.TransmitState = ReadU8(In, Cursor, bOk);
+	(void)ReadU8(In, Cursor, bOk);                // Input Source
+	(void)ReadU16BE(In, Cursor, bOk);             // padding
+
+	// Antenna Location (3 doubles) - inline reader, matches Fire PDU parser
+	auto ReadDoubleBE = [&](int32& Cur, bool& Ok)
+	{
+		if (Cur + 8 > In.Num()) { Ok = false; return 0.0; }
+		uint64 Bits = 0;
+		for (int32 i = 0; i < 8; ++i) { Bits = (Bits << 8) | uint64(In[Cur + i]); }
+		Cur += 8;
+		double V = 0.0;
+		FMemory::Memcpy(&V, &Bits, sizeof(V));
+		return V;
+	};
+	const double AX = ReadDoubleBE(Cursor, bOk);
+	const double AY = ReadDoubleBE(Cursor, bOk);
+	const double AZ = ReadDoubleBE(Cursor, bOk);
+	Out.AntennaWorldMeters = FVector(AX, AY, AZ);
+
+	// Relative Antenna Location (skip)
+	(void)ReadFloatBE(In, Cursor, bOk);
+	(void)ReadFloatBE(In, Cursor, bOk);
+	(void)ReadFloatBE(In, Cursor, bOk);
+
+	// Antenna Pattern Type + Pattern Length (skip)
+	(void)ReadU16BE(In, Cursor, bOk);
+	(void)ReadU16BE(In, Cursor, bOk);
+
+	// Frequency (8-byte uint64 BE)
+	{
+		if (Cursor + 8 > In.Num()) { return false; }
+		uint64 F = 0;
+		for (int32 i = 0; i < 8; ++i) { F = (F << 8) | uint64(In[Cursor + i]); }
+		Cursor += 8;
+		Out.FrequencyHz = static_cast<int64>(F);
+	}
+
+	// Bandwidth + Power
+	Out.BandwidthHz = ReadFloatBE(In, Cursor, bOk);
+	Out.PowerDbm    = ReadFloatBE(In, Cursor, bOk);
+
+	// Modulation Type (skip)
+	for (int32 i = 0; i < 4; ++i) { (void)ReadU16BE(In, Cursor, bOk); }
+
+	// Crypto System + Key (skip)
+	(void)ReadU16BE(In, Cursor, bOk);
+	(void)ReadU16BE(In, Cursor, bOk);
+
+	// Modulation Parameter Length + padding
+	(void)ReadU8(In, Cursor, bOk);
+	(void)ReadU8(In, Cursor, bOk);
+	(void)ReadU16BE(In, Cursor, bOk);
+
+	return bOk;
+}

@@ -85,6 +85,22 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectResetScenario();
 
+	// DIS federation controls - join / leave a live IEEE 1278 federation.
+	// Emit broadcasts local aircraft; Recv pulls entities from external
+	// simulators into the airspace. Instructor UI drives these instead
+	// of the console. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DIS")
+	void Server_InjectStartDISEmit(const FString& Host, int32 Port);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DIS")
+	void Server_InjectStopDISEmit();
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DIS")
+	void Server_InjectStartDISRecv(int32 Port);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DIS")
+	void Server_InjectStopDISRecv();
+
 	// Replay control: client UI fires these so the SERVER's controller flips
 	// into replay mode and poses the world to the recording. The server then
 	// replicates the airspace back so the client sees the scrubbed traffic. - TripleA

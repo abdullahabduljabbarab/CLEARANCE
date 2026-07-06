@@ -6,6 +6,8 @@
 #include "Airspace/ClearanceWaypoint.h"
 #include "Safety/ClearanceRadarSite.h"
 #include "Safety/ClearanceRadar.h"
+#include "Simulation/ClearanceDISEmitter.h"
+#include "Simulation/ClearanceDISReceiver.h"
 #include "Scenario/ClearanceScenarioRunner.h"
 #include "Components/ScrollBox.h"
 #include "Components/Image.h"
@@ -648,6 +650,132 @@ TArray<FClearanceNotification> UClearanceInstructorPanel::GetRecentNotifications
 	return Out;
 }
 
+bool UClearanceInstructorPanel::IsDISEmitting() const
+{
+	if (!CachedController || !CachedController->GetDISEmitter()) { return false; }
+	return CachedController->GetDISEmitter()->IsRunning();
+}
+
+bool UClearanceInstructorPanel::IsDISReceiving() const
+{
+	if (!CachedController || !CachedController->GetDISReceiver()) { return false; }
+	return CachedController->GetDISReceiver()->IsRunning();
+}
+
+int32 UClearanceInstructorPanel::GetDISPacketsSent() const
+{
+	if (!CachedController || !CachedController->GetDISEmitter()) { return 0; }
+	return CachedController->GetDISEmitter()->GetLastPacketsSent();
+}
+
+int32 UClearanceInstructorPanel::GetDISPacketsReceived() const
+{
+	if (!CachedController || !CachedController->GetDISReceiver()) { return 0; }
+	return CachedController->GetDISReceiver()->GetLastPacketsReceived();
+}
+
+namespace
+{
+	// Convert the manual's simple markdown-ish markers to RichTextBlock tags:
+	//   **bold**    -> <Bold>bold</>
+	//   `code`      -> <Code>code</>
+	//   [UPPERCASE] -> <Accent>UPPERCASE</>  (only when the whole bracketed
+	//                  token is A-Z; lower-case [x] is left alone so it can
+	//                  be used as a literal placeholder)
+	// The style keys must exist in the RichTextBlock's DataTable
+	// (Default / Bold / Code / Accent) or they render as plain text. - TripleA
+	FString TransformManualMarkup(FString In)
+	{
+		// **bold** - non-greedy pair match. Simple state machine finds the
+		// left ** and the next ** on the same string.
+		while (true)
+		{
+			const int32 L = In.Find(TEXT("**"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 0);
+			if (L == INDEX_NONE) { break; }
+			const int32 R = In.Find(TEXT("**"), ESearchCase::CaseSensitive, ESearchDir::FromStart, L + 2);
+			if (R == INDEX_NONE) { break; }
+			const FString Inner = In.Mid(L + 2, R - L - 2);
+			In = In.Left(L) + TEXT("<Bold>") + Inner + TEXT("</>") + In.Mid(R + 2);
+		}
+
+		// `code` - single backticks
+		while (true)
+		{
+			const int32 L = In.Find(TEXT("`"), ESearchCase::CaseSensitive, ESearchDir::FromStart, 0);
+			if (L == INDEX_NONE) { break; }
+			const int32 R = In.Find(TEXT("`"), ESearchCase::CaseSensitive, ESearchDir::FromStart, L + 1);
+			if (R == INDEX_NONE) { break; }
+			const FString Inner = In.Mid(L + 1, R - L - 1);
+			In = In.Left(L) + TEXT("<Code>") + Inner + TEXT("</>") + In.Mid(R + 1);
+		}
+
+		// Semantic color markers - matched with paired 2-char sentinels chosen
+		// to be unambiguous vs prose. Order: green, yellow, red.
+		//   @@text@@ -> <Green>text</>   (positive / safe / confirmation)
+		//   !!text!! -> <Yellow>text</>  (caution / warning)
+		//   ~~text~~ -> <Red>text</>     (destructive / critical)
+		// - TripleA
+		auto ReplaceInlineTag = [](FString& S, const TCHAR* Marker, const TCHAR* OpenTag)
+		{
+			const int32 Ml = FCString::Strlen(Marker);
+			while (true)
+			{
+				const int32 L = S.Find(Marker, ESearchCase::CaseSensitive, ESearchDir::FromStart, 0);
+				if (L == INDEX_NONE) { break; }
+				const int32 R = S.Find(Marker, ESearchCase::CaseSensitive, ESearchDir::FromStart, L + Ml);
+				if (R == INDEX_NONE) { break; }
+				const FString Inner = S.Mid(L + Ml, R - L - Ml);
+				S = S.Left(L) + OpenTag + Inner + TEXT("</>") + S.Mid(R + Ml);
+			}
+		};
+		ReplaceInlineTag(In, TEXT("@@"), TEXT("<Green>"));
+		ReplaceInlineTag(In, TEXT("!!"), TEXT("<Yellow>"));
+		ReplaceInlineTag(In, TEXT("~~"), TEXT("<Red>"));
+
+		// [UPPERCASE] - fully-uppercase bracketed tokens tinted as accent
+		// (button names like [SCRAMBLE], [RESET SCENARIO]). Space + digits
+		// permitted; lower-case letters disqualify the match so BP-side
+		// literals stay literal.
+		FString Out;
+		Out.Reserve(In.Len() + 32);
+		int32 i = 0;
+		const int32 N = In.Len();
+		while (i < N)
+		{
+			const TCHAR c = In[i];
+			if (c == TEXT('['))
+			{
+				int32 j = i + 1;
+				bool bAllUpper = j < N;
+				while (j < N && In[j] != TEXT(']'))
+				{
+					const TCHAR d = In[j];
+					const bool bOk = (d >= TEXT('A') && d <= TEXT('Z'))
+					              || (d >= TEXT('0') && d <= TEXT('9'))
+					              || d == TEXT(' ')
+					              || d == TEXT('+')
+					              || d == TEXT('/')
+					              || d == TEXT('-');
+					if (!bOk) { bAllUpper = false; break; }
+					++j;
+				}
+				if (bAllUpper && j < N && In[j] == TEXT(']') && (j - i) > 1)
+				{
+					const FString Inner = In.Mid(i + 1, j - i - 1);
+					Out += TEXT("<Accent>");
+					Out += Inner;
+					Out += TEXT("</>");
+					i = j + 1;
+					continue;
+				}
+			}
+			Out.AppendChar(c);
+			++i;
+		}
+		return Out;
+	}
+}
+
 TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 {
 	auto Make = [](const TCHAR* Anchor, const TCHAR* Title, const TCHAR* Body)
@@ -655,7 +783,7 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		FManualSection S;
 		S.Anchor = Anchor;
 		S.Title  = Title;
-		S.Body   = Body;
+		S.Body   = TransformManualMarkup(FString(Body));
 		return S;
 	};
 
@@ -663,11 +791,11 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 
 	Sections.Add(Make(TEXT("overview"), TEXT("Overview"),
 		TEXT("The instructor station is a single-window control surface with three primary tabs plus this **MANUAL** reference.\n\n"
-		"[TRUTH SCOPE] shows god-view radar with every aircraft visible regardless of what the trainee sees - the instructor's picture of ground truth.\n\n"
-		"[CAMERA VIEW] gives live 3D observation of aircraft or airport across five modes: Overview / Tower / Chase / Approach / Operator.\n\n"
-		"[PERFORMANCE] is the real-time scoring dashboard, incident log, comms transcript, and AAR export.\n\n"
-		"The right-hand column persists across all tabs. It holds the inject controls: **EMERGENCY** / **THREAT CLASS** / **EW** (jamming / chaff / scramble) / **SECTOR CONTROLS** (scenarios / traffic) / **WIND** and the destructive-action buttons **SCRAMBLE**, **CLEAR ALL**, **RESET SCENARIO**.\n\n"
-		"The bottom row also persists: session controls ([PAUSE] / [SAVE] / [LOAD] / [DEL] checkpoint / speed) and replay scrub for reviewing past events without disrupting the live session.")));
+		"[SCOPE] shows god-view radar with every aircraft visible regardless of what the trainee sees - the instructor's picture of ground truth. Also shows the trainee scope [OPERATOR]\n\n"
+		"[CAMERAS] gives live 3D observation of aircraft or airport across five modes: Overview / Tower / Chase / Approach / Operator.\n\n"
+		"[AAR] is the real-time scoring dashboard, incident log, comms transcript, and After Action Report export.\n\n"
+		"The right-hand column persists across all tabs. It holds the inject controls: **EMERGENCY** / **THREAT CLASS** / **EW** (jamming / chaff / scramble) / **SECTOR CONTROLS** (scenarios / traffic) / **WIND** and the destructive-action buttons ~~SCRAMBLE~~, ~~CLEAR ALL~~, ~~RESET SCENARIO~~.\n\n"
+		"The top row also persists: session controls (!!PAUSE!! / @@SAVE@@ / [LOAD] / ~~DEL~~ checkpoint / speed) and bottom row replay scrub for reviewing past events without disrupting the live session.")));
 
 	Sections.Add(Make(TEXT("session"), TEXT("Session Lifecycle"),
 		TEXT("**Starting a fresh session**\n\n"
@@ -676,12 +804,12 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		"3. Set initial wind if the scenario requires non-default conditions. [APPLY WIND] commits.\n"
 		"4. [LOAD] the scenario to start from t=0. Otherwise leave the session in freeplay and inject manually.\n\n"
 		"**Pause and speed**\n\n"
-		"Pause via the [PAUSE] button in the SESSION row (bottom, amber-striped). Speed controls (`0.25x` through `4x`) time-dilate the live simulation - compress quiet stretches, slow down dense conflicts for teaching moments. Pause and speed apply to the LIVE simulation. Replay playback uses its own controls and does not affect the live session.\n\n"
+		"Pause via the !!PAUSE!! button in the SESSION row (top, amber-striped). Speed controls (`0.25x` through `4x`) time-dilate the live simulation - compress quiet stretches, slow down dense conflicts for teaching moments. Pause and speed apply to the LIVE simulation. Replay playback uses its own controls and does not affect the live session.\n\n"
 		"**Ending a session**\n\n"
-		"1. [STOP] the scenario if one is running.\n"
-		"2. Optional [CLEAR ALL] removes all live traffic without ending the session - useful between back-to-back exercises.\n"
-		"3. Switch to PERFORMANCE tab, click [EXPORT AAR]. Report is written to `<ProjectSavedDir>/Reports/Session_YYYYMMDD_HHMMSS.md`. The absolute path is announced in the event log.\n"
-		"4. [RESET SCENARIO] (top-right, red) wipes the entire session state - scores, transcript, checkpoints, live traffic. **Irreversible**. Use only between complete training days.")));
+		"1. !!STOP!! the scenario if one is running.\n"
+		"2. Optional ~~CLEAR ALL~~ removes all live traffic without ending the session - useful between back-to-back exercises.\n"
+		"3. Switch to AAR tab, click @@EXPORT AAR@@. Report is written to !!<ProjectSavedDir>/Reports/Session_YYYYMMDD_HHMMSS.md!!. The absolute path is announced in the event log.\n"
+		"4. ~~RESET SCENARIO~~ (sector controls, red) wipes the entire session state - scores, transcript, checkpoints, live traffic. **Irreversible**. Use only between complete training days.")));
 
 	Sections.Add(Make(TEXT("truth-scope"), TEXT("Truth Scope"),
 		TEXT("The truth scope shows the airspace as it really is - every aircraft, their true classification (friendly / hostile / neutral / unknown), their actual position and vector, without any operator-side degradation.\n\n"
@@ -724,19 +852,19 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		"- **Hijack (7500)** - hostile takeover. No countdown; needs SCRAMBLE authorization.\n"
 		"- **Fuel Emergency** - fuel-critical. Countdown default 5 minutes.\n\n"
 		"Fuel and Mayday carry crash countdowns. If the aircraft is not brought to safe landing before expiry, it crashes. Timer countdowns display on the aircraft row as `FUEL M:SS` or `MAYDAY M:SS` with color thresholds - red under 1 min, amber under 3 min.\n\n"
-		"The **timer input** next to the dropdown lets you override the default duration (0.5 to 30 min). Short timers for high-tempo panic training, long timers for gentle-training observation exercises. [CLEAR EMER] resolves the current emergency - squawk returns to 1200, timer stops.\n\n"
+		"The **timer input** next to the dropdown lets you override the default duration (0.5 to 30 min). Short timers for high-tempo panic training, long timers for gentle-training observation exercises. !!CLEAR EMER!! resolves the current emergency - squawk returns to 1200, timer stops.\n\n"
 		"**THREAT CLASS**\n\n"
 		"Instructor-side reclassification. [RECLASSIFY] commits. **Only affects the TRUE affiliation** (truth scope) - does NOT change the operator's view. The operator must independently classify via radar picture, IFF interrogation, and voice challenges. Instructor can flip a hidden hostile mid-session to test operator identification.\n\n"
 		"**EW - Electronic Warfare**\n\n"
-		"- [JAM ON] - selected aircraft begins EW jamming. Degrades radar confidence on all tracks in its jamming radius. Operator scope tracks fade.\n"
-		"- [JAM OFF] - cancels jamming.\n"
-		"- [DROP CHAFF] - releases chaff cloud. Radar paints ghost contacts around the aircraft's true position.\n\n"
-		"**SCRAMBLE** (red, destructive)\n\n"
+		"- !!JAM ON!! - selected aircraft begins EW jamming. Degrades radar confidence on all tracks in its jamming radius. Operator scope tracks fade.\n"
+		"- @@JAM OFF@@ - cancels jamming.\n"
+		"- !!DROP CHAFF!! - releases chaff cloud. Radar paints ghost contacts around the aircraft's true position.\n\n"
+		"~~SCRAMBLE~~ (destructive)\n\n"
 		"Launches interceptors against the selected aircraft. Announcement: `SCRAMBLE: N interceptors on <CS>` in the event log (amber).\n\n"
 		"**SECTOR CONTROLS**\n\n"
 		"- Scenario dropdown + [LOAD] - starts the selected scenario.\n"
-		"- [STOP] - halts the running scenario. Aircraft remain.\n"
-		"- [CLEAR ALL] (red) - removes ALL aircraft immediately.\n"
+		"- !!STOP!! - halts the running scenario. Aircraft remain.\n"
+		"- ~~CLEAR ALL~~ - removes ALL aircraft immediately.\n"
 		"- [SPAWN +1] - adds one random aircraft.\n"
 		"- **MAX AIRCRAFT** slider - tune the traffic-density cap live (range 8-40). Existing aircraft aren't yanked, only new spawns are gated.\n\n"
 		"**WIND**\n\n"
@@ -749,7 +877,7 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		"2. Click [LOAD]. Sim clears existing traffic, resets the scenario timer, begins ticking scenario events.\n"
 		"3. Event log announces `SCENARIO LOADED: <name>` in cyan.\n\n"
 		"**Stopping**\n\n"
-		"[STOP] halts new events but aircraft remain. Event log announces `SCENARIO STOPPED`.\n\n"
+		"!!STOP!! halts new events but aircraft remain. Event log announces `SCENARIO STOPPED`.\n\n"
 		"**Baseline scenarios shipped**\n\n"
 		"- `baltic_intercept` - hostile inbound from east, requires SCRAMBLE authorization.\n"
 		"- `hijack_response` - commercial traffic squawks 7500 mid-flight.\n"
@@ -764,11 +892,11 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		"**Workflow**\n\n"
 		"1. Advance session to the state you want to rehearse from.\n"
 		"2. Type a name into the checkpoint text field.\n"
-		"3. [SAVE] (green stripe). Checkpoint snapshots all aircraft states, wind, session time, current score, full scoring log.\n"
+		"3. @@SAVE@@. Checkpoint snapshots all aircraft states, wind, session time, current score, full scoring log.\n"
 		"4. Trainee attempts the scenario from this state.\n"
-		"5. If the attempt fails or completes, [LOAD] (cyan stripe), select the checkpoint from the dropdown, hit LOAD.\n"
+		"5. If the attempt fails or completes, [LOAD], select the checkpoint from the dropdown, hit LOAD.\n"
 		"6. Aircraft return to their exact positions at save time. Score resets to save-time value. Wind restores.\n"
-		"7. [DEL] (red stripe) permanently removes the selected checkpoint.\n\n"
+		"7. ~~DEL~~ permanently removes the selected checkpoint.\n\n"
 		"**What's preserved across a LOAD**\n\n"
 		"- Every aircraft position, altitude, heading, speed, phase, emergency, and IFF state.\n"
 		"- Wind direction and speed.\n"
@@ -793,58 +921,97 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		"**INCIDENTS card** (red-bordered) - penalty metrics\n\n"
 		"Go-Arounds / Sep Loss / Wake Busts / TCAS RA / Strayed (amber tint when > 0) then Mis-ID / Violated / Crashed / Busted (red tint when > 0). Rows dim grey when zero.\n\n"
 		"**SESSION SUMMARY** - Duration / Scenario / Aircraft count / Wind.\n\n"
-		"**[EXPORT AAR]** (green) writes a full Markdown AAR to `<ProjectSavedDir>/Reports/Session_YYYYMMDD_HHMMSS.md`. Report structure: header (timestamp, session duration, scenario, wind), summary (score, efficiency, ops totals, incident counts), chronological timeline table, critical incidents drilldown with 60-second comms window, score breakdown, full transcript.\n\n"
+		"@@EXPORT AAR@@ writes a full Markdown AAR to `<ProjectSavedDir>/Reports/Session_YYYYMMDD_HHMMSS.md`. Report structure: header (timestamp, session duration, scenario, wind), summary (score, efficiency, ops totals, incident counts), chronological timeline table, critical incidents drilldown with 60-second comms window, score breakdown, full transcript.\n\n"
 		"**TRANSCRIPT sub-tab**\n\n"
 		"Live scroll of voice and text comms. Each entry: timestamp `MM:SS` + role stripe + role tag + speaker callsign + text content. Roles are color-coded - PILOT cyan, OPERATOR green, SYS grey, INSTR magenta, TWR/ACC/AWACS/GCI amber-family, ATIS/MET muted cyan.\n\n"
 		"**Filter dropdown** at the top lets you multi-select which roles to show. Click a role to toggle it in the filter set. Click **All** to select or deselect everything. Useful presets by selecting multiple: Voice Only (PILOT + OPERATOR + facilities), Instructor Actions Only (INSTR), Facility Broadcasts (TWR + ACC + AWACS + GCI + ATIS + MET).")));
 
+	Sections.Add(Make(TEXT("dis"), TEXT("DIS Interoperability"),
+		TEXT("CLEARANCE speaks IEEE 1278 Distributed Interactive Simulation, the "
+		"defence-industry standard for federating multiple training simulators "
+		"across a network. When enabled, aircraft state emits as Entity State "
+		"PDUs over UDP with correct Big-Endian byte order per the DIS spec; "
+		"external simulators on the same federation see CLEARANCE aircraft as "
+		"live entities and can inject their own tracks back into the sim.\n\n"
+		"**Why it matters**\n\n"
+		"Real defence training rigs at CAE / L3 / Lockheed / BAE run in federated "
+		"exercises. A sortie may span an aircraft simulator, a radar operator "
+		"station, an AWACS console, a GCI position, and a ground threat model - "
+		"each running on separate hardware and connected over DIS or HLA. "
+		"CLEARANCE plugs into that federation as an ATC / air-defence station, "
+		"contributing its picture and consuming external tracks.\n\n"
+		"**Emitter**\n\n"
+		"- `UClearanceDISEmitter` broadcasts Entity State PDUs for every "
+		"aircraft in the sector\n"
+		"- Standard IEEE 1278.1 packet format: header + entity ID + force ID + "
+		"entity type + location + orientation + velocity + appearance\n"
+		"- Emits at the tick rate (default ~5 Hz per DIS convention); packet "
+		"count per second shown in the AAR footer `[DIS N/s]` tag\n"
+		"- Ground truth is emitted, not the operator's degraded picture, so "
+		"external observers see the sector as it really is\n\n"
+		"**Receiver**\n\n"
+		"- `UClearanceDISReceiver` listens on a UDP port for incoming Entity "
+		"State PDUs from other federation members\n"
+		"- Received entities land in the AirspaceManager as first-class "
+		"aircraft with a synthetic callsign, correct affiliation, and full "
+		"position / velocity state\n"
+		"- Operator and instructor scopes render them exactly like sim-native "
+		"aircraft - the trainee cannot tell whether a track came from the local "
+		"scenario or the external federation\n\n"
+		"**Enabling from the instructor UI**\n\n"
+		"DIS controls live in the DIS FEDERATION section of the right-hand "
+		"panel:\n\n"
+		"- **EMIT** row - host + port input, then [START EMIT] / !!STOP EMIT!! "
+		"button. Multicast `224.0.0.1:3000` is the classic default for local "
+		"exercises; unicast to a specific federation broker also works.\n"
+		"- **RECV** row - port input, then [START RECV] / !!STOP RECV!! button. "
+		"Listens on the given UDP port and lands external entities in the "
+		"AirspaceManager.\n"
+		"- **Status** row - two indicator lights (grey = idle, green = active) "
+		"and live packet-per-second counters for each direction. Federation "
+		"health at a glance.\n\n"
+		"When both sides are running the AAR header line shows "
+		"`[DIS OUT: N/s | DIS IN: N/s]` for post-session review.\n\n"
+		"**Site-level exercise use**\n\n"
+		"For a live training rig, the recommended flow is: cold-start the "
+		"federation on a dedicated multicast address, bring each participating "
+		"station online in sequence, start receivers before emitters so the "
+		"initial states aren't missed, verify the packet counter climbs, and "
+		"then start the scenario. Post-session, the DIS packet totals appear "
+		"in the exported AAR alongside operations and incidents.\n\n"
+		"**Interop status**\n\n"
+		"Current build ships DIS 6 Entity State PDU only. Fire, Detonation, "
+		"and Signal PDU support is on the roadmap. HLA (IEEE 1516) can be "
+		"bridged externally today via KDIS / RPR-FOM gateways.")));
+
 	Sections.Add(Make(TEXT("reference"), TEXT("Button Reference"),
 		TEXT("**Right panel**\n\n"
-		"- [INJECT] cyan - Apply selected emergency type to selected aircraft\n"
-		"- [CLEAR EMER] amber - Cancel active emergency on selected aircraft\n"
-		"- [RECLASSIFY] cyan - Set true affiliation of selected aircraft\n"
-		"- [JAM ON] amber - Selected aircraft begins EW jamming\n"
-		"- [JAM OFF] green - Cancel EW jamming\n"
-		"- [DROP CHAFF] amber - Selected aircraft releases chaff cloud\n"
-		"- [SCRAMBLE] red - Launch interceptors on selected aircraft\n"
-		"- [LOAD] scenario cyan - Load selected scenario, clear existing traffic, start\n"
-		"- [STOP] amber - Halt running scenario (aircraft remain)\n"
-		"- [CLEAR ALL] red - Remove all aircraft from sector\n"
-		"- [SPAWN +1] cyan - Add one random aircraft\n"
-		"- [APPLY WIND] cyan - Commit wind direction and speed\n\n"
-		"**Header**\n\n"
-		"- [RESET SCENARIO] red - Full session wipe. Irreversible.\n\n"
-		"**SESSION row (bottom)**\n\n"
-		"- [PAUSE] amber - Pause the live simulation\n"
-		"- [SAVE] green - Save checkpoint with typed name\n"
-		"- [LOAD] cyan - Restore selected checkpoint\n"
-		"- [DEL] red - Delete selected checkpoint\n"
+		"- [INJECT] - Apply selected emergency type to selected aircraft\n"
+		"- !!CLEAR EMER!! - Cancel active emergency on selected aircraft\n"
+		"- [RECLASSIFY] - Set true affiliation of selected aircraft\n"
+		"- !!JAM ON!! - Selected aircraft begins EW jamming\n"
+		"- @@JAM OFF@@ - Cancel EW jamming\n"
+		"- !!DROP CHAFF!! - Selected aircraft releases chaff cloud\n"
+		"- ~~SCRAMBLE~~ - Launch interceptors on selected aircraft\n"
+		"- [LOAD] scenario - Load selected scenario, clear existing traffic, start\n"
+		"- !!STOP!! - Halt running scenario (aircraft remain)\n"
+		"- ~~CLEAR ALL~~ - Remove all aircraft from sector\n"
+		"- [SPAWN +1] - Add one random aircraft\n"
+		"- [APPLY WIND] - Commit wind direction and speed\n\n"
+		"**Sector controls**\n\n"
+		"- ~~RESET SCENARIO~~ - Full session wipe. Irreversible.\n\n"
+		"**SESSION row (top)**\n\n"
+		"- !!PAUSE!! - Pause the live simulation\n"
+		"- @@SAVE@@ - Save checkpoint with typed name\n"
+		"- [LOAD] - Restore selected checkpoint\n"
+		"- ~~DEL~~ - Delete selected checkpoint\n"
 		"- `0.25x` / `0.5x` / `1x` / `2x` / `4x` - Live time dilation\n\n"
-		"**REPLAY row (above SESSION)**\n\n"
-		"- [PLAY] cyan - Start replay playback\n"
+		"**REPLAY row (bottom)**\n\n"
+		"- [PLAY] - Start replay playback\n"
 		"- `0.25x` / `0.5x` / `1x` / `2x` / `4x` - Replay playback speed\n"
-		"- [GO LIVE] red - Exit replay, return to live session\n\n"
+		"- ~~GO LIVE~~ - Exit replay, return to live session\n\n"
 		"**Performance tab**\n\n"
-		"- [EXPORT AAR] green - Write Markdown AAR to disk")));
-
-	Sections.Add(Make(TEXT("console"), TEXT("Console Commands"),
-		TEXT("Press `~` in-game to open the console. Commands take effect immediately through the same authoritative server path as the GUI buttons.\n\n"
-		"**Traffic**\n\n"
-		"- `clearance.spawn <callsign> <lat> <lon> <alt> <hdg>` - spawn an aircraft at a specific position\n"
-		"- `clearance.clear` - clear all aircraft\n\n"
-		"**Emergency and classification**\n\n"
-		"- `clearance.emergency <callsign> <type>` - trigger emergency (types: mayday / 7700 / comms / 7600 / hijack / 7500 / fuel)\n"
-		"- `clearance.classify <callsign> <class>` - reclassify (friendly / hostile / unknown / neutral)\n\n"
-		"**Electronic warfare and intercept**\n\n"
-		"- `clearance.ew.jam <callsign>` - begin jamming from callsign\n"
-		"- `clearance.ew.chaff <callsign>` - drop chaff\n"
-		"- `clearance.scramble <bandit_callsign>` - launch interceptors\n\n"
-		"**Environment and scenarios**\n\n"
-		"- `clearance.wind <dir_deg> <speed_kts>` - set wind\n"
-		"- `clearance.scenario load <name>` - load and start scenario\n"
-		"- `clearance.scenario stop` - stop running scenario\n\n"
-		"**Voice testing**\n\n"
-		"- `clearance.say <role> <callsign> <text>` - inject a scripted comms line (useful for testing operator response)")));
+		"- @@EXPORT AAR@@ - Write Markdown AAR to disk")));
 
 	return Sections;
 }
@@ -1037,12 +1204,15 @@ namespace
 	void PushEventRowData(UUserWidget* RowWidget, const FClearanceNotification& Entry)
 	{
 		if (!RowWidget) { return; }
-		if (UFunction* Fn = RowWidget->FindFunction(TEXT("SetNotification")))
-		{
-			struct FSetEntryParam { FClearanceNotification E; } P;
-			P.E = Entry;
-			RowWidget->ProcessEvent(Fn, &P);
-		}
+		UFunction* Fn = RowWidget->FindFunction(TEXT("SetNotification"));
+		if (!Fn) { return; }
+		// Pass the FClearanceNotification directly. ProcessEvent copies the
+		// param frame into the function's own stack based on the property
+		// layout declared on the UFunction, not by matching our struct's
+		// member names - so passing the value itself is safest.
+		// Cast away const because ProcessEvent's signature takes void*. - TripleA
+		FClearanceNotification LocalCopy = Entry;
+		RowWidget->ProcessEvent(Fn, &LocalCopy);
 	}
 }
 

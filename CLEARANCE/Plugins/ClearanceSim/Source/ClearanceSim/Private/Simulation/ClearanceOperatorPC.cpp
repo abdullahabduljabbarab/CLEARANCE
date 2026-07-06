@@ -403,6 +403,54 @@ void AClearanceOperatorPC::Server_InjectResetScenario_Implementation()
 	C->PushNotification(FString::Printf(TEXT("SESSION: reset (scenario \"%s\" reloaded)"), *Display), FColor::Red, 6.f);
 }
 
+// --- DIS federation controls -----------------------------------------------
+
+bool AClearanceOperatorPC::Server_InjectStartDISEmit_Validate(const FString&, int32) { return true; }
+void AClearanceOperatorPC::Server_InjectStartDISEmit_Implementation(const FString& Host, int32 Port)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		const bool bOk = C->StartDIS(Host, Port);
+		C->PushNotification(
+			bOk ? FString::Printf(TEXT("DIS: emit -> %s:%d"), *Host, Port)
+			    : FString::Printf(TEXT("DIS: emit failed (%s:%d)"), *Host, Port),
+			bOk ? FColor::Cyan : FColor::Red, 5.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStopDISEmit_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectStopDISEmit_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->StopDIS();
+		C->PushNotification(TEXT("DIS: emit stopped"), FColor::Cyan, 4.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStartDISRecv_Validate(int32) { return true; }
+void AClearanceOperatorPC::Server_InjectStartDISRecv_Implementation(int32 Port)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		const bool bOk = C->StartDISReceiver(Port);
+		C->PushNotification(
+			bOk ? FString::Printf(TEXT("DIS: recv listening :%d"), Port)
+			    : FString::Printf(TEXT("DIS: recv failed (:%d)"), Port),
+			bOk ? FColor::Cyan : FColor::Red, 5.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStopDISRecv_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectStopDISRecv_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->StopDISReceiver();
+		C->PushNotification(TEXT("DIS: recv stopped"), FColor::Cyan, 4.f);
+	}
+}
+
 // --- AAR replay control ----------------------------------------------------
 
 bool AClearanceOperatorPC::Server_InjectEnterReplay_Validate() { return true; }

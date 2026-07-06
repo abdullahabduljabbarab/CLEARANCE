@@ -79,6 +79,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Instructor|Views")
 	TArray<FClearanceNotification> GetRecentNotifications() const;
 
+	// DIS federation status snapshot for the instructor UI. Live flags + last
+	// packet counts so the BP can bind to a status chip / activity light
+	// without dipping directly into the DIS emitter/receiver internals. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DIS")
+	bool IsDISEmitting() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DIS")
+	bool IsDISReceiving() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DIS")
+	int32 GetDISPacketsSent() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DIS")
+	int32 GetDISPacketsReceived() const;
+
 	// In-station operator's manual - one entry per section. Content is
 	// hardcoded server-side so any packaged build carries the manual with it
 	// (no data-only content dependency). BP renders each section's Title in

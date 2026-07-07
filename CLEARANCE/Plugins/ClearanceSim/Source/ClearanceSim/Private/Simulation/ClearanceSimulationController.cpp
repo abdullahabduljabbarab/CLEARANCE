@@ -19,6 +19,7 @@
 #include "Scoring/ClearanceScoring.h"
 #include "Simulation/ClearanceSessionRecorder.h"
 #include "Simulation/ClearanceDISEmitter.h"
+#include "Simulation/ClearanceDDSEmitter.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -347,6 +348,9 @@ void AClearanceSimulationController::InitialiseSystems()
 	if (!Recorder) { Recorder = NewObject<UClearanceSessionRecorder>(this); }
 	DISEmitter = NewObject<UClearanceDISEmitter>(this);
 	DISReceiver = NewObject<UClearanceDISReceiver>(this);
+	DDSEmitter = NewObject<UClearanceDDSEmitter>(this);
+	UE_LOG(LogTemp, Display, TEXT("[DDS] InitialiseSystems on controller=%p world=%p netMode=%d: DDSEmitter=%p DISEmitter=%p"),
+		this, GetWorld(), int32(GetNetMode()), DDSEmitter.Get(), DISEmitter.Get());
 	Radar = NewObject<UClearanceRadar>(this);
 	if (Radar)
 	{
@@ -1223,10 +1227,15 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		Recorder->CaptureSnapshot(SessionTime, AirspaceManager->GetAllAircraftStates());
 	}
 
-	// Publish each aircraft as a DIS Entity State PDU. Runs in both live and replay.
-	if (DISEmitter && DISEmitter->IsRunning() && AirspaceManager)
+	// Publish each aircraft as a DIS Entity State PDU AND a DDS AircraftState
+	// topic sample. Runs in both live and replay. Two wires (DIS legacy +
+	// DDS pub/sub), same six data primitives, single tick. - TripleA
+	const bool bDISOn = DISEmitter && DISEmitter->IsRunning();
+	const bool bDDSOn = DDSEmitter && DDSEmitter->IsRunning();
+	if ((bDISOn || bDDSOn) && AirspaceManager)
 	{
-		DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime);
+		if (bDISOn) { DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
+		if (bDDSOn) { DDSEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
 
 		// Also publish an Emission PDU per active radar so external ELINT
 		// receivers see WHICH radars are up, what they look like on RF, and
@@ -1264,7 +1273,8 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 				}
 			}
 		}
-		DISEmitter->EmitEmissions(Emissions, SessionTime);
+		if (bDISOn) { DISEmitter->EmitEmissions(Emissions, SessionTime); }
+		if (bDDSOn) { DDSEmitter->EmitEmissions(Emissions, SessionTime); }
 
 		// Publish a Transmitter PDU per active radio so a federation receiver
 		// knows who is on the air and can tune to their frequency before
@@ -1308,25 +1318,30 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 				R.AntennaWorldMeters = FVector::ZeroVector;   // sector centre
 				Radios.Add(MoveTemp(R));
 			}
-			DISEmitter->EmitTransmitters(Radios, SessionTime);
+			if (bDISOn) { DISEmitter->EmitTransmitters(Radios, SessionTime); }
+			if (bDDSOn) { DDSEmitter->EmitTransmitters(Radios, SessionTime); }
 		}
 
-		// Drain queued Fire + Detonation events. Sim event points (scramble
-		// launch, intercept resolution) enqueue into these buffers; the DIS
-		// tick publishes them all in one batch. - TripleA
+		// Drain queued Fire + Detonation + Voice events. Sim event points
+		// (scramble launch, intercept resolution, transcribed comms) enqueue
+		// into these buffers; the emit tick publishes them once per active
+		// wire, then clears the queues. Both wires see the same events. - TripleA
 		if (PendingFireEvents.Num() > 0)
 		{
-			DISEmitter->EmitFireEvents(PendingFireEvents, SessionTime);
+			if (bDISOn) { DISEmitter->EmitFireEvents(PendingFireEvents, SessionTime); }
+			if (bDDSOn) { DDSEmitter->EmitFireEvents(PendingFireEvents, SessionTime); }
 			PendingFireEvents.Reset();
 		}
 		if (PendingDetonationEvents.Num() > 0)
 		{
-			DISEmitter->EmitDetonationEvents(PendingDetonationEvents, SessionTime);
+			if (bDISOn) { DISEmitter->EmitDetonationEvents(PendingDetonationEvents, SessionTime); }
+			if (bDDSOn) { DDSEmitter->EmitDetonationEvents(PendingDetonationEvents, SessionTime); }
 			PendingDetonationEvents.Reset();
 		}
 		if (PendingVoiceEvents.Num() > 0)
 		{
-			DISEmitter->EmitVoiceEvents(PendingVoiceEvents, SessionTime);
+			if (bDISOn) { DISEmitter->EmitVoiceEvents(PendingVoiceEvents, SessionTime); }
+			if (bDDSOn) { DDSEmitter->EmitVoiceEvents(PendingVoiceEvents, SessionTime); }
 			PendingVoiceEvents.Reset();
 		}
 	}
@@ -4249,7 +4264,10 @@ void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole I
 	// facility broadcasts, instructor injects on the frequency - goes out as
 	// federated voice. System messages (score updates, sim housekeeping) don't
 	// belong on the radio and are filtered out. - TripleA
-	if (DISEmitter && DISEmitter->IsRunning() && InRole != EClearanceCommsRole::System)
+	const bool bAnyEmitterRunning =
+		(DISEmitter && DISEmitter->IsRunning()) ||
+		(DDSEmitter && DDSEmitter->IsRunning());
+	if (bAnyEmitterRunning && InRole != EClearanceCommsRole::System)
 	{
 		FVoiceCommsEvent VE;
 		VE.SpeakerCallsign = (InRole == EClearanceCommsRole::Pilot) ? Callsign : NAME_None;
@@ -4316,6 +4334,43 @@ void AClearanceSimulationController::StopDIS()
 {
 	if (DISEmitter) { DISEmitter->Stop(); }
 	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DIS: stopped")); }
+}
+
+bool AClearanceSimulationController::StartDDSEmitter(int32 DomainId)
+{
+	UE_LOG(LogTemp, Display, TEXT("[DDS] StartDDSEmitter on controller=%p world=%p netMode=%d bInitialised=%d DDSEmitter=%p"),
+		this, GetWorld(), int32(GetNetMode()), int32(bInitialised), DDSEmitter.Get());
+	if (!DDSEmitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[DDS] StartDDSEmitter: DDSEmitter is null - controller not initialised"));
+		return false;
+	}
+	const bool bOk = DDSEmitter->Start(DomainId);
+	UE_LOG(LogTemp, Display, TEXT("[DDS] Start on domain %d -> %s"), DomainId, bOk ? TEXT("OK") : TEXT("FAILED"));
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
+			bOk ? FString::Printf(TEXT("DDS: publishing on domain %d"), DomainId)
+			    : FString::Printf(TEXT("DDS: failed to start on domain %d"), DomainId));
+	}
+	return bOk;
+}
+
+void AClearanceSimulationController::StopDDSEmitter()
+{
+	if (DDSEmitter) { DDSEmitter->Stop(); }
+	UE_LOG(LogTemp, Display, TEXT("[DDS] Stopped"));
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DDS: stopped")); }
+}
+
+bool AClearanceSimulationController::IsDDSEmitting() const
+{
+	return DDSEmitter && DDSEmitter->IsRunning();
+}
+
+int32 AClearanceSimulationController::GetDDSPacketsSent() const
+{
+	return DDSEmitter ? DDSEmitter->GetTotalPublishedCount() : 0;
 }
 
 bool AClearanceSimulationController::StartDISReceiver(int32 Port)
@@ -6669,6 +6724,122 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceDISUnlistenCmd(
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
 	{
 		if (AClearanceSimulationController* C = FindClearanceController(World)) { C->StopDISReceiver(); }
+	}));
+
+// DDS pub/sub controls. Route through the operator PC's Server RPC so the
+// command works from either the server OR a client console in listen-server
+// PIE mode - the server-authoritative SimulationController is the only one
+// with a live DDSEmitter, and the client-side replicated stub has null. - TripleA
+static AClearanceOperatorPC* FindClearanceOperatorPC(UWorld* World)
+{
+	if (!World) { return nullptr; }
+	if (APlayerController* PC = World->GetFirstPlayerController())
+	{
+		return Cast<AClearanceOperatorPC>(PC);
+	}
+	return nullptr;
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSStartCmd(
+	TEXT("clearance.dds.start"),
+	TEXT("clearance.dds.start [domain] - start publishing DDS topics on the given DDS domain (default 0)."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		const int32 Domain = (Args.Num() >= 1) ? FCString::Atoi(*Args[0]) : 0;
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStartDDSEmit(Domain);   // Routes to server-authoritative controller
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StartDDSEmitter(Domain);              // Standalone mode fallback
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSStopCmd(
+	TEXT("clearance.dds.stop"),
+	TEXT("clearance.dds.stop - stop publishing DDS topics"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStopDDSEmit();
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StopDDSEmitter();
+		}
+	}));
+
+// In-process DDS subscriber - creates its own participant on the given
+// domain, subscribes to all six clearance/* topics, and logs each sample
+// as it arrives. Proves the publish path end-to-end without needing an
+// external process. Instantiate one instance globally so it survives past
+// the console command scope. - TripleA
+#include "ClearanceDDS/ClearanceDDSSubscriber.h"
+static std::unique_ptr<ClearanceDDS::FClearanceSubscriber> GClearanceDDSSubscriberInstance;
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSSubscribeCmd(
+	TEXT("clearance.dds.subscribe"),
+	TEXT("clearance.dds.subscribe [domain] - start an in-process DDS subscriber that logs every received sample. Domain 0 default."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld*)
+	{
+		const std::uint32_t Domain = (Args.Num() >= 1)
+			? static_cast<std::uint32_t>(FCString::Atoi(*Args[0]))
+			: 0u;
+
+		ClearanceDDS::FSubscriberHandlers H;
+		H.OnAircraftState = [](const ClearanceDDS::AircraftState& S)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] AircraftState entity=%u marking=%hs pos=(%.1f,%.1f,%.1f) v=(%.1f,%.1f,%.1f)"),
+				S.EntityNumber(), S.Marking().c_str(),
+				S.XMeters(), S.YMeters(), S.ZMeters(),
+				S.VxMps(),   S.VyMps(),   S.VzMps());
+		};
+		H.OnFireEvent = [](const ClearanceDDS::FireEvent& E)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] FireEvent firer=%u target=%u munition=%u event=%u"),
+				E.FiringEntity(), E.TargetEntity(), E.MunitionEntity(), E.EventNumber());
+		};
+		H.OnDetonationEvent = [](const ClearanceDDS::DetonationEvent& E)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] DetonationEvent firer=%u target=%u result=%u event=%u"),
+				E.FiringEntity(), E.TargetEntity(), E.DetonationResult(), E.EventNumber());
+		};
+		H.OnEmissionSnapshot = [](const ClearanceDDS::EmissionSnapshot& S)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] EmissionSnapshot entity=%u emitter=%u painted=%d"),
+				S.EmittingEntity(), S.EmitterName(), int32(S.PaintedEntityNumbers().size()));
+		};
+		H.OnTransmitterState = [](const ClearanceDDS::TransmitterState& T)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] TransmitterState entity=%u freq=%lluHz state=%u"),
+				T.OwnerEntity(), (unsigned long long)T.FrequencyHz(), T.TransmitState());
+		};
+		H.OnSignalEvent = [](const ClearanceDDS::SignalEvent& E)
+		{
+			const std::string Text(reinterpret_cast<const char*>(E.Data().data()), E.Data().size());
+			UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] SignalEvent entity=%u radio=%u text='%hs'"),
+				E.OwnerEntity(), E.RadioId(), Text.c_str());
+		};
+
+		GClearanceDDSSubscriberInstance = ClearanceDDS::FClearanceSubscriber::Create(Domain, std::move(H));
+		UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] subscriber on domain %u -> %s"),
+			Domain, GClearanceDDSSubscriberInstance ? TEXT("OK") : TEXT("FAILED"));
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSUnsubscribeCmd(
+	TEXT("clearance.dds.unsubscribe"),
+	TEXT("clearance.dds.unsubscribe - tear down the in-process DDS subscriber"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld*)
+	{
+		if (GClearanceDDSSubscriberInstance)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] total received: %llu"),
+				(unsigned long long)GClearanceDDSSubscriberInstance->GetTotalReceivedCount());
+		}
+		GClearanceDDSSubscriberInstance.reset();
+		UE_LOG(LogTemp, Display, TEXT("[DDS-Sub] subscriber stopped"));
 	}));
 
 // Change this instance's DIS Site ID at runtime. Two copies of the sim on the

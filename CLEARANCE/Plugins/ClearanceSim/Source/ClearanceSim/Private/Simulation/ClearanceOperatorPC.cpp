@@ -451,6 +451,31 @@ void AClearanceOperatorPC::Server_InjectStopDISRecv_Implementation()
 	}
 }
 
+// --- DDS pub/sub -----------------------------------------------------------
+
+bool AClearanceOperatorPC::Server_InjectStartDDSEmit_Validate(int32) { return true; }
+void AClearanceOperatorPC::Server_InjectStartDDSEmit_Implementation(int32 DomainId)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		const bool bOk = C->StartDDSEmitter(DomainId);
+		C->PushNotification(
+			bOk ? FString::Printf(TEXT("DDS: publishing on domain %d"), DomainId)
+			    : FString::Printf(TEXT("DDS: failed to start (domain %d)"), DomainId),
+			bOk ? FColor::Cyan : FColor::Red, 5.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStopDDSEmit_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectStopDDSEmit_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->StopDDSEmitter();
+		C->PushNotification(TEXT("DDS: publishing stopped"), FColor::Cyan, 4.f);
+	}
+}
+
 // --- AAR replay control ----------------------------------------------------
 
 bool AClearanceOperatorPC::Server_InjectEnterReplay_Validate() { return true; }

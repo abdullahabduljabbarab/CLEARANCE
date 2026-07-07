@@ -21,6 +21,11 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "ClearanceDDS",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "ClearanceSim",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"

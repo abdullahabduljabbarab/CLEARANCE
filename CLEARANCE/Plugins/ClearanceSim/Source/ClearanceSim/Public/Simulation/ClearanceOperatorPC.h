@@ -101,6 +101,15 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DIS")
 	void Server_InjectStopDISRecv();
 
+	// Fast DDS pub/sub emitter controls - same shape as the DIS RPCs above.
+	// Start/Stop the DDS participant + all six topic writers on the given
+	// domain. Runs in parallel to DIS on the sim tick. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DDS")
+	void Server_InjectStartDDSEmit(int32 DomainId);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DDS")
+	void Server_InjectStopDDSEmit();
+
 	// Replay control: client UI fires these so the SERVER's controller flips
 	// into replay mode and poses the world to the recording. The server then
 	// replicates the airspace back so the client sees the scrubbed traffic. - TripleA

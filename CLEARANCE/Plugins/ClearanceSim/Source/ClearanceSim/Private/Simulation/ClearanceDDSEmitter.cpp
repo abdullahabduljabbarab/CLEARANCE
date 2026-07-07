@@ -1,0 +1,269 @@
+// Unreal-side adapter around ClearanceDDS. Every Emit* method converts the
+// game module's Unreal-shape input into the IDL POD types the pure C++
+// publisher speaks, then delegates. All unit conversions (nm/ft/kts to
+// metres/m/s) happen at this boundary - identical pattern to the DIS
+// emitter, so the two sides always agree on what a metre is. - TripleA
+
+#include "Simulation/ClearanceDDSEmitter.h"
+
+#include "ClearanceDDS/ClearanceDDSPublisher.h"
+#include "AirspaceTelemetry.hpp"
+#include "ClearanceDIS/ClearanceDISPDU.h"   // reuse the FNV-1a callsign hash
+
+namespace
+{
+	// Same reserved entity for operator / ground-station traffic that the
+	// DIS emitter uses, so both wires filter air-side from ground-side by
+	// the same number. Kept in sync deliberately. - TripleA
+	constexpr std::uint16_t kOperatorGroundStationEntity = 60000;
+
+	inline std::uint16_t EntityFromCallsign(FName Callsign)
+	{
+		if (Callsign.IsNone()) { return 0; }
+		const FString S = Callsign.ToString();
+		const FTCHARToUTF8 Utf8(*S);
+		return ClearanceDIS::HashCallsignToEntityNumber(std::string_view(Utf8.Get(), Utf8.Length()));
+	}
+
+	inline uint8 ForceIdFor(EThreatClass T)
+	{
+		switch (T)
+		{
+		case EThreatClass::Friendly: return 1;
+		case EThreatClass::Hostile:  return 2;
+		case EThreatClass::Neutral:  return 3;
+		case EThreatClass::Unknown:
+		default:                     return 0;
+		}
+	}
+
+	inline std::string AsciiString(const FString& S)
+	{
+		const FTCHARToUTF8 Conv(*S);
+		return std::string(Conv.Get(), Conv.Length());
+	}
+
+	inline ClearanceDDS::WireHeader MakeHeader(int32 ExerciseId, int32 SiteId, int32 ApplicationId, float SimTimeSeconds)
+	{
+		ClearanceDDS::WireHeader H;
+		H.ExerciseId(static_cast<uint8_t>(ExerciseId));
+		H.SiteId(static_cast<uint16_t>(SiteId));
+		H.ApplicationId(static_cast<uint16_t>(ApplicationId));
+		H.SimTimeSeconds(static_cast<double>(SimTimeSeconds));
+		return H;
+	}
+}
+
+UClearanceDDSEmitter::UClearanceDDSEmitter() = default;
+UClearanceDDSEmitter::~UClearanceDDSEmitter() = default;
+
+bool UClearanceDDSEmitter::Start(int32 DomainId)
+{
+	Publisher = TUniquePtr<ClearanceDDS::FClearancePublisher>(
+		ClearanceDDS::FClearancePublisher::Create(static_cast<std::uint32_t>(DomainId)).release());
+	UE_LOG(LogTemp, Display, TEXT("[DDS] UClearanceDDSEmitter::Start(domain=%d) publisher=%p"), DomainId, Publisher.Get());
+	return Publisher.IsValid();
+}
+
+// One-shot log after N ticks so we can see the emit path is running without
+// flooding the log. Reset when Start/Stop toggles. - TripleA
+static int32 GDDSEmitStatesTickLog = 0;
+
+void UClearanceDDSEmitter::Stop()
+{
+	Publisher.Reset();
+}
+
+bool UClearanceDDSEmitter::IsRunning() const
+{
+	return Publisher.IsValid();
+}
+
+int32 UClearanceDDSEmitter::GetTotalPublishedCount() const
+{
+	return Publisher.IsValid() ? static_cast<int32>(Publisher->GetTotalPublishedCount()) : 0;
+}
+
+void UClearanceDDSEmitter::EmitStates(const TArray<FAircraftState>& States, float SimTimeSeconds)
+{
+	if (!Publisher.IsValid()) { return; }
+	if (GDDSEmitStatesTickLog++ % 60 == 0)   // log every ~1s at 60Hz
+	{
+		UE_LOG(LogTemp, Display, TEXT("[DDS] EmitStates tick=%d states=%d publisher=%p totalPublished=%llu"),
+			GDDSEmitStatesTickLog, States.Num(), Publisher.Get(),
+			(unsigned long long)Publisher->GetTotalPublishedCount());
+	}
+	for (const FAircraftState& S : States)
+	{
+		if (!S.bIsValid) { continue; }
+
+		ClearanceDDS::AircraftState M;
+		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.EntityNumber(EntityFromCallsign(S.Callsign));
+		M.Marking(AsciiString(S.Callsign.ToString()));
+		M.ForceId(ForceIdFor(S.ThreatClass));
+		M.EntityKind(1);
+		M.EntityDomain(2);
+		M.EntityCountry(225);
+		M.EntityCategory(1);
+		M.EntitySubcategory(0);
+		M.EntitySpecific(0);
+		M.EntityExtra(0);
+		M.XMeters(double(S.Position.X) * 1852.0);
+		M.YMeters(double(S.Position.Y) * 1852.0);
+		M.ZMeters(double(S.Altitude)   * 0.3048);
+
+		const float HeadingRad = FMath::DegreesToRadians(S.Heading);
+		const float SpeedMps   = S.Speed * 0.514444f;
+		M.VxMps(SpeedMps * FMath::Sin(HeadingRad));
+		M.VyMps(SpeedMps * FMath::Cos(HeadingRad));
+		M.VzMps(static_cast<float>(S.ClimbRate * 0.00508));
+		M.PsiRad(HeadingRad);
+		M.ThetaRad(0.f);
+		M.PhiRad(FMath::DegreesToRadians(S.BankAngle));
+
+		Publisher->PublishAircraftState(M);
+	}
+}
+
+void UClearanceDDSEmitter::EmitEmissions(const TArray<FRadarEmissionSnapshot>& Radars, float SimTimeSeconds)
+{
+	if (!Publisher.IsValid()) { return; }
+	for (const FRadarEmissionSnapshot& R : Radars)
+	{
+		if (!R.bEnabled) { continue; }
+
+		ClearanceDDS::EmissionSnapshot M;
+		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.EmittingEntity(EntityFromCallsign(R.SiteName));
+		M.PositionMetersX(double(R.SitePositionNm.X) * 1852.0);
+		M.PositionMetersY(double(R.SitePositionNm.Y) * 1852.0);
+		M.PositionMetersZ(0.0);
+		M.EmitterName(static_cast<uint16_t>(R.Signature.EmitterName));
+		M.EmitterFunction(R.Signature.EmitterFunction);
+		M.FrequencyLowHz(R.Signature.FrequencyLowHz);
+		M.FrequencyHighHz(R.Signature.FrequencyHighHz);
+		M.EffectiveRadiatedPowerDbm(R.Signature.EffectiveRadiatedPowerDbm);
+		M.PulseRepetitionFreqHz(R.Signature.PulseRepetitionFreqHz);
+		M.PulseWidthMicrosec(R.Signature.PulseWidthMicrosec);
+		M.BeamAzimuthRad(FMath::DegreesToRadians(R.SweepAngleDeg));
+		M.BeamFunction(R.Signature.BeamFunction);
+
+		std::vector<uint16_t> Painted;
+		Painted.reserve(R.PaintedCallsigns.Num());
+		for (const FName& C : R.PaintedCallsigns)
+		{
+			const std::uint16_t E = EntityFromCallsign(C);
+			if (E != 0) { Painted.push_back(E); }
+		}
+		M.PaintedEntityNumbers(std::move(Painted));
+
+		Publisher->PublishEmissionSnapshot(M);
+	}
+}
+
+void UClearanceDDSEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Events, float SimTimeSeconds)
+{
+	if (!Publisher.IsValid()) { return; }
+	for (const FWeaponsFireEvent& E : Events)
+	{
+		const std::uint16_t Firer  = EntityFromCallsign(E.FiringCallsign);
+		const std::uint16_t Target = EntityFromCallsign(E.TargetCallsign);
+
+		ClearanceDDS::FireEvent M;
+		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.FiringEntity(Firer);
+		M.TargetEntity(Target);
+		M.EventNumber(static_cast<uint16_t>(E.EventNumber & 0xFFFFu));
+		M.MunitionEntity(ClearanceDIS::DeriveMunitionEntityNumber(Firer, static_cast<std::uint32_t>(E.EventNumber)));
+		M.XMeters(double(E.LocationNm.X) * 1852.0);
+		M.YMeters(double(E.LocationNm.Y) * 1852.0);
+		M.ZMeters(double(E.AltitudeFt)   * 0.3048);
+		M.VxMps(E.VelocityXKts * 0.514444f);
+		M.VyMps(E.VelocityYKts * 0.514444f);
+		M.VzMps(E.VelocityZKts * 0.514444f);
+		M.MunitionKind(E.MunitionKind);
+		M.WarheadKind(static_cast<uint16_t>(E.WarheadKind));
+		M.FuseKind(static_cast<uint16_t>(E.FuseKind));
+		M.Quantity(static_cast<uint16_t>(E.Quantity));
+		M.Rate(static_cast<uint16_t>(E.Rate));
+		M.RangeMeters(E.RangeMeters);
+
+		Publisher->PublishFireEvent(M);
+	}
+}
+
+void UClearanceDDSEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationEvent>& Events, float SimTimeSeconds)
+{
+	if (!Publisher.IsValid()) { return; }
+	for (const FWeaponsDetonationEvent& E : Events)
+	{
+		const std::uint16_t Firer  = EntityFromCallsign(E.FiringCallsign);
+		const std::uint16_t Target = EntityFromCallsign(E.TargetCallsign);
+
+		ClearanceDDS::DetonationEvent M;
+		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.FiringEntity(Firer);
+		M.TargetEntity(Target);
+		M.EventNumber(static_cast<uint16_t>(E.EventNumber & 0xFFFFu));
+		M.MunitionEntity(ClearanceDIS::DeriveMunitionEntityNumber(Firer, static_cast<std::uint32_t>(E.EventNumber)));
+		M.XMeters(double(E.LocationNm.X) * 1852.0);
+		M.YMeters(double(E.LocationNm.Y) * 1852.0);
+		M.ZMeters(double(E.AltitudeFt)   * 0.3048);
+		M.VxMps(E.VelocityXKts * 0.514444f);
+		M.VyMps(E.VelocityYKts * 0.514444f);
+		M.VzMps(E.VelocityZKts * 0.514444f);
+		M.MunitionKind(E.MunitionKind);
+		M.WarheadKind(static_cast<uint16_t>(E.WarheadKind));
+		M.FuseKind(static_cast<uint16_t>(E.FuseKind));
+		M.Quantity(static_cast<uint16_t>(E.Quantity));
+		M.Rate(static_cast<uint16_t>(E.Rate));
+		M.DetonationResult(E.DetonationResult);
+
+		Publisher->PublishDetonationEvent(M);
+	}
+}
+
+void UClearanceDDSEmitter::EmitVoiceEvents(const TArray<FVoiceCommsEvent>& Events, float SimTimeSeconds)
+{
+	if (!Publisher.IsValid()) { return; }
+	for (const FVoiceCommsEvent& E : Events)
+	{
+		ClearanceDDS::SignalEvent M;
+		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.OwnerEntity(E.SpeakerCallsign.IsNone()
+			? kOperatorGroundStationEntity
+			: EntityFromCallsign(E.SpeakerCallsign));
+		M.RadioId(static_cast<uint16_t>(E.RadioId));
+
+		const FTCHARToUTF8 Utf8(*E.Transcript);
+		std::vector<uint8_t> Payload(reinterpret_cast<const uint8_t*>(Utf8.Get()),
+			reinterpret_cast<const uint8_t*>(Utf8.Get()) + Utf8.Length());
+		M.Data(std::move(Payload));
+
+		Publisher->PublishSignalEvent(M);
+	}
+}
+
+void UClearanceDDSEmitter::EmitTransmitters(const TArray<FRadioTransmitter>& Transmitters, float SimTimeSeconds)
+{
+	if (!Publisher.IsValid()) { return; }
+	for (const FRadioTransmitter& R : Transmitters)
+	{
+		ClearanceDDS::TransmitterState M;
+		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.OwnerEntity(R.OwnerCallsign.IsNone()
+			? kOperatorGroundStationEntity
+			: EntityFromCallsign(R.OwnerCallsign));
+		M.RadioId(static_cast<uint16_t>(R.RadioId));
+		M.FrequencyHz(static_cast<uint64_t>(R.FrequencyHz));
+		M.BandwidthHz(R.BandwidthHz);
+		M.PowerDbm(R.PowerDbm);
+		M.TransmitState(R.TransmitState);
+		M.AntennaXMeters(R.AntennaWorldMeters.X);
+		M.AntennaYMeters(R.AntennaWorldMeters.Y);
+		M.AntennaZMeters(R.AntennaWorldMeters.Z);
+
+		Publisher->PublishTransmitterState(M);
+	}
+}

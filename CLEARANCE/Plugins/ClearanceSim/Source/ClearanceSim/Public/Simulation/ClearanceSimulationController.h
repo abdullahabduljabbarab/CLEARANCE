@@ -16,6 +16,7 @@ class UClearanceCommsRouter;
 class UClearanceScoring;
 class UClearanceSessionRecorder;
 class UClearanceDISEmitter;
+class UClearanceDDSEmitter;
 class UClearanceDISReceiver;
 class UClearanceRadar;
 class ACameraActor;
@@ -284,6 +285,20 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation|DIS")
 	void StopDISReceiver();
+
+	// --- DDS pub/sub interop ------------------------------------------------
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DDS")
+	bool StartDDSEmitter(int32 DomainId);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DDS")
+	void StopDDSEmitter();
+
+	UFUNCTION(BlueprintPure, Category = "Simulation|DDS")
+	bool IsDDSEmitting() const;
+
+	UFUNCTION(BlueprintPure, Category = "Simulation|DDS")
+	int32 GetDDSPacketsSent() const;
 
 	// --- After-Action Review ------------------------------------------------
 
@@ -897,6 +912,14 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceDISReceiver> DISReceiver;
+
+	// Fast DDS pub/sub emitter - real-time telemetry over the OMG DDS
+	// standard. Runs on the same tick as the DIS emitter so a federation
+	// observer sees the same six data primitives simultaneously on both
+	// wires. Instructor panel exposes START/STOP DDS controls next to the
+	// DIS FEDERATION section. - TripleA
+	UPROPERTY()
+	TObjectPtr<UClearanceDDSEmitter> DDSEmitter;
 
 	// Pending Fire / Detonation events queued between DIS emit ticks. The sim
 	// event points (SCRAMBLE launch, intercept success) push here; the emitter

@@ -6,6 +6,8 @@
 #include "Airspace/ClearanceWaypoint.h"
 #include "Safety/ClearanceRadarSite.h"
 #include "Safety/ClearanceRadar.h"
+#include "Safety/ClearanceRadarEquation.h"
+#include <cmath>
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Simulation/ClearanceDDSEmitter.h"
@@ -2075,18 +2077,48 @@ TArray<int32> UClearanceInstructorPanel::GetRadarCoverageGrid(int32 Resolution, 
 	const FVector ControllerOrigin = CachedController->GetActorLocation();
 	const float UnitsPerNm = FMath::Max(1.f, CachedController->WorldUnitsPerNm);
 
-	// Gather enabled radar sites once. Each entry is (sector-nm position,
-	// range in nm). Iterating actors per-cell would be O(N*sites^2). - TripleA
-	struct FSitePosRange { FVector2D PosNm; float RangeNmSq; };
-	TArray<FSitePosRange> Sites;
+	// Gather enabled radar sites once. Each entry carries the radar-equation
+	// parameters we need to evaluate Pd at an arbitrary grid cell without
+	// re-touching the UPROPERTY chain per sample. Iterating actors per-cell
+	// would be O(N * sites^2). - TripleA
+	struct FSitePhysics
+	{
+		FVector2D PosNm;
+		float     LegacyRangeNmSq;
+		bool      bUsePhysics;
+		ClearanceRadarEquation::FDetectionInputs Params;
+		float     PdThreshold;   // grid cell counts as "covered" at Pd >= this
+	};
+	TArray<FSitePhysics> Sites;
 	for (TActorIterator<AClearanceRadarSite> It(World); It; ++It)
 	{
 		AClearanceRadarSite* Site = *It;
 		if (!Site || !Site->Radar || !Site->Radar->IsEnabled()) { continue; }
 		const FVector Rel = Site->GetActorLocation() - ControllerOrigin;
-		FSitePosRange S;
-		S.PosNm     = FVector2D(Rel.X, Rel.Y) / UnitsPerNm;
-		S.RangeNmSq = Site->RangeNm * Site->RangeNm;
+		FSitePhysics S;
+		S.PosNm            = FVector2D(Rel.X, Rel.Y) / UnitsPerNm;
+		S.LegacyRangeNmSq  = Site->RangeNm * Site->RangeNm;
+		S.bUsePhysics      = Site->Radar->bUsePhysicsDetection;
+		S.Params.PeakPowerWatts          = static_cast<double>(Site->Radar->PeakPowerKilowatts) * 1000.0;
+		S.Params.TransmitGainDb          = Site->Radar->TransmitAntennaGainDb;
+		S.Params.ReceiveGainDb           = Site->Radar->ReceiveAntennaGainDb;
+		S.Params.SystemLossDb            = Site->Radar->SystemLossDb;
+		S.Params.NoiseFigureDb           = Site->Radar->NoiseFigureDb;
+		S.Params.SystemNoiseTemperatureK = Site->Radar->SystemNoiseTemperatureK;
+		S.Params.ReceiverBandwidthHz     = static_cast<double>(Site->Radar->ReceiverBandwidthMhz) * 1.0e6;
+		S.Params.RequiredSnrDb           = Site->Radar->MinimumDetectableSnrDb;
+		S.Params.DetectionSlopeDb        = Site->Radar->DetectionSlopeDb;
+		S.Params.RcsSquareMetres         = Site->Radar->CoverageReferenceRcsSqM;
+		const double LowHz  = Site->Radar->EmissionSignature.FrequencyLowHz;
+		const double HighHz = Site->Radar->EmissionSignature.FrequencyHighHz;
+		if (LowHz > 0.0 && HighHz >= LowHz)
+		{
+			S.Params.FrequencyHz = 0.5 * (LowHz + HighHz);
+		}
+		// Pd >= 0.5 is the operationally meaningful contour - matches how a
+		// radar-coverage diagram is usually plotted (50 % single-scan Pd is
+		// the standard "boundary of useful detection"). - TripleA
+		S.PdThreshold = 0.5f;
 		Sites.Add(S);
 	}
 
@@ -2106,9 +2138,20 @@ TArray<int32> UClearanceInstructorPanel::GetRadarCoverageGrid(int32 Resolution, 
 			const FVector2D Cell(CellX, CellY);
 
 			int32 Count = 0;
-			for (const FSitePosRange& S : Sites)
+			for (const FSitePhysics& S : Sites)
 			{
-				if (FVector2D::DistSquared(Cell, S.PosNm) <= S.RangeNmSq)
+				const double DistSq = FVector2D::DistSquared(Cell, S.PosNm);
+				if (S.bUsePhysics)
+				{
+					// Evaluate the radar equation at this cell for the site's
+					// reference-RCS target. Falling out of Pd defines the
+					// coverage contour more truthfully than a hard range ring.
+					ClearanceRadarEquation::FDetectionInputs Q = S.Params;
+					Q.RangeMetres = std::sqrt(DistSq) * ClearanceRadarEquation::kMetresPerNauticalMile;
+					const double Pd = ClearanceRadarEquation::ComputeDetection(Q).ProbabilityOfDetection;
+					if (Pd >= S.PdThreshold) { ++Count; }
+				}
+				else if (DistSq <= S.LegacyRangeNmSq)
 				{
 					++Count;
 				}

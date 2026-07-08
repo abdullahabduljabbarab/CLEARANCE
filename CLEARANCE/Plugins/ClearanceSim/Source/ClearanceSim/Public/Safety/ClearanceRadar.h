@@ -82,6 +82,75 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Emission")
 	FEmissionSignature EmissionSignature;
 
+	// --- Physics ------------------------------------------------------------
+	// Everything below feeds ClearanceRadarEquation::ComputeDetection. When
+	// bUsePhysicsDetection is on (default), the raw distance-gate is replaced
+	// by a probabilistic paint whose Pd falls out of the monostatic radar
+	// equation - target RCS, wavelength, receiver noise floor, and system
+	// loss all drive whether a paint lands. Turn it off to get the legacy
+	// binary range gate back for A/B testing or scenario debugging.
+	// - TripleA
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	bool bUsePhysicsDetection = true;
+
+	// Peak transmit power at the antenna port (kilowatts). ASR-9 civil
+	// airport surveillance radar is ~1.4 MW peak (0.1% duty on a 1 us
+	// pulse at 1000 PRF - average power is only ~1.4 kW). Long-range
+	// en-route (ARSR-4) is ~60 kW peak with pulse compression.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float PeakPowerKilowatts = 1400.f;
+
+	// Transmit antenna gain (dBi). 34 dB is representative of a
+	// medium-aperture parabolic reflector at S-band.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float TransmitAntennaGainDb = 34.f;
+
+	// Receive antenna gain (dBi). Same antenna in monostatic operation, so
+	// this defaults to matching TransmitAntennaGainDb - split for asymmetric
+	// designs (e.g. active-electronically-steered arrays with different
+	// TX/RX taper).
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float ReceiveAntennaGainDb = 34.f;
+
+	// System loss (dB). Rolled-up feedline + processing + atmospheric
+	// absorption. 6 dB is a defensible round number for S-band ground
+	// surveillance in clear air; scale up in rain / long slant paths.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float SystemLossDb = 6.f;
+
+	// Receiver noise figure (dB). Modern solid-state receiver front end.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float NoiseFigureDb = 3.f;
+
+	// System noise temperature (K). IEEE reference is 290 K.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float SystemNoiseTemperatureK = 290.f;
+
+	// Receiver matched-filter bandwidth (MHz). B ~= 1/tau for a matched
+	// receiver on a rectangular pulse of width tau. 1 MHz matches a 1 us
+	// pulse - the ASR-9 baseline.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float ReceiverBandwidthMhz = 1.f;
+
+	// Minimum SNR for reliable detection (dB). Classic threshold for a
+	// Swerling-0 non-fluctuating target at Pd = 0.9, Pfa = 1e-6 is 13 dB.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float MinimumDetectableSnrDb = 13.f;
+
+	// Detection-curve slope (dB). Larger = softer transition. 3-6 dB is
+	// typical for a search radar.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float DetectionSlopeDb = 4.f;
+
+	// Reference RCS for coverage-overlay rendering (m^2). Not used for
+	// per-aircraft detection - that reads the aircraft's own wake
+	// category. 10 m^2 = "typical narrowbody airliner side-on", a
+	// realistic reference target for what an ATC operator expects the
+	// scope to cover.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
+	float CoverageReferenceRcsSqM = 10.f;
+
 private:
 	UPROPERTY()
 	TObjectPtr<AClearanceAirspaceManager> Manager;

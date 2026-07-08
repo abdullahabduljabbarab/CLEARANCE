@@ -1,0 +1,141 @@
+# CLEARANCE continuous-integration pipeline.
+#
+# The full UE build depends on an Unreal Engine install (~130 GB) and a
+# working editor, which no free hosted runner ships with. Instead we
+# extract the interop-critical wire-format library (ClearanceDIS) as a
+# standalone CMake target and run its self-test on every push. That
+# library is what the DIS/RPR-FOM federation contract lives in - if any
+# byte in the PDU emitters shifts, this pipeline fails.
+#
+# Runs Windows + Linux, Debug + Release. Plus a Linux-only sanitizer
+# job (Address + UBSan) that stresses the parsers against malformed
+# input. clang-tidy runs as a gated job on the pure-C++ subset.
+#
+# See Docs/CI_CD_NOTES.md for the strategy trade-off and what stays
+# manual pre-release.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ==========================================================================
+  # Wire-format round-trip + determinism tests. Debug + Release matrix on
+  # both Windows (MSVC) and Linux (GCC). Debug catches STL iterator asserts
+  # that Release optimises away; Release is what actually ships.
+  # ==========================================================================
+  wire-format-tests:
+    name: Wire format ${{ matrix.os }} ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        build_type: [Debug, Release]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Ninja (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install ninja -y
+
+      - name: Set up MSVC (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        working-directory: Plugins/ClearanceSim/Source/ClearanceDIS
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: Build
+        working-directory: Plugins/ClearanceSim/Source/ClearanceDIS
+        run: cmake --build build --config ${{ matrix.build_type }}
+
+      - name: Test
+        working-directory: Plugins/ClearanceSim/Source/ClearanceDIS
+        run: ctest --test-dir build --output-on-failure --build-config ${{ matrix.build_type }}
+
+  # ==========================================================================
+  # AddressSanitizer + UndefinedBehaviorSanitizer under GCC on Linux. Same
+  # self-test as above but with -fsanitize=address,undefined. Catches
+  # out-of-bounds reads in the DIS parsers when they see truncated /
+  # malformed input, plus any signed-overflow / alignment / unreachable
+  # UB the wire-format code hits under compilable-but-nonsense wire.
+  # ==========================================================================
+  sanitizers:
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure with sanitizers
+        working-directory: Plugins/ClearanceSim/Source/ClearanceDIS
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        working-directory: Plugins/ClearanceSim/Source/ClearanceDIS
+        run: cmake --build build
+
+      - name: Test under sanitizers
+        working-directory: Plugins/ClearanceSim/Source/ClearanceDIS
+        env:
+          # ASAN_OPTIONS chosen to fail loud: abort on error, print full
+          # allocation stack, no exit-code leniency. UBSan halts on the
+          # first finding via -fno-sanitize-recover=all above.
+          ASAN_OPTIONS: "abort_on_error=1:print_stacktrace=1:halt_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: ctest --test-dir build --output-on-failure
+
+  # ==========================================================================
+  # clang-tidy on the pure-C++ subset. This IS a gate - any finding on our
+  # own source fails the build. Rules and rationale are in .clang-tidy and
+  # Docs/STATIC_ANALYSIS_NOTES.md. UE-header-using files are excluded via
+  # HeaderFilterRegex - they can't be linted without Engine sources on disk
+  # and are covered by the automation test suite pre-release.
+  # ==========================================================================
+  static-analysis:
+    name: clang-tidy gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-tidy
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy
+
+      - name: Generate compile_commands.json
+        working-directory: Plugins/ClearanceSim/Source/ClearanceDIS
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Run clang-tidy (gated)
+        run: |
+          clang-tidy \
+            -p Plugins/ClearanceSim/Source/ClearanceDIS/build \
+            --warnings-as-errors='*' \
+            Plugins/ClearanceSim/Source/ClearanceDIS/Private/DISWireFormat.cpp

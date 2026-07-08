@@ -34,14 +34,14 @@ namespace
 
 	inline void WriteFloatBE(std::vector<std::uint8_t>& B, float V)
 	{
-		std::uint32_t Bits;
+		std::uint32_t Bits = 0;
 		std::memcpy(&Bits, &V, sizeof(Bits));
 		WriteU32BE(B, Bits);
 	}
 
 	inline void WriteDoubleBE(std::vector<std::uint8_t>& B, double V)
 	{
-		std::uint64_t Bits;
+		std::uint64_t Bits = 0;
 		std::memcpy(&Bits, &V, sizeof(Bits));
 		WriteU64BE(B, Bits);
 	}
@@ -85,7 +85,7 @@ namespace
 	inline float ReadFloatBE(const std::uint8_t* Buf, std::size_t Len, std::size_t& Cur, bool& Ok)
 	{
 		const std::uint32_t Bits = ReadU32BE(Buf, Len, Cur, Ok);
-		float V;
+		float V = 0.f;
 		std::memcpy(&V, &Bits, sizeof(V));
 		return V;
 	}
@@ -93,7 +93,7 @@ namespace
 	inline double ReadDoubleBE(const std::uint8_t* Buf, std::size_t Len, std::size_t& Cur, bool& Ok)
 	{
 		const std::uint64_t Bits = ReadU64BE(Buf, Len, Cur, Ok);
-		double V;
+		double V = 0.0;
 		std::memcpy(&V, &Bits, sizeof(V));
 		return V;
 	}

@@ -19,6 +19,7 @@ class UClearanceDISEmitter;
 class UClearanceDDSEmitter;
 class UClearanceDDSReceiver;
 class UClearanceDISReceiver;
+class UClearanceRTIEmitter;
 class UClearanceRadar;
 class ACameraActor;
 class USceneCaptureComponent2D;
@@ -148,6 +149,18 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceDDSEmitter* GetDDSEmitter() const { return DDSEmitter; }
+
+	// Access the RTI Connext emitter. Same shape as GetDDSEmitter but
+	// bound against RTI's commercial runtime. Server-only. - TripleA
+	UClearanceRTIEmitter* GetRTIEmitter() const { return RTIEmitter; }
+
+	// Server RPC-ish entry: create + start the RTI emitter on a given
+	// domain. Called by AClearanceOperatorPC::Server_InjectStartRTIEmit
+	// which the console command clearance.rti.start goes through. - TripleA
+	bool StartRTIEmitter(int32 DomainId);
+	void StopRTIEmitter();
+	bool IsRTIEmitting() const;
+	int32 GetRTIPacketsSent() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceDDSReceiver* GetDDSReceiver() const { return DDSReceiver; }
@@ -784,6 +797,15 @@ public:
 	UPROPERTY(Replicated)
 	bool bRepDDSReceiving = false;
 
+	// RTI Connext DDS mirrors - same server->client visibility pattern as
+	// DIS + DDS. Only EMIT side for now since the RTI receiver isn't shipped
+	// yet (publish-only MVP). - TripleA
+	UPROPERTY(Replicated)
+	int32 RepRTIPacketsSent = 0;
+
+	UPROPERTY(Replicated)
+	bool bRepRTIEmitting = false;
+
 	// Full ordered list of scored events, server-mirrored from Scoring->GetSessionLog
 	// in the same pass that updates the rep counters. Each entry carries TimeStamp +
 	// Type + AircraftA/B + Details so the Performance tab can render per-category
@@ -975,6 +997,15 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UClearanceDDSReceiver> DDSReceiver;
+
+	// RTI Connext emitter - the third wire alongside DIS + Fast DDS.
+	// Same six-topic schema, same identity fields, but bound against
+	// RTI's commercial DDS runtime. Server-only UPROPERTY() so subobject
+	// pointer lives only on the authoritative side; panel visibility
+	// (rate/count for the UI) goes through the same replicated mirror
+	// path as the other wires. - TripleA
+	UPROPERTY()
+	TObjectPtr<UClearanceRTIEmitter> RTIEmitter;
 
 	// Pending Fire / Detonation events queued between DIS emit ticks. The sim
 	// event points (SCRAMBLE launch, intercept success) push here; the emitter

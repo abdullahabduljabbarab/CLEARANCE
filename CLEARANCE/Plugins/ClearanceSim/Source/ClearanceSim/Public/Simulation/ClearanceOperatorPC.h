@@ -123,6 +123,16 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|Federation")
 	void Server_InjectSetFederateSiteId(int32 NewSiteId);
 
+	// RTI Connext DDS pub - third wire alongside DIS + Fast DDS. Same
+	// server-authoritative gate: the client-side controller has a null
+	// RTIEmitter pointer so the console's RPC has to reach the server
+	// side to start/stop the real publisher. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|RTI")
+	void Server_InjectStartRTIEmit(int32 DomainId);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|RTI")
+	void Server_InjectStopRTIEmit();
+
 	// Replay control: client UI fires these so the SERVER's controller flips
 	// into replay mode and poses the world to the recording. The server then
 	// replicates the airspace back so the client sees the scrubbed traffic. - TripleA

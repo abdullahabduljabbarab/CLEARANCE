@@ -20,6 +20,7 @@
 #include "Simulation/ClearanceSessionRecorder.h"
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDDSEmitter.h"
+#include "Simulation/ClearanceRTIEmitter.h"
 #include "Simulation/ClearanceDDSReceiver.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Camera/CameraActor.h"
@@ -351,6 +352,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	DISReceiver = NewObject<UClearanceDISReceiver>(this);
 	DDSEmitter = NewObject<UClearanceDDSEmitter>(this);
 	DDSReceiver = NewObject<UClearanceDDSReceiver>(this);
+	RTIEmitter = NewObject<UClearanceRTIEmitter>(this);
 	Radar = NewObject<UClearanceRadar>(this);
 	if (Radar)
 	{
@@ -582,6 +584,8 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, bRepDISReceiving);
 	DOREPLIFETIME(AClearanceSimulationController, bRepDDSEmitting);
 	DOREPLIFETIME(AClearanceSimulationController, bRepDDSReceiving);
+	DOREPLIFETIME(AClearanceSimulationController, RepRTIPacketsSent);
+	DOREPLIFETIME(AClearanceSimulationController, bRepRTIEmitting);
 	DOREPLIFETIME(AClearanceSimulationController, SessionTime);
 	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
 	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
@@ -1255,17 +1259,21 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	RepDISPacketsReceived = DISReceiver ? DISReceiver->GetLastPacketsReceived() : 0;
 	RepDDSPacketsSent     = DDSEmitter  ? DDSEmitter->GetTotalPublishedCount()  : 0;
 	RepDDSPacketsReceived = DDSReceiver ? DDSReceiver->GetTotalIngestedCount()  : 0;
+	RepRTIPacketsSent     = RTIEmitter  ? RTIEmitter->GetTotalPublishedCount()  : 0;
 	bRepDISEmitting  = DISEmitter  && DISEmitter->IsRunning();
 	bRepDISReceiving = DISReceiver && DISReceiver->IsRunning();
 	bRepDDSEmitting  = DDSEmitter  && DDSEmitter->IsRunning();
 	bRepDDSReceiving = DDSReceiver && DDSReceiver->IsRunning();
+	bRepRTIEmitting  = RTIEmitter  && RTIEmitter->IsRunning();
 
 	const bool bDISOn = DISEmitter && DISEmitter->IsRunning();
 	const bool bDDSOn = DDSEmitter && DDSEmitter->IsRunning();
-	if ((bDISOn || bDDSOn) && AirspaceManager)
+	const bool bRTIOn = RTIEmitter && RTIEmitter->IsRunning();
+	if ((bDISOn || bDDSOn || bRTIOn) && AirspaceManager)
 	{
 		if (bDISOn) { DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
 		if (bDDSOn) { DDSEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
+		if (bRTIOn) { RTIEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
 
 		// Also publish an Emission PDU per active radar so external ELINT
 		// receivers see WHICH radars are up, what they look like on RF, and
@@ -4391,6 +4399,49 @@ void AClearanceSimulationController::StopDDSEmitter()
 	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DDS: stopped")); }
 }
 
+bool AClearanceSimulationController::StartRTIEmitter(int32 DomainId)
+{
+	if (!RTIEmitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[RTI] StartRTIEmitter: RTIEmitter is null - controller not initialised"));
+		return false;
+	}
+	// Keep RTI identity in lockstep with DIS/DDS so the same SiteId flows
+	// to all three wires without a second command needing to be routed. - TripleA
+	if (DISEmitter)
+	{
+		RTIEmitter->SiteId        = DISEmitter->SiteId;
+		RTIEmitter->ApplicationId = DISEmitter->ApplicationId;
+		RTIEmitter->ExerciseId    = DISEmitter->ExerciseId;
+	}
+	const bool bOk = RTIEmitter->Start(DomainId);
+	UE_LOG(LogTemp, Display, TEXT("[RTI] Start on domain %d -> %s"), DomainId, bOk ? TEXT("OK") : TEXT("FAILED"));
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Green : FColor::Red,
+			bOk ? FString::Printf(TEXT("RTI: publishing on domain %d"), DomainId)
+			    : FString::Printf(TEXT("RTI: failed to start on domain %d"), DomainId));
+	}
+	return bOk;
+}
+
+void AClearanceSimulationController::StopRTIEmitter()
+{
+	if (RTIEmitter) { RTIEmitter->Stop(); }
+	UE_LOG(LogTemp, Display, TEXT("[RTI] Stopped"));
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Green, TEXT("RTI: stopped")); }
+}
+
+bool AClearanceSimulationController::IsRTIEmitting() const
+{
+	return RTIEmitter && RTIEmitter->IsRunning();
+}
+
+int32 AClearanceSimulationController::GetRTIPacketsSent() const
+{
+	return RTIEmitter ? RTIEmitter->GetTotalPublishedCount() : 0;
+}
+
 bool AClearanceSimulationController::IsDDSEmitting() const
 {
 	return DDSEmitter && DDSEmitter->IsRunning();
@@ -6832,6 +6883,40 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSStopCmd(
 		else if (AClearanceSimulationController* C = FindClearanceController(World))
 		{
 			C->StopDDSEmitter();
+		}
+	}));
+
+// RTI Connext publish controls. Sits alongside Fast DDS as the third wire.
+// Default domain is 1 so RTI and Fast DDS coexist without stepping on each
+// other's discovery. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceRTIStartCmd(
+	TEXT("clearance.rti.start"),
+	TEXT("clearance.rti.start [domain] - start publishing RTI Connext DDS topics on the given domain (default 1)."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		const int32 Domain = (Args.Num() >= 1) ? FCString::Atoi(*Args[0]) : 1;
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStartRTIEmit(Domain);
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StartRTIEmitter(Domain);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceRTIStopCmd(
+	TEXT("clearance.rti.stop"),
+	TEXT("clearance.rti.stop - stop publishing RTI Connext DDS topics"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStopRTIEmit();
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StopRTIEmitter();
 		}
 	}));
 

@@ -26,6 +26,11 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "ClearanceRTI",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "ClearanceSim",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"

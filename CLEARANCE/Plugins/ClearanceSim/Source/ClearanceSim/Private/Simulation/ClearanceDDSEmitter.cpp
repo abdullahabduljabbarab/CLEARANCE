@@ -10,7 +10,10 @@
 #include "AirspaceTelemetry.hpp"
 #include "ClearanceDIS/ClearanceDISPDU.h"   // reuse the FNV-1a callsign hash
 
-namespace
+// Named namespace (not anonymous) - avoids C2084 collisions with the DIS +
+// RTI emitters when unity-build merges the three TUs. See the same block in
+// ClearanceDISEmitter.cpp for the full rationale. - TripleA
+namespace ClearanceDDSEmitterHelpers
 {
 	// Same reserved entity for operator / ground-station traffic that the
 	// DIS emitter uses, so both wires filter air-side from ground-side by
@@ -53,6 +56,8 @@ namespace
 		return H;
 	}
 }
+
+using namespace ClearanceDDSEmitterHelpers;
 
 UClearanceDDSEmitter::UClearanceDDSEmitter() = default;
 UClearanceDDSEmitter::~UClearanceDDSEmitter() = default;

@@ -122,6 +122,18 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DDS")
 	int32 GetDDSRecvRatePerSec() const { return DDSRecvRatePerSec; }
 
+	// RTI Connext DDS federation status - same shape as the DDS getters
+	// above, but reads from the RTI Connext emitter mirror. Publish-only
+	// for now (no RTI receiver in the current build), so no Recv variant. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|RTI")
+	bool IsRTIEmitting() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|RTI")
+	int32 GetRTIPacketsSent() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|RTI")
+	int32 GetRTIEmitRatePerSec() const { return RTIEmitRatePerSec; }
+
 	// In-station operator's manual - one entry per section. Content is
 	// hardcoded server-side so any packaged build carries the manual with it
 	// (no data-only content dependency). BP renders each section's Title in
@@ -698,6 +710,8 @@ private:
 	int32 LastDISRecvSample = 0;
 	int32 LastDDSEmitSample = 0;
 	int32 LastDDSRecvSample = 0;
+	int32 RTIEmitRatePerSec = 0;
+	int32 LastRTIEmitSample = 0;
 
 	// Callsigns currently rendered in the scroll box, in row order. Lets the
 	// populate path skip the destroy-and-recreate when only field values

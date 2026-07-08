@@ -19,7 +19,13 @@
 #include <string>
 #include <vector>
 
-namespace
+// Named namespace (not anonymous) so unity-build merges with sibling emitter
+// TUs (DDS + RTI) don't collide on identical helper names. C++ standard says
+// each anonymous namespace occurrence is unique - MSVC's unity concatenation
+// disagrees and treats adjacent `namespace {}` blocks as the same, so
+// identical helper signatures in adjacent .cpps trigger C2084 "already has
+// a body". Naming the namespace per-file sidesteps it. - TripleA
+namespace ClearanceDISEmitterHelpers
 {
 	// Convert an Unreal callsign (FName) into a stable DIS entity number.
 	// Delegates to the pure-C++ FNV-1a hash so the mapping is identical
@@ -96,6 +102,10 @@ namespace
 		return std::string(Conv.Get(), Conv.Length());
 	}
 }
+
+// Pull the helpers into file scope so member function bodies below don't have
+// to qualify every call - keeps the diff to just the namespace header. - TripleA
+using namespace ClearanceDISEmitterHelpers;
 
 bool UClearanceDISEmitter::Start(const FString& Host, int32 Port)
 {

@@ -15,7 +15,8 @@ public class ClearanceSim : ModuleRules
 			"Slate",        // FSlateApplication for the renderer resource handle (coverage gradients)
 			"SlateCore",    // FCanvasItem / FGeometry types the widget uses
 			"ClearanceDIS", // Pure-C++ wire format for DIS PDU serialisation / parsing
-			"ClearanceDDS"  // Fast DDS pub/sub middleware for real-time telemetry
+			"ClearanceDDS", // Fast DDS pub/sub middleware for real-time telemetry
+			"ClearanceRTI"  // RTI Connext DDS pub/sub middleware - third wire alongside DDS
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

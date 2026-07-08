@@ -209,6 +209,7 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 		const int32 CurDISRecv = GetDISPacketsReceived();
 		const int32 CurDDSEmit = GetDDSPacketsSent();
 		const int32 CurDDSRecv = GetDDSPacketsReceived();
+		const int32 CurRTIEmit = GetRTIPacketsSent();
 
 		auto ComputeRate = [Elapsed = RateSampleAccumSec](int32 Cur, int32 Last)
 		{
@@ -219,11 +220,13 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 		DISRecvRatePerSec = ComputeRate(CurDISRecv, LastDISRecvSample);
 		DDSEmitRatePerSec = ComputeRate(CurDDSEmit, LastDDSEmitSample);
 		DDSRecvRatePerSec = ComputeRate(CurDDSRecv, LastDDSRecvSample);
+		RTIEmitRatePerSec = ComputeRate(CurRTIEmit, LastRTIEmitSample);
 
 		LastDISEmitSample = CurDISEmit;
 		LastDISRecvSample = CurDISRecv;
 		LastDDSEmitSample = CurDDSEmit;
 		LastDDSRecvSample = CurDDSRecv;
+		LastRTIEmitSample = CurRTIEmit;
 
 		RateSampleAccumSec = 0.f;
 	}
@@ -726,6 +729,16 @@ int32 UClearanceInstructorPanel::GetDDSPacketsSent() const
 int32 UClearanceInstructorPanel::GetDDSPacketsReceived() const
 {
 	return CachedController ? CachedController->RepDDSPacketsReceived : 0;
+}
+
+bool UClearanceInstructorPanel::IsRTIEmitting() const
+{
+	return CachedController && CachedController->bRepRTIEmitting;
+}
+
+int32 UClearanceInstructorPanel::GetRTIPacketsSent() const
+{
+	return CachedController ? CachedController->RepRTIPacketsSent : 0;
 }
 
 namespace

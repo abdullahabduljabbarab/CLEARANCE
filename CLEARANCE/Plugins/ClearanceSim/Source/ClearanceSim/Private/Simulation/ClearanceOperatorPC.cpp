@@ -4,6 +4,7 @@
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Simulation/ClearanceDDSEmitter.h"
 #include "Simulation/ClearanceDDSReceiver.h"
+#include "Simulation/ClearanceRTIEmitter.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Aircraft/ClearanceAircraftSpawner.h"
 #include "Scoring/ClearanceScoring.h"
@@ -512,9 +513,35 @@ void AClearanceOperatorPC::Server_InjectSetFederateSiteId_Implementation(int32 N
 	if (UClearanceDISReceiver* R = C->GetDISReceiver()) { R->LocalSiteId = NewSiteId; }
 	if (UClearanceDDSEmitter*  E = C->GetDDSEmitter())  { E->SiteId      = NewSiteId; }
 	if (UClearanceDDSReceiver* R = C->GetDDSReceiver()) { R->LocalSiteId = NewSiteId; }
+	if (UClearanceRTIEmitter*  E = C->GetRTIEmitter())  { E->SiteId      = NewSiteId; }
 	C->PushNotification(
-		FString::Printf(TEXT("Federate Site ID = %d (DIS + DDS - peers must differ)"), NewSiteId),
+		FString::Printf(TEXT("Federate Site ID = %d (DIS + DDS + RTI - peers must differ)"), NewSiteId),
 		FColor::Cyan, 5.f);
+}
+
+// --- RTI Connext pub -------------------------------------------------------
+
+bool AClearanceOperatorPC::Server_InjectStartRTIEmit_Validate(int32) { return true; }
+void AClearanceOperatorPC::Server_InjectStartRTIEmit_Implementation(int32 DomainId)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		const bool bOk = C->StartRTIEmitter(DomainId);
+		C->PushNotification(
+			bOk ? FString::Printf(TEXT("RTI: publishing on domain %d"), DomainId)
+			    : FString::Printf(TEXT("RTI: failed to start (domain %d)"), DomainId),
+			bOk ? FColor::Green : FColor::Red, 5.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStopRTIEmit_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectStopRTIEmit_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->StopRTIEmitter();
+		C->PushNotification(TEXT("RTI: publishing stopped"), FColor::Green, 4.f);
+	}
 }
 
 // --- AAR replay control ----------------------------------------------------

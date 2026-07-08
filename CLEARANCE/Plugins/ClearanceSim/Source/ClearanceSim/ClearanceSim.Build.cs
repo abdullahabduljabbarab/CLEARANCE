@@ -16,7 +16,8 @@ public class ClearanceSim : ModuleRules
 			"SlateCore",    // FCanvasItem / FGeometry types the widget uses
 			"ClearanceDIS", // Pure-C++ wire format for DIS PDU serialisation / parsing
 			"ClearanceDDS", // Fast DDS pub/sub middleware for real-time telemetry
-			"ClearanceRTI"  // RTI Connext DDS pub/sub middleware - third wire alongside DDS
+			"ClearanceRTI", // RTI Connext DDS pub/sub middleware - third wire alongside DDS
+			"ClearanceHLA"  // OpenRTI IEEE 1516-2010 HLA-Evolved federate - fourth wire
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

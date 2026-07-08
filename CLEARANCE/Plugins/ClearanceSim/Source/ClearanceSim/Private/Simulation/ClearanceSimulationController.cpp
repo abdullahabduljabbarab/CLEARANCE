@@ -21,6 +21,7 @@
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDDSEmitter.h"
 #include "Simulation/ClearanceRTIEmitter.h"
+#include "Simulation/ClearanceHLAEmitter.h"
 #include "Simulation/ClearanceDDSReceiver.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Camera/CameraActor.h"
@@ -353,6 +354,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	DDSEmitter = NewObject<UClearanceDDSEmitter>(this);
 	DDSReceiver = NewObject<UClearanceDDSReceiver>(this);
 	RTIEmitter = NewObject<UClearanceRTIEmitter>(this);
+	HLAEmitter = NewObject<UClearanceHLAEmitter>(this);
 	Radar = NewObject<UClearanceRadar>(this);
 	if (Radar)
 	{
@@ -586,6 +588,8 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, bRepDDSReceiving);
 	DOREPLIFETIME(AClearanceSimulationController, RepRTIPacketsSent);
 	DOREPLIFETIME(AClearanceSimulationController, bRepRTIEmitting);
+	DOREPLIFETIME(AClearanceSimulationController, RepHLAUpdatesSent);
+	DOREPLIFETIME(AClearanceSimulationController, bRepHLAJoined);
 	DOREPLIFETIME(AClearanceSimulationController, SessionTime);
 	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
 	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
@@ -1260,20 +1264,24 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	RepDDSPacketsSent     = DDSEmitter  ? DDSEmitter->GetTotalPublishedCount()  : 0;
 	RepDDSPacketsReceived = DDSReceiver ? DDSReceiver->GetTotalIngestedCount()  : 0;
 	RepRTIPacketsSent     = RTIEmitter  ? RTIEmitter->GetTotalPublishedCount()  : 0;
+	RepHLAUpdatesSent     = HLAEmitter  ? HLAEmitter->GetTotalUpdatesCount()    : 0;
 	bRepDISEmitting  = DISEmitter  && DISEmitter->IsRunning();
 	bRepDISReceiving = DISReceiver && DISReceiver->IsRunning();
 	bRepDDSEmitting  = DDSEmitter  && DDSEmitter->IsRunning();
 	bRepDDSReceiving = DDSReceiver && DDSReceiver->IsRunning();
 	bRepRTIEmitting  = RTIEmitter  && RTIEmitter->IsRunning();
+	bRepHLAJoined    = HLAEmitter  && HLAEmitter->IsJoined();
 
 	const bool bDISOn = DISEmitter && DISEmitter->IsRunning();
 	const bool bDDSOn = DDSEmitter && DDSEmitter->IsRunning();
 	const bool bRTIOn = RTIEmitter && RTIEmitter->IsRunning();
-	if ((bDISOn || bDDSOn || bRTIOn) && AirspaceManager)
+	const bool bHLAOn = HLAEmitter && HLAEmitter->IsJoined();
+	if ((bDISOn || bDDSOn || bRTIOn || bHLAOn) && AirspaceManager)
 	{
 		if (bDISOn) { DISEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
 		if (bDDSOn) { DDSEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
 		if (bRTIOn) { RTIEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
+		if (bHLAOn) { HLAEmitter->EmitStates(AirspaceManager->GetAllAircraftStates(), SessionTime); }
 
 		// Also publish an Emission PDU per active radar so external ELINT
 		// receivers see WHICH radars are up, what they look like on RF, and
@@ -4442,6 +4450,49 @@ int32 AClearanceSimulationController::GetRTIPacketsSent() const
 	return RTIEmitter ? RTIEmitter->GetTotalPublishedCount() : 0;
 }
 
+bool AClearanceSimulationController::StartHLAFederate(const FString& FederationName, const FString& FederateName, const FString& FomModulePath)
+{
+	if (!HLAEmitter)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[HLA] StartHLAFederate: HLAEmitter is null - controller not initialised"));
+		return false;
+	}
+	// Federation identity syncs across all four wires so EntityIdentifier
+	// attributes on HLA carry the same {Site, App} tuple DIS/DDS/RTI use. - TripleA
+	if (DISEmitter)
+	{
+		HLAEmitter->SiteId        = DISEmitter->SiteId;
+		HLAEmitter->ApplicationId = DISEmitter->ApplicationId;
+	}
+	const bool bOk = HLAEmitter->Join(FederationName, FederateName, FomModulePath);
+	UE_LOG(LogTemp, Display, TEXT("[HLA] Join '%s' as '%s' -> %s"),
+		*FederationName, *FederateName, bOk ? TEXT("OK") : TEXT("FAILED"));
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Purple : FColor::Red,
+			bOk ? FString::Printf(TEXT("HLA: joined '%s'"), *FederationName)
+			    : FString::Printf(TEXT("HLA: join failed on '%s'"), *FederationName));
+	}
+	return bOk;
+}
+
+void AClearanceSimulationController::StopHLAFederate()
+{
+	if (HLAEmitter) { HLAEmitter->Resign(); }
+	UE_LOG(LogTemp, Display, TEXT("[HLA] Resigned"));
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Purple, TEXT("HLA: resigned")); }
+}
+
+bool AClearanceSimulationController::IsHLAJoined() const
+{
+	return HLAEmitter && HLAEmitter->IsJoined();
+}
+
+int32 AClearanceSimulationController::GetHLAUpdatesSent() const
+{
+	return HLAEmitter ? HLAEmitter->GetTotalUpdatesCount() : 0;
+}
+
 bool AClearanceSimulationController::IsDDSEmitting() const
 {
 	return DDSEmitter && DDSEmitter->IsRunning();
@@ -6917,6 +6968,45 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceRTIStopCmd(
 		else if (AClearanceSimulationController* C = FindClearanceController(World))
 		{
 			C->StopRTIEmitter();
+		}
+	}));
+
+// HLA federate controls - fourth wire, IEEE 1516-2010. Needs an rtinode
+// listening on the loopback (or LAN) and a FOM XML the federation resolves
+// to. Defaults join federation "CLEARANCE" as federate "CLEARANCE-Instructor"
+// with the RPR-FOM extension XML shipped alongside the runtime. - TripleA
+static FAutoConsoleCommandWithWorldAndArgs GClearanceHLAJoinCmd(
+	TEXT("clearance.hla.join"),
+	TEXT("clearance.hla.join [federation] [federate] [fomPath] - join an HLA federation execution."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		const FString Federation = (Args.Num() >= 1) ? Args[0] : TEXT("CLEARANCE");
+		const FString Federate   = (Args.Num() >= 2) ? Args[1] : TEXT("CLEARANCE-Instructor");
+		const FString FomPath    = (Args.Num() >= 3) ? Args[2]
+			: FPaths::Combine(FPaths::ProjectPluginsDir(), TEXT("ClearanceSim/FOM/ClearanceRPR-FOM.xml"));
+
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStartHLAJoin(Federation, Federate, FomPath);
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StartHLAFederate(Federation, Federate, FomPath);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceHLAResignCmd(
+	TEXT("clearance.hla.resign"),
+	TEXT("clearance.hla.resign - resign from the HLA federation"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStopHLAJoin();
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StopHLAFederate();
 		}
 	}));
 

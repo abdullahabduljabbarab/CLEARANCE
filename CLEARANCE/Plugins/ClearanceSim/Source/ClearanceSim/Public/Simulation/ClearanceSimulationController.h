@@ -20,6 +20,7 @@ class UClearanceDDSEmitter;
 class UClearanceDDSReceiver;
 class UClearanceDISReceiver;
 class UClearanceRTIEmitter;
+class UClearanceHLAEmitter;
 class UClearanceRadar;
 class ACameraActor;
 class USceneCaptureComponent2D;
@@ -161,6 +162,18 @@ public:
 	void StopRTIEmitter();
 	bool IsRTIEmitting() const;
 	int32 GetRTIPacketsSent() const;
+
+	// Access the HLA federate. Fourth interoperability wire alongside
+	// DIS + DDS + RTI. Server-only. - TripleA
+	UClearanceHLAEmitter* GetHLAEmitter() const { return HLAEmitter; }
+
+	// Server-side federation join + resign. FederationName / FederateName
+	// / FomModulePath drive the RTIambassador; typically routed from
+	// AClearanceOperatorPC's Server_InjectStartHLAJoin RPC. - TripleA
+	bool StartHLAFederate(const FString& FederationName, const FString& FederateName, const FString& FomModulePath);
+	void StopHLAFederate();
+	bool IsHLAJoined() const;
+	int32 GetHLAUpdatesSent() const;
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceDDSReceiver* GetDDSReceiver() const { return DDSReceiver; }
@@ -806,6 +819,13 @@ public:
 	UPROPERTY(Replicated)
 	bool bRepRTIEmitting = false;
 
+	// HLA federate mirrors - fourth wire, publish-only for MVP. - TripleA
+	UPROPERTY(Replicated)
+	int32 RepHLAUpdatesSent = 0;
+
+	UPROPERTY(Replicated)
+	bool bRepHLAJoined = false;
+
 	// Full ordered list of scored events, server-mirrored from Scoring->GetSessionLog
 	// in the same pass that updates the rep counters. Each entry carries TimeStamp +
 	// Type + AircraftA/B + Details so the Performance tab can render per-category
@@ -1006,6 +1026,13 @@ private:
 	// path as the other wires. - TripleA
 	UPROPERTY()
 	TObjectPtr<UClearanceRTIEmitter> RTIEmitter;
+
+	// OpenRTI HLA-Evolved federate - the fourth wire, IEEE 1516-2010.
+	// Server-only UPROPERTY() with the subobject pointer unreplicated;
+	// panel visibility flows through replicated ints/bool mirrors
+	// below. - TripleA
+	UPROPERTY()
+	TObjectPtr<UClearanceHLAEmitter> HLAEmitter;
 
 	// Pending Fire / Detonation events queued between DIS emit ticks. The sim
 	// event points (SCRAMBLE launch, intercept success) push here; the emitter

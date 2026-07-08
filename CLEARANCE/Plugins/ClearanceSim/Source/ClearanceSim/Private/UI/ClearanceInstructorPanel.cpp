@@ -210,23 +210,26 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 		const int32 CurDDSEmit = GetDDSPacketsSent();
 		const int32 CurDDSRecv = GetDDSPacketsReceived();
 		const int32 CurRTIEmit = GetRTIPacketsSent();
+		const int32 CurHLAUpd  = GetHLAUpdatesSent();
 
 		auto ComputeRate = [Elapsed = RateSampleAccumSec](int32 Cur, int32 Last)
 		{
 			return FMath::Max(0, FMath::RoundToInt((Cur - Last) / Elapsed));
 		};
 
-		DISEmitRatePerSec = ComputeRate(CurDISEmit, LastDISEmitSample);
-		DISRecvRatePerSec = ComputeRate(CurDISRecv, LastDISRecvSample);
-		DDSEmitRatePerSec = ComputeRate(CurDDSEmit, LastDDSEmitSample);
-		DDSRecvRatePerSec = ComputeRate(CurDDSRecv, LastDDSRecvSample);
-		RTIEmitRatePerSec = ComputeRate(CurRTIEmit, LastRTIEmitSample);
+		DISEmitRatePerSec   = ComputeRate(CurDISEmit, LastDISEmitSample);
+		DISRecvRatePerSec   = ComputeRate(CurDISRecv, LastDISRecvSample);
+		DDSEmitRatePerSec   = ComputeRate(CurDDSEmit, LastDDSEmitSample);
+		DDSRecvRatePerSec   = ComputeRate(CurDDSRecv, LastDDSRecvSample);
+		RTIEmitRatePerSec   = ComputeRate(CurRTIEmit, LastRTIEmitSample);
+		HLAUpdateRatePerSec = ComputeRate(CurHLAUpd,  LastHLAUpdateSample);
 
-		LastDISEmitSample = CurDISEmit;
-		LastDISRecvSample = CurDISRecv;
-		LastDDSEmitSample = CurDDSEmit;
-		LastDDSRecvSample = CurDDSRecv;
-		LastRTIEmitSample = CurRTIEmit;
+		LastDISEmitSample   = CurDISEmit;
+		LastDISRecvSample   = CurDISRecv;
+		LastDDSEmitSample   = CurDDSEmit;
+		LastDDSRecvSample   = CurDDSRecv;
+		LastRTIEmitSample   = CurRTIEmit;
+		LastHLAUpdateSample = CurHLAUpd;
 
 		RateSampleAccumSec = 0.f;
 	}
@@ -739,6 +742,16 @@ bool UClearanceInstructorPanel::IsRTIEmitting() const
 int32 UClearanceInstructorPanel::GetRTIPacketsSent() const
 {
 	return CachedController ? CachedController->RepRTIPacketsSent : 0;
+}
+
+bool UClearanceInstructorPanel::IsHLAJoined() const
+{
+	return CachedController && CachedController->bRepHLAJoined;
+}
+
+int32 UClearanceInstructorPanel::GetHLAUpdatesSent() const
+{
+	return CachedController ? CachedController->RepHLAUpdatesSent : 0;
 }
 
 namespace

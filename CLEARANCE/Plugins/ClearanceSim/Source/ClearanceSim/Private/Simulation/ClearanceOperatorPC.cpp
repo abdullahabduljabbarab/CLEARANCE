@@ -5,6 +5,7 @@
 #include "Simulation/ClearanceDDSEmitter.h"
 #include "Simulation/ClearanceDDSReceiver.h"
 #include "Simulation/ClearanceRTIEmitter.h"
+#include "Simulation/ClearanceHLAEmitter.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Aircraft/ClearanceAircraftSpawner.h"
 #include "Scoring/ClearanceScoring.h"
@@ -541,6 +542,46 @@ void AClearanceOperatorPC::Server_InjectStopRTIEmit_Implementation()
 	{
 		C->StopRTIEmitter();
 		C->PushNotification(TEXT("RTI: publishing stopped"), FColor::Green, 4.f);
+	}
+}
+
+// --- HLA federate join/resign -----------------------------------------------
+
+bool AClearanceOperatorPC::Server_InjectStartHLAJoin_Validate(const FString&, const FString&, const FString&) { return true; }
+void AClearanceOperatorPC::Server_InjectStartHLAJoin_Implementation(const FString& FederationName, const FString& FederateName, const FString& FomModulePath)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		// Defensive path resolution - BP-side string concatenation for the
+		// FOM path is fragile (slash direction, separator between the
+		// plugin dir + FOM subpath). If the caller-supplied path is empty
+		// OR doesn't point at a real file, fall back to the canonical
+		// location under the ClearanceSim plugin. Keeps the panel JOIN
+		// button working even when the BP wiring mangles the path. - TripleA
+		FString ResolvedFom = FomModulePath;
+		if (ResolvedFom.IsEmpty() || !FPaths::FileExists(ResolvedFom))
+		{
+			ResolvedFom = FPaths::Combine(FPaths::ProjectPluginsDir(),
+				TEXT("ClearanceSim/FOM/ClearanceRPR-FOM.xml"));
+			UE_LOG(LogTemp, Display, TEXT("[HLA] BP-supplied FOM path '%s' unresolvable - using default '%s'"),
+				*FomModulePath, *ResolvedFom);
+		}
+
+		const bool bOk = C->StartHLAFederate(FederationName, FederateName, ResolvedFom);
+		C->PushNotification(
+			bOk ? FString::Printf(TEXT("HLA: joined '%s' as '%s'"), *FederationName, *FederateName)
+			    : FString::Printf(TEXT("HLA: join failed on '%s'"), *FederationName),
+			bOk ? FColor::Purple : FColor::Red, 5.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStopHLAJoin_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectStopHLAJoin_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->StopHLAFederate();
+		C->PushNotification(TEXT("HLA: resigned"), FColor::Purple, 4.f);
 	}
 }
 

@@ -105,7 +105,7 @@ namespace ClearanceDISEmitterHelpers
 
 // Pull the helpers into file scope so member function bodies below don't have
 // to qualify every call - keeps the diff to just the namespace header. - TripleA
-using namespace ClearanceDISEmitterHelpers;
+// using directive removed - qualified calls below to avoid unity-build ambiguity - TripleA
 
 bool UClearanceDISEmitter::Start(const FString& Host, int32 Port)
 {
@@ -162,7 +162,7 @@ void UClearanceDISEmitter::Stop()
 void UClearanceDISEmitter::EmitStates(const TArray<FAircraftState>& States, float SimTimeSeconds)
 {
 	if (!Socket || !TargetAddr.IsValid()) { return; }
-	const ClearanceDIS::FWireParams Params = MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
+	const ClearanceDIS::FWireParams Params = ClearanceDISEmitterHelpers::MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
 
 	TArray<uint8> Buf;
 	for (const FAircraftState& S : States)
@@ -170,10 +170,10 @@ void UClearanceDISEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		if (!S.bIsValid) { continue; }
 
 		ClearanceDIS::FEntityState PodS;
-		PodS.EntityNumber = EntityFromCallsign(S.Callsign);
-		PodS.ForceId      = ForceIdFor(S.ThreatClass);
+		PodS.EntityNumber = ClearanceDISEmitterHelpers::EntityFromCallsign(S.Callsign);
+		PodS.ForceId      = ClearanceDISEmitterHelpers::ForceIdFor(S.ThreatClass);
 
-		const FEntityTypeSubfields ET = EntityTypeFor(S.WakeCategory);
+		const ClearanceDISEmitterHelpers::FEntityTypeSubfields ET = ClearanceDISEmitterHelpers::EntityTypeFor(S.WakeCategory);
 		PodS.EntityKind        = ET.Kind;
 		PodS.EntityDomain      = ET.Domain;
 		PodS.EntityCountry     = ET.Country;
@@ -195,9 +195,9 @@ void UClearanceDISEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		PodS.ThetaRad = 0.f;
 		PodS.PhiRad   = FMath::DegreesToRadians(S.BankAngle);
 
-		PodS.Marking = ToAsciiString(S.Callsign.ToString());
+		PodS.Marking = ClearanceDISEmitterHelpers::ToAsciiString(S.Callsign.ToString());
 
-		CopyPodToTArray(ClearanceDIS::BuildEntityStatePDU(PodS, Params), Buf);
+		ClearanceDISEmitterHelpers::CopyPodToTArray(ClearanceDIS::BuildEntityStatePDU(PodS, Params), Buf);
 		int32 Sent = 0;
 		if (Socket->SendTo(Buf.GetData(), Buf.Num(), Sent, *TargetAddr) && Sent > 0)
 		{
@@ -209,7 +209,7 @@ void UClearanceDISEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 void UClearanceDISEmitter::EmitEmissions(const TArray<FRadarEmissionSnapshot>& Radars, float SimTimeSeconds)
 {
 	if (!Socket || !TargetAddr.IsValid()) { return; }
-	const ClearanceDIS::FWireParams Params = MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
+	const ClearanceDIS::FWireParams Params = ClearanceDISEmitterHelpers::MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
 
 	TArray<uint8> Buf;
 	for (const FRadarEmissionSnapshot& R : Radars)
@@ -217,7 +217,7 @@ void UClearanceDISEmitter::EmitEmissions(const TArray<FRadarEmissionSnapshot>& R
 		if (!R.bEnabled) { continue; }
 
 		ClearanceDIS::FEmissionSnapshot Pod;
-		Pod.EmittingEntity  = EntityFromCallsign(R.SiteName);
+		Pod.EmittingEntity  = ClearanceDISEmitterHelpers::EntityFromCallsign(R.SiteName);
 		Pod.PositionMetersX = double(R.SitePositionNm.X) * 1852.0;
 		Pod.PositionMetersY = double(R.SitePositionNm.Y) * 1852.0;
 		Pod.PositionMetersZ = 0.0;
@@ -235,11 +235,11 @@ void UClearanceDISEmitter::EmitEmissions(const TArray<FRadarEmissionSnapshot>& R
 		Pod.PaintedEntityNumbers.reserve(R.PaintedCallsigns.Num());
 		for (const FName& C : R.PaintedCallsigns)
 		{
-			const std::uint16_t E = EntityFromCallsign(C);
+			const std::uint16_t E = ClearanceDISEmitterHelpers::EntityFromCallsign(C);
 			if (E != 0) { Pod.PaintedEntityNumbers.push_back(E); }
 		}
 
-		CopyPodToTArray(ClearanceDIS::BuildEmissionPDU(Pod, Params), Buf);
+		ClearanceDISEmitterHelpers::CopyPodToTArray(ClearanceDIS::BuildEmissionPDU(Pod, Params), Buf);
 		int32 Sent = 0;
 		if (Socket->SendTo(Buf.GetData(), Buf.Num(), Sent, *TargetAddr) && Sent > 0)
 		{
@@ -251,14 +251,14 @@ void UClearanceDISEmitter::EmitEmissions(const TArray<FRadarEmissionSnapshot>& R
 void UClearanceDISEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Events, float SimTimeSeconds)
 {
 	if (!Socket || !TargetAddr.IsValid()) { return; }
-	const ClearanceDIS::FWireParams Params = MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
+	const ClearanceDIS::FWireParams Params = ClearanceDISEmitterHelpers::MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
 
 	TArray<uint8> Buf;
 	for (const FWeaponsFireEvent& E : Events)
 	{
 		ClearanceDIS::FFireEvent Pod;
-		Pod.FiringEntity   = EntityFromCallsign(E.FiringCallsign);
-		Pod.TargetEntity   = EntityFromCallsign(E.TargetCallsign);
+		Pod.FiringEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.FiringCallsign);
+		Pod.TargetEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.TargetCallsign);
 		Pod.EventNumber    = static_cast<std::uint16_t>(E.EventNumber & 0xFFFFu);
 		Pod.MunitionEntity = ClearanceDIS::DeriveMunitionEntityNumber(Pod.FiringEntity, static_cast<std::uint32_t>(E.EventNumber));
 
@@ -276,7 +276,7 @@ void UClearanceDISEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Event
 		Pod.Rate         = static_cast<std::uint16_t>(E.Rate);
 		Pod.RangeMeters  = E.RangeMeters;
 
-		CopyPodToTArray(ClearanceDIS::BuildFirePDU(Pod, Params), Buf);
+		ClearanceDISEmitterHelpers::CopyPodToTArray(ClearanceDIS::BuildFirePDU(Pod, Params), Buf);
 		int32 Sent = 0;
 		if (Socket->SendTo(Buf.GetData(), Buf.Num(), Sent, *TargetAddr) && Sent > 0)
 		{
@@ -288,14 +288,14 @@ void UClearanceDISEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Event
 void UClearanceDISEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationEvent>& Events, float SimTimeSeconds)
 {
 	if (!Socket || !TargetAddr.IsValid()) { return; }
-	const ClearanceDIS::FWireParams Params = MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
+	const ClearanceDIS::FWireParams Params = ClearanceDISEmitterHelpers::MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
 
 	TArray<uint8> Buf;
 	for (const FWeaponsDetonationEvent& E : Events)
 	{
 		ClearanceDIS::FDetonationEvent Pod;
-		Pod.FiringEntity   = EntityFromCallsign(E.FiringCallsign);
-		Pod.TargetEntity   = EntityFromCallsign(E.TargetCallsign);
+		Pod.FiringEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.FiringCallsign);
+		Pod.TargetEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.TargetCallsign);
 		Pod.EventNumber    = static_cast<std::uint16_t>(E.EventNumber & 0xFFFFu);
 		Pod.MunitionEntity = ClearanceDIS::DeriveMunitionEntityNumber(Pod.FiringEntity, static_cast<std::uint32_t>(E.EventNumber));
 
@@ -313,7 +313,7 @@ void UClearanceDISEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationE
 		Pod.Rate         = static_cast<std::uint16_t>(E.Rate);
 		Pod.DetonationResult = E.DetonationResult;
 
-		CopyPodToTArray(ClearanceDIS::BuildDetonationPDU(Pod, Params), Buf);
+		ClearanceDISEmitterHelpers::CopyPodToTArray(ClearanceDIS::BuildDetonationPDU(Pod, Params), Buf);
 		int32 Sent = 0;
 		if (Socket->SendTo(Buf.GetData(), Buf.Num(), Sent, *TargetAddr) && Sent > 0)
 		{
@@ -325,7 +325,7 @@ void UClearanceDISEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationE
 void UClearanceDISEmitter::EmitVoiceEvents(const TArray<FVoiceCommsEvent>& Events, float SimTimeSeconds)
 {
 	if (!Socket || !TargetAddr.IsValid()) { return; }
-	const ClearanceDIS::FWireParams Params = MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
+	const ClearanceDIS::FWireParams Params = ClearanceDISEmitterHelpers::MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
 
 	TArray<uint8> Buf;
 	for (const FVoiceCommsEvent& E : Events)
@@ -333,14 +333,14 @@ void UClearanceDISEmitter::EmitVoiceEvents(const TArray<FVoiceCommsEvent>& Event
 		ClearanceDIS::FSignalEvent Pod;
 		Pod.OwnerEntity = E.SpeakerCallsign.IsNone()
 			? ClearanceDIS::kOperatorGroundStationEntity
-			: EntityFromCallsign(E.SpeakerCallsign);
+			: ClearanceDISEmitterHelpers::EntityFromCallsign(E.SpeakerCallsign);
 		Pod.RadioId = static_cast<std::uint16_t>(E.RadioId);
 
 		const FTCHARToUTF8 Utf8(*E.Transcript);
 		Pod.Data.assign(reinterpret_cast<const std::uint8_t*>(Utf8.Get()),
 		                reinterpret_cast<const std::uint8_t*>(Utf8.Get()) + Utf8.Length());
 
-		CopyPodToTArray(ClearanceDIS::BuildSignalPDU(Pod, Params), Buf);
+		ClearanceDISEmitterHelpers::CopyPodToTArray(ClearanceDIS::BuildSignalPDU(Pod, Params), Buf);
 		int32 Sent = 0;
 		if (Socket->SendTo(Buf.GetData(), Buf.Num(), Sent, *TargetAddr) && Sent > 0)
 		{
@@ -352,7 +352,7 @@ void UClearanceDISEmitter::EmitVoiceEvents(const TArray<FVoiceCommsEvent>& Event
 void UClearanceDISEmitter::EmitTransmitters(const TArray<FRadioTransmitter>& Transmitters, float SimTimeSeconds)
 {
 	if (!Socket || !TargetAddr.IsValid()) { return; }
-	const ClearanceDIS::FWireParams Params = MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
+	const ClearanceDIS::FWireParams Params = ClearanceDISEmitterHelpers::MakeParams(SiteId, ApplicationId, ExerciseId, SimTimeSeconds);
 
 	TArray<uint8> Buf;
 	for (const FRadioTransmitter& R : Transmitters)
@@ -360,7 +360,7 @@ void UClearanceDISEmitter::EmitTransmitters(const TArray<FRadioTransmitter>& Tra
 		ClearanceDIS::FTransmitterState Pod;
 		Pod.OwnerEntity = R.OwnerCallsign.IsNone()
 			? ClearanceDIS::kOperatorGroundStationEntity
-			: EntityFromCallsign(R.OwnerCallsign);
+			: ClearanceDISEmitterHelpers::EntityFromCallsign(R.OwnerCallsign);
 		Pod.RadioId       = static_cast<std::uint16_t>(R.RadioId);
 		Pod.FrequencyHz   = static_cast<std::uint64_t>(R.FrequencyHz);
 		Pod.BandwidthHz   = R.BandwidthHz;
@@ -370,7 +370,7 @@ void UClearanceDISEmitter::EmitTransmitters(const TArray<FRadioTransmitter>& Tra
 		Pod.AntennaYMeters = R.AntennaWorldMeters.Y;
 		Pod.AntennaZMeters = R.AntennaWorldMeters.Z;
 
-		CopyPodToTArray(ClearanceDIS::BuildTransmitterPDU(Pod, Params), Buf);
+		ClearanceDISEmitterHelpers::CopyPodToTArray(ClearanceDIS::BuildTransmitterPDU(Pod, Params), Buf);
 		int32 Sent = 0;
 		if (Socket->SendTo(Buf.GetData(), Buf.Num(), Sent, *TargetAddr) && Sent > 0)
 		{

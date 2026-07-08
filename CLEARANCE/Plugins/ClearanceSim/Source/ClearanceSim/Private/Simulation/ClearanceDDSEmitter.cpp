@@ -57,7 +57,7 @@ namespace ClearanceDDSEmitterHelpers
 	}
 }
 
-using namespace ClearanceDDSEmitterHelpers;
+// using directive removed - qualified calls below to avoid unity-build ambiguity - TripleA
 
 UClearanceDDSEmitter::UClearanceDDSEmitter() = default;
 UClearanceDDSEmitter::~UClearanceDDSEmitter() = default;
@@ -114,10 +114,10 @@ void UClearanceDDSEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		if (!S.bIsValid) { continue; }
 
 		ClearanceDDS::AircraftState M;
-		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
-		M.EntityNumber(EntityFromCallsign(S.Callsign));
-		M.Marking(AsciiString(S.Callsign.ToString()));
-		M.ForceId(ForceIdFor(S.ThreatClass));
+		M.Header(ClearanceDDSEmitterHelpers::MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.EntityNumber(ClearanceDDSEmitterHelpers::EntityFromCallsign(S.Callsign));
+		M.Marking(ClearanceDDSEmitterHelpers::AsciiString(S.Callsign.ToString()));
+		M.ForceId(ClearanceDDSEmitterHelpers::ForceIdFor(S.ThreatClass));
 		M.EntityKind(1);
 		M.EntityDomain(2);
 		M.EntityCountry(225);
@@ -140,7 +140,7 @@ void UClearanceDDSEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 
 		// ATC extension fields - carry the ATC-specific state peers need to
 		// render the full picture (threat class, emergency, squawk, phase). - TripleA
-		M.TrueAffiliation(ForceIdFor(S.TrueAffiliation));
+		M.TrueAffiliation(ClearanceDDSEmitterHelpers::ForceIdFor(S.TrueAffiliation));
 		M.SquawkCode(static_cast<uint16_t>(S.SquawkCode));
 		M.ActiveEmergency(static_cast<uint8_t>(S.ActiveEmergency));
 		M.FlightPhase(static_cast<uint8_t>(S.FlightPhase));
@@ -157,8 +157,8 @@ void UClearanceDDSEmitter::EmitEmissions(const TArray<FRadarEmissionSnapshot>& R
 		if (!R.bEnabled) { continue; }
 
 		ClearanceDDS::EmissionSnapshot M;
-		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
-		M.EmittingEntity(EntityFromCallsign(R.SiteName));
+		M.Header(ClearanceDDSEmitterHelpers::MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.EmittingEntity(ClearanceDDSEmitterHelpers::EntityFromCallsign(R.SiteName));
 		M.PositionMetersX(double(R.SitePositionNm.X) * 1852.0);
 		M.PositionMetersY(double(R.SitePositionNm.Y) * 1852.0);
 		M.PositionMetersZ(0.0);
@@ -176,7 +176,7 @@ void UClearanceDDSEmitter::EmitEmissions(const TArray<FRadarEmissionSnapshot>& R
 		Painted.reserve(R.PaintedCallsigns.Num());
 		for (const FName& C : R.PaintedCallsigns)
 		{
-			const std::uint16_t E = EntityFromCallsign(C);
+			const std::uint16_t E = ClearanceDDSEmitterHelpers::EntityFromCallsign(C);
 			if (E != 0) { Painted.push_back(E); }
 		}
 		M.PaintedEntityNumbers(std::move(Painted));
@@ -190,11 +190,11 @@ void UClearanceDDSEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Event
 	if (!Publisher.IsValid()) { return; }
 	for (const FWeaponsFireEvent& E : Events)
 	{
-		const std::uint16_t Firer  = EntityFromCallsign(E.FiringCallsign);
-		const std::uint16_t Target = EntityFromCallsign(E.TargetCallsign);
+		const std::uint16_t Firer  = ClearanceDDSEmitterHelpers::EntityFromCallsign(E.FiringCallsign);
+		const std::uint16_t Target = ClearanceDDSEmitterHelpers::EntityFromCallsign(E.TargetCallsign);
 
 		ClearanceDDS::FireEvent M;
-		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.Header(ClearanceDDSEmitterHelpers::MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
 		M.FiringEntity(Firer);
 		M.TargetEntity(Target);
 		M.EventNumber(static_cast<uint16_t>(E.EventNumber & 0xFFFFu));
@@ -221,11 +221,11 @@ void UClearanceDDSEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationE
 	if (!Publisher.IsValid()) { return; }
 	for (const FWeaponsDetonationEvent& E : Events)
 	{
-		const std::uint16_t Firer  = EntityFromCallsign(E.FiringCallsign);
-		const std::uint16_t Target = EntityFromCallsign(E.TargetCallsign);
+		const std::uint16_t Firer  = ClearanceDDSEmitterHelpers::EntityFromCallsign(E.FiringCallsign);
+		const std::uint16_t Target = ClearanceDDSEmitterHelpers::EntityFromCallsign(E.TargetCallsign);
 
 		ClearanceDDS::DetonationEvent M;
-		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.Header(ClearanceDDSEmitterHelpers::MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
 		M.FiringEntity(Firer);
 		M.TargetEntity(Target);
 		M.EventNumber(static_cast<uint16_t>(E.EventNumber & 0xFFFFu));
@@ -253,10 +253,10 @@ void UClearanceDDSEmitter::EmitVoiceEvents(const TArray<FVoiceCommsEvent>& Event
 	for (const FVoiceCommsEvent& E : Events)
 	{
 		ClearanceDDS::SignalEvent M;
-		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.Header(ClearanceDDSEmitterHelpers::MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
 		M.OwnerEntity(E.SpeakerCallsign.IsNone()
-			? kOperatorGroundStationEntity
-			: EntityFromCallsign(E.SpeakerCallsign));
+			? ClearanceDDSEmitterHelpers::kOperatorGroundStationEntity
+			: ClearanceDDSEmitterHelpers::EntityFromCallsign(E.SpeakerCallsign));
 		M.RadioId(static_cast<uint16_t>(E.RadioId));
 
 		const FTCHARToUTF8 Utf8(*E.Transcript);
@@ -274,10 +274,10 @@ void UClearanceDDSEmitter::EmitTransmitters(const TArray<FRadioTransmitter>& Tra
 	for (const FRadioTransmitter& R : Transmitters)
 	{
 		ClearanceDDS::TransmitterState M;
-		M.Header(MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
+		M.Header(ClearanceDDSEmitterHelpers::MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds));
 		M.OwnerEntity(R.OwnerCallsign.IsNone()
-			? kOperatorGroundStationEntity
-			: EntityFromCallsign(R.OwnerCallsign));
+			? ClearanceDDSEmitterHelpers::kOperatorGroundStationEntity
+			: ClearanceDDSEmitterHelpers::EntityFromCallsign(R.OwnerCallsign));
 		M.RadioId(static_cast<uint16_t>(R.RadioId));
 		M.FrequencyHz(static_cast<uint64_t>(R.FrequencyHz));
 		M.BandwidthHz(R.BandwidthHz);

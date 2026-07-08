@@ -134,6 +134,18 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|RTI")
 	int32 GetRTIEmitRatePerSec() const { return RTIEmitRatePerSec; }
 
+	// HLA federate status - IEEE 1516-2010 fourth wire. Publish-only for
+	// MVP; RECV variant added when the ambassador starts subscribing to
+	// peer object updates. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|HLA")
+	bool IsHLAJoined() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|HLA")
+	int32 GetHLAUpdatesSent() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|HLA")
+	int32 GetHLAUpdateRatePerSec() const { return HLAUpdateRatePerSec; }
+
 	// In-station operator's manual - one entry per section. Content is
 	// hardcoded server-side so any packaged build carries the manual with it
 	// (no data-only content dependency). BP renders each section's Title in
@@ -712,6 +724,8 @@ private:
 	int32 LastDDSRecvSample = 0;
 	int32 RTIEmitRatePerSec = 0;
 	int32 LastRTIEmitSample = 0;
+	int32 HLAUpdateRatePerSec = 0;
+	int32 LastHLAUpdateSample = 0;
 
 	// Callsigns currently rendered in the scroll box, in row order. Lets the
 	// populate path skip the destroy-and-recreate when only field values

@@ -62,7 +62,11 @@ namespace ClearanceRTIEmitterHelpers
 	}
 }
 
-using namespace ClearanceRTIEmitterHelpers;
+// No file-scope `using namespace` here on purpose - sibling emitter TUs
+// (DIS/DDS/HLA) each have their own named-namespace helpers with the same
+// function names, and unity-build concatenation of the `using` directives
+// makes every unqualified call ambiguous. RTI's helper calls below are
+// fully qualified. - TripleA
 
 UClearanceRTIEmitter::UClearanceRTIEmitter() = default;
 
@@ -137,10 +141,10 @@ void UClearanceRTIEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		if (!S.bIsValid) { continue; }
 
 		ClearanceRTI::AircraftState M;
-		M.Header            = MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds);
-		M.EntityNumber      = EntityFromCallsign(S.Callsign);
-		M.Marking           = AsciiString(S.Callsign.ToString());
-		M.ForceId           = ForceIdFor(S.ThreatClass);
+		M.Header            = ClearanceRTIEmitterHelpers::MakeHeader(ExerciseId, SiteId, ApplicationId, SimTimeSeconds);
+		M.EntityNumber      = ClearanceRTIEmitterHelpers::EntityFromCallsign(S.Callsign);
+		M.Marking           = ClearanceRTIEmitterHelpers::AsciiString(S.Callsign.ToString());
+		M.ForceId           = ClearanceRTIEmitterHelpers::ForceIdFor(S.ThreatClass);
 		M.EntityKind        = 1;
 		M.EntityDomain      = 2;
 		M.EntityCountry     = 225;
@@ -164,7 +168,7 @@ void UClearanceRTIEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		// ATC extension fields - carry the ATC-specific state peers need
 		// to render the full picture (threat class, emergency, squawk,
 		// phase). Same field set as DDS. - TripleA
-		M.TrueAffiliation = ForceIdFor(S.TrueAffiliation);
+		M.TrueAffiliation = ClearanceRTIEmitterHelpers::ForceIdFor(S.TrueAffiliation);
 		M.SquawkCode      = static_cast<uint16_t>(S.SquawkCode);
 		M.ActiveEmergency = static_cast<uint8_t>(S.ActiveEmergency);
 		M.FlightPhase     = static_cast<uint8_t>(S.FlightPhase);

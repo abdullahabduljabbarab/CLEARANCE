@@ -133,6 +133,15 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|RTI")
 	void Server_InjectStopRTIEmit();
 
+	// HLA federate controls - fourth interoperability wire, IEEE 1516-2010.
+	// Server_InjectStartHLAJoin creates+joins the federation; resign tears
+	// down. The federate lives on the server-authoritative controller. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|HLA")
+	void Server_InjectStartHLAJoin(const FString& FederationName, const FString& FederateName, const FString& FomModulePath);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|HLA")
+	void Server_InjectStopHLAJoin();
+
 	// Replay control: client UI fires these so the SERVER's controller flips
 	// into replay mode and poses the world to the recording. The server then
 	// replicates the airspace back so the client sees the scrubbed traffic. - TripleA

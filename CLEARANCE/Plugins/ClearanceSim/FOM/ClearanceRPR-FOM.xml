@@ -1,0 +1,336 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+============================================================================
+Clearance RPR-FOM Extension - HLA 1516-2010 FOM Module.
+
+Extends SISO RPR-FOM 2.0 (Real-time Platform Reference Federation Object
+Model) with CLEARANCE-specific classes and interactions:
+
+  - ATCManagedAircraft (subclass of BaseEntity.PhysicalEntity.Platform.Aircraft)
+    Adds SquawkCode, FlightPhase, ActiveClearance, ATCFacility - the ATC-
+    domain state that stock RPR-FOM Aircraft doesn't carry.
+
+  - ATCEvent (interaction root) -> Handoff, ClearanceIssued
+    ATC-specific coordination interactions between facilities.
+
+  - FlightPhaseEnum + AtcClearanceKindEnum datatypes.
+
+Companion RPR-FOM 2.0 SISO base module is expected to be loaded first by
+the RTI - this file only declares what CLEARANCE adds on top. Reference
+implementation: https://www.sisostds.org/RPR-FOM
+
+Loading order for an OpenRTI / Portico federate:
+   createFederationExecution("CLEARANCE_Exercise", [
+       "RPR-FOM-2.0-Base.xml",       <- SISO reference (external download)
+       "ClearanceRPR-FOM.xml"        <- this file
+   ]);
+
+NOT USED AT RUNTIME today - CLEARANCE ships DIS + DDS federation wires,
+not HLA. Ships this XML as a portfolio artifact + the concrete input the
+runtime integration would consume when it lands. See HLA_INTEGRATION.md
+for the deferral rationale and the runtime path. - TripleA
+============================================================================
+-->
+<objectModel xsi:schemaLocation="http://standards.ieee.org/IEEE1516-2010 IEEE1516-DIF-2010.xsd"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xmlns="http://standards.ieee.org/IEEE1516-2010">
+
+  <!--=====================================================================-->
+  <!-- Model identification                                                 -->
+  <!--=====================================================================-->
+  <modelIdentification>
+    <name>Clearance RPR-FOM Extension</name>
+    <type>FOM</type>
+    <version>1.0</version>
+    <modificationDate>2026-07-07</modificationDate>
+    <securityClassification>Unclassified</securityClassification>
+    <releaseRestriction>None</releaseRestriction>
+    <purpose>
+      Adds ATC-domain classes and interactions on top of SISO RPR-FOM 2.0
+      so CLEARANCE-authored aircraft carry their SSR code, flight phase,
+      active clearance, and controlling facility as first-class HLA
+      attributes rather than opaque DIS payload.
+    </purpose>
+    <applicationDomain>Air Traffic Control / Air Defence training</applicationDomain>
+    <description>
+      Extension FOM module for the CLEARANCE portfolio project. Extends
+      BaseEntity.PhysicalEntity.Platform.Aircraft with an
+      ATCManagedAircraft subclass and adds an ATCEvent interaction
+      hierarchy for handoff and clearance issuance. Compatible with any
+      IEEE 1516-2010 RTI. Load alongside RPR-FOM 2.0 SISO base module.
+    </description>
+    <useLimitation>None</useLimitation>
+    <useHistory>Initial 2026-07-07 release for CLEARANCE portfolio.</useHistory>
+    <poc>
+      <pocType>Primary author</pocType>
+      <pocName>Jeremy Paxful (TripleA)</pocName>
+    </poc>
+    <keyword>
+      <taxonomy>Application Domain</taxonomy>
+      <keywordValue>ATC, Air Defence, GCI, RPR-FOM, DIS, DDS</keywordValue>
+    </keyword>
+    <other>
+      Ships as a portfolio artifact. HLA runtime integration deferred -
+      see HLA_INTEGRATION.md.
+    </other>
+  </modelIdentification>
+
+  <!--=====================================================================-->
+  <!-- Object classes                                                       -->
+  <!--                                                                      -->
+  <!-- Only the extension leaf shows the CLEARANCE additions - the parent   -->
+  <!-- chain (HLAobjectRoot -> BaseEntity -> ... -> Aircraft) is declared   -->
+  <!-- in the SISO RPR-FOM 2.0 base module that must be loaded first.       -->
+  <!--=====================================================================-->
+  <objects>
+    <objectClass>
+      <name>HLAobjectRoot</name>
+      <objectClass>
+        <name>BaseEntity</name>
+        <objectClass>
+          <name>PhysicalEntity</name>
+          <objectClass>
+            <name>Platform</name>
+            <objectClass>
+              <name>Aircraft</name>
+
+              <!--============================================================
+                 ATCManagedAircraft - CLEARANCE's extension leaf.
+
+                 A stock RPR-FOM Aircraft carries WorldLocation,
+                 VelocityVector, Orientation, EntityType, EntityIdentifier,
+                 ForceIdentifier, Marking, etc. That's enough for a
+                 sensor / fusion federate. But for an ATC-domain federation
+                 we need the aircraft's SSR code (which the operator IDs
+                 targets by), flight phase (whether it's approaching, in
+                 the pattern, going around, or departing), active
+                 clearance text (what the operator most recently told the
+                 pilot), and which ATC facility currently owns the
+                 clearance. All four are ATC-specific and not covered by
+                 the base FOM.
+
+                 A pure sensor-fusion federate can safely IGNORE this
+                 subclass and treat instances as vanilla Aircraft - the
+                 stock attributes are still there. But an ATC-aware
+                 federate (e.g. a peer tower simulator, an AWACS
+                 controller station, a training after-action review tool)
+                 can subscribe to this leaf and get the whole picture.
+                 - TripleA
+              ============================================================-->
+              <objectClass>
+                <name>ATCManagedAircraft</name>
+                <sharing>PublishSubscribe</sharing>
+                <semantics>
+                  Aircraft under active air traffic control. Extends the
+                  stock RPR-FOM Aircraft with SSR code, flight phase,
+                  active clearance text, and controlling ATC facility.
+                </semantics>
+
+                <attribute>
+                  <name>SquawkCode</name>
+                  <dataType>HLAinteger16BE</dataType>
+                  <updateType>Conditional</updateType>
+                  <updateCondition>On change</updateCondition>
+                  <ownership>NoTransfer</ownership>
+                  <sharing>PublishSubscribe</sharing>
+                  <transportation>HLAbestEffort</transportation>
+                  <order>Receive</order>
+                  <semantics>
+                    Mode A / 3 SSR code, octal 0000-7777, encoded as
+                    decimal in the low 12 bits of the integer (e.g. 1200
+                    for VFR, 7500/7600/7700 for emergencies).
+                  </semantics>
+                </attribute>
+
+                <attribute>
+                  <name>FlightPhase</name>
+                  <dataType>FlightPhaseEnum</dataType>
+                  <updateType>Conditional</updateType>
+                  <updateCondition>On change</updateCondition>
+                  <ownership>NoTransfer</ownership>
+                  <sharing>PublishSubscribe</sharing>
+                  <transportation>HLAbestEffort</transportation>
+                  <order>Receive</order>
+                  <semantics>
+                    Enroute / Approach / Landing / GoAround / Departing /
+                    Exiting - CLEARANCE's own EFlightPhase enum.
+                  </semantics>
+                </attribute>
+
+                <attribute>
+                  <name>ActiveClearance</name>
+                  <dataType>HLAunicodeString</dataType>
+                  <updateType>Conditional</updateType>
+                  <updateCondition>On change</updateCondition>
+                  <ownership>NoTransfer</ownership>
+                  <sharing>PublishSubscribe</sharing>
+                  <transportation>HLAreliable</transportation>
+                  <order>Receive</order>
+                  <semantics>
+                    Human-readable text of the most recent clearance issued
+                    by ATC. Empty if no active clearance. Reliable
+                    transport because losing a clearance update creates a
+                    dangerous incorrect situation-awareness on peer
+                    federates.
+                  </semantics>
+                </attribute>
+
+                <attribute>
+                  <name>ATCFacility</name>
+                  <dataType>HLAunicodeString</dataType>
+                  <updateType>Conditional</updateType>
+                  <updateCondition>On change</updateCondition>
+                  <ownership>NoTransfer</ownership>
+                  <sharing>PublishSubscribe</sharing>
+                  <transportation>HLAreliable</transportation>
+                  <order>Receive</order>
+                  <semantics>
+                    ICAO identifier of the ATC facility currently
+                    controlling this aircraft (e.g. "EGLL_TWR",
+                    "EGLL_APP", "LON_ACC"). Updated on handoff.
+                  </semantics>
+                </attribute>
+
+              </objectClass>
+            </objectClass>
+          </objectClass>
+        </objectClass>
+      </objectClass>
+    </objectClass>
+  </objects>
+
+  <!--=====================================================================-->
+  <!-- Interactions                                                         -->
+  <!--                                                                      -->
+  <!-- ATC-specific coordination events between facilities in the           -->
+  <!-- federation. Transient - no persistent object state - which is why    -->
+  <!-- they're interactions and not objects.                                -->
+  <!--=====================================================================-->
+  <interactions>
+    <interactionClass>
+      <name>HLAinteractionRoot</name>
+
+      <interactionClass>
+        <name>ATCEvent</name>
+        <sharing>PublishSubscribe</sharing>
+        <transportation>HLAreliable</transportation>
+        <order>Receive</order>
+        <semantics>
+          Root for CLEARANCE ATC-domain interactions. Federates that
+          only care about specific events (e.g. Handoff) can subscribe
+          at the leaf without receiving the whole hierarchy.
+        </semantics>
+
+        <interactionClass>
+          <name>Handoff</name>
+          <sharing>PublishSubscribe</sharing>
+          <transportation>HLAreliable</transportation>
+          <order>Receive</order>
+          <semantics>
+            Aircraft control transfers from one ATC facility to another.
+            Both facilities are named by their ICAO identifier. The
+            receiving facility's ATCManagedAircraft.ATCFacility
+            attribute should be updated to match ToFacility on
+            receipt.
+          </semantics>
+          <parameter>
+            <name>AircraftInstance</name>
+            <dataType>HLAopaqueData</dataType>
+            <semantics>Object instance handle of the aircraft being handed off.</semantics>
+          </parameter>
+          <parameter>
+            <name>FromFacility</name>
+            <dataType>HLAunicodeString</dataType>
+            <semantics>ICAO ID of the releasing facility.</semantics>
+          </parameter>
+          <parameter>
+            <name>ToFacility</name>
+            <dataType>HLAunicodeString</dataType>
+            <semantics>ICAO ID of the receiving facility.</semantics>
+          </parameter>
+          <parameter>
+            <name>HandoffTimeSeconds</name>
+            <dataType>HLAfloat64BE</dataType>
+            <semantics>Federation-scaled time the handoff completed.</semantics>
+          </parameter>
+        </interactionClass>
+
+        <interactionClass>
+          <name>ClearanceIssued</name>
+          <sharing>PublishSubscribe</sharing>
+          <transportation>HLAreliable</transportation>
+          <order>Receive</order>
+          <semantics>
+            An ATC clearance was issued to an aircraft. Peer federates
+            (e.g. training assessment tools) can log this for
+            after-action review.
+          </semantics>
+          <parameter>
+            <name>AircraftInstance</name>
+            <dataType>HLAopaqueData</dataType>
+            <semantics>Object instance handle of the aircraft receiving the clearance.</semantics>
+          </parameter>
+          <parameter>
+            <name>ClearanceKind</name>
+            <dataType>AtcClearanceKindEnum</dataType>
+            <semantics>What kind of clearance (heading, altitude, approach, ...).</semantics>
+          </parameter>
+          <parameter>
+            <name>ClearanceText</name>
+            <dataType>HLAunicodeString</dataType>
+            <semantics>Human-readable clearance text as spoken by the controller.</semantics>
+          </parameter>
+          <parameter>
+            <name>IssuingFacility</name>
+            <dataType>HLAunicodeString</dataType>
+            <semantics>ICAO ID of the facility that issued the clearance.</semantics>
+          </parameter>
+        </interactionClass>
+
+      </interactionClass>
+    </interactionClass>
+  </interactions>
+
+  <!--=====================================================================-->
+  <!-- Custom datatypes                                                     -->
+  <!--=====================================================================-->
+  <dataTypes>
+    <basicDataRepresentations/>
+    <simpleDataTypes/>
+
+    <enumeratedDataTypes>
+
+      <enumeratedData>
+        <name>FlightPhaseEnum</name>
+        <representation>HLAoctet</representation>
+        <semantics>Flight phase - mirrors CLEARANCE's EFlightPhase enum.</semantics>
+        <enumerator><name>Enroute</name>   <values>0</values></enumerator>
+        <enumerator><name>Approach</name>  <values>1</values></enumerator>
+        <enumerator><name>Landing</name>   <values>2</values></enumerator>
+        <enumerator><name>GoAround</name>  <values>3</values></enumerator>
+        <enumerator><name>Departing</name> <values>4</values></enumerator>
+        <enumerator><name>Exiting</name>   <values>5</values></enumerator>
+      </enumeratedData>
+
+      <enumeratedData>
+        <name>AtcClearanceKindEnum</name>
+        <representation>HLAoctet</representation>
+        <semantics>Category of ATC clearance - mirrors CLEARANCE's EInstructionType.</semantics>
+        <enumerator><name>HeadingChange</name>      <values>0</values></enumerator>
+        <enumerator><name>AltitudeChange</name>     <values>1</values></enumerator>
+        <enumerator><name>SpeedChange</name>        <values>2</values></enumerator>
+        <enumerator><name>Hold</name>               <values>3</values></enumerator>
+        <enumerator><name>ApproachClearance</name>  <values>4</values></enumerator>
+        <enumerator><name>TakeoffClearance</name>   <values>5</values></enumerator>
+        <enumerator><name>ExitSector</name>         <values>6</values></enumerator>
+        <enumerator><name>DeclareTrackLost</name>   <values>7</values></enumerator>
+      </enumeratedData>
+
+    </enumeratedDataTypes>
+
+    <arrayDataTypes/>
+    <fixedRecordDataTypes/>
+    <variantRecordDataTypes/>
+  </dataTypes>
+
+</objectModel>

@@ -104,9 +104,17 @@ bool UClearanceDISEmitter::Start(const FString& Host, int32 Port)
 	ISocketSubsystem* SS = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 	if (!SS) { return false; }
 
+	// Broadcast for legacy 255.255.255.255 setups; multicast-loopback + TTL 1
+	// so 224.0.0.1 (the default HOST) works between two federate processes on
+	// the same box. Without IP_MULTICAST_LOOP the sender's own multicast
+	// packets are dropped before the local peer's socket sees them, so RECV
+	// stays at 0/s even with everything else wired. TTL 1 confines packets to
+	// the local link - matches DIS training-range convention. - TripleA
 	Socket = FUdpSocketBuilder(TEXT("ClearanceDISEmitter"))
 		.AsReusable()
 		.WithBroadcast()
+		.WithMulticastLoopback()
+		.WithMulticastTtl(1)
 		.WithSendBufferSize(64 * 1024)
 		.Build();
 	if (!Socket) { return false; }

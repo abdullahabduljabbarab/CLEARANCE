@@ -1,5 +1,9 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Simulation/ClearanceSimulationController.h"
+#include "Simulation/ClearanceDISEmitter.h"
+#include "Simulation/ClearanceDISReceiver.h"
+#include "Simulation/ClearanceDDSEmitter.h"
+#include "Simulation/ClearanceDDSReceiver.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Aircraft/ClearanceAircraftSpawner.h"
 #include "Scoring/ClearanceScoring.h"
@@ -474,6 +478,43 @@ void AClearanceOperatorPC::Server_InjectStopDDSEmit_Implementation()
 		C->StopDDSEmitter();
 		C->PushNotification(TEXT("DDS: publishing stopped"), FColor::Cyan, 4.f);
 	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStartDDSRecv_Validate(int32) { return true; }
+void AClearanceOperatorPC::Server_InjectStartDDSRecv_Implementation(int32 DomainId)
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		const bool bOk = C->StartDDSReceiver(DomainId);
+		C->PushNotification(
+			bOk ? FString::Printf(TEXT("DDS: listening on domain %d"), DomainId)
+			    : FString::Printf(TEXT("DDS: recv failed (domain %d)"), DomainId),
+			bOk ? FColor::Cyan : FColor::Red, 5.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectStopDDSRecv_Validate() { return true; }
+void AClearanceOperatorPC::Server_InjectStopDDSRecv_Implementation()
+{
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->StopDDSReceiver();
+		C->PushNotification(TEXT("DDS: recv stopped"), FColor::Cyan, 4.f);
+	}
+}
+
+bool AClearanceOperatorPC::Server_InjectSetFederateSiteId_Validate(int32) { return true; }
+void AClearanceOperatorPC::Server_InjectSetFederateSiteId_Implementation(int32 NewSiteId)
+{
+	AClearanceSimulationController* C = FindSimController(GetWorld());
+	if (!C) { return; }
+	if (UClearanceDISEmitter*  E = C->GetDISEmitter())  { E->SiteId      = NewSiteId; }
+	if (UClearanceDISReceiver* R = C->GetDISReceiver()) { R->LocalSiteId = NewSiteId; }
+	if (UClearanceDDSEmitter*  E = C->GetDDSEmitter())  { E->SiteId      = NewSiteId; }
+	if (UClearanceDDSReceiver* R = C->GetDDSReceiver()) { R->LocalSiteId = NewSiteId; }
+	C->PushNotification(
+		FString::Printf(TEXT("Federate Site ID = %d (DIS + DDS - peers must differ)"), NewSiteId),
+		FColor::Cyan, 5.f);
 }
 
 // --- AAR replay control ----------------------------------------------------

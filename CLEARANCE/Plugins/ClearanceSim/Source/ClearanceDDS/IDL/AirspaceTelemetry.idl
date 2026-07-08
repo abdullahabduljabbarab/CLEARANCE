@@ -49,7 +49,7 @@ module ClearanceDDS
         WireHeader Header;
         @key unsigned short EntityNumber;
         string Marking;                          // callsign, up to 11 ASCII chars
-        octet ForceId;                           // 0=other 1=friendly 2=hostile 3=neutral
+        octet ForceId;                           // 0=other 1=friendly 2=hostile 3=neutral (operator's declared classification)
         octet EntityKind;                        // Annex A: 1=Platform
         octet EntityDomain;                      // 2=Air
         unsigned short EntityCountry;
@@ -66,6 +66,13 @@ module ClearanceDDS
         float PsiRad;                            // yaw
         float ThetaRad;                          // pitch
         float PhiRad;                            // roll
+        // ATC extension fields - carry the ATC-specific state that stock DIS
+        // Entity State PDUs don't cover. Matches the ATCManagedAircraft
+        // subclass in ClearanceRPR-FOM.xml so a DIS-HLA-DDS bridge is direct.
+        octet TrueAffiliation;                   // god-view truth (same enum as ForceId)
+        unsigned short SquawkCode;               // Mode A/3 SSR code (0-7777 octal)
+        octet ActiveEmergency;                   // 0=None 1=GeneralMayday 2=CommsFailure 3=Hijack 4=FuelLow
+        octet FlightPhase;                       // 0=Enroute 1=Approach 2=Landing 3=GoAround 4=Departing 5=Exiting
     };
 
     // ------------------------------------------------------------------------

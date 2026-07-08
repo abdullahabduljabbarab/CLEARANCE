@@ -20,6 +20,7 @@
 #include "Simulation/ClearanceSessionRecorder.h"
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDDSEmitter.h"
+#include "Simulation/ClearanceDDSReceiver.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -349,8 +350,7 @@ void AClearanceSimulationController::InitialiseSystems()
 	DISEmitter = NewObject<UClearanceDISEmitter>(this);
 	DISReceiver = NewObject<UClearanceDISReceiver>(this);
 	DDSEmitter = NewObject<UClearanceDDSEmitter>(this);
-	UE_LOG(LogTemp, Display, TEXT("[DDS] InitialiseSystems on controller=%p world=%p netMode=%d: DDSEmitter=%p DISEmitter=%p"),
-		this, GetWorld(), int32(GetNetMode()), DDSEmitter.Get(), DISEmitter.Get());
+	DDSReceiver = NewObject<UClearanceDDSReceiver>(this);
 	Radar = NewObject<UClearanceRadar>(this);
 	if (Radar)
 	{
@@ -574,6 +574,14 @@ void AClearanceSimulationController::GetLifetimeReplicatedProps(TArray<FLifetime
 	DOREPLIFETIME(AClearanceSimulationController, RepScoringLog);
 	DOREPLIFETIME(AClearanceSimulationController, RepOperatorTracks);
 	DOREPLIFETIME(AClearanceSimulationController, RepCheckpoints);
+	DOREPLIFETIME(AClearanceSimulationController, RepDISPacketsSent);
+	DOREPLIFETIME(AClearanceSimulationController, RepDISPacketsReceived);
+	DOREPLIFETIME(AClearanceSimulationController, RepDDSPacketsSent);
+	DOREPLIFETIME(AClearanceSimulationController, RepDDSPacketsReceived);
+	DOREPLIFETIME(AClearanceSimulationController, bRepDISEmitting);
+	DOREPLIFETIME(AClearanceSimulationController, bRepDISReceiving);
+	DOREPLIFETIME(AClearanceSimulationController, bRepDDSEmitting);
+	DOREPLIFETIME(AClearanceSimulationController, bRepDDSReceiving);
 	DOREPLIFETIME(AClearanceSimulationController, SessionTime);
 	DOREPLIFETIME(AClearanceSimulationController, RepNotifications);
 	DOREPLIFETIME(AClearanceSimulationController, CameraOverview);
@@ -790,6 +798,10 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		{
 			DISReceiver->Poll(AirspaceManager, GetWorld()->GetRealTimeSeconds());
 		}
+		if (DDSReceiver && DDSReceiver->IsRunning() && AirspaceManager && GetWorld())
+		{
+			DDSReceiver->TickDrain(AirspaceManager, GetWorld()->GetRealTimeSeconds());
+		}
 		UpdateVisuals();
 		UpdateFollowCamera();
 		if (DISEmitter && DISEmitter->IsRunning() && AirspaceManager)
@@ -805,6 +817,10 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	if (DISReceiver && DISReceiver->IsRunning() && AirspaceManager && GetWorld())
 	{
 		DISReceiver->Poll(AirspaceManager, GetWorld()->GetRealTimeSeconds());
+	}
+	if (DDSReceiver && DDSReceiver->IsRunning() && AirspaceManager && GetWorld())
+	{
+		DDSReceiver->TickDrain(AirspaceManager, GetWorld()->GetRealTimeSeconds());
 	}
 
 	const float SimDelta = DeltaTime * FMath::Max(0.f, SimulationTimeScale);
@@ -1230,6 +1246,20 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 	// Publish each aircraft as a DIS Entity State PDU AND a DDS AircraftState
 	// topic sample. Runs in both live and replay. Two wires (DIS legacy +
 	// DDS pub/sub), same six data primitives, single tick. - TripleA
+	// Mirror server-side subobject counts onto replicated fields so the
+	// client's instructor panel can read them without dereferencing the
+	// unreplicated emitter/receiver pointers. Runs unconditionally each tick
+	// so counts also drop back to 0 when a wire is Stop'd (the underlying
+	// emitter resets its counter on Stop). - TripleA
+	RepDISPacketsSent     = DISEmitter  ? DISEmitter->GetLastPacketsSent()      : 0;
+	RepDISPacketsReceived = DISReceiver ? DISReceiver->GetLastPacketsReceived() : 0;
+	RepDDSPacketsSent     = DDSEmitter  ? DDSEmitter->GetTotalPublishedCount()  : 0;
+	RepDDSPacketsReceived = DDSReceiver ? DDSReceiver->GetTotalIngestedCount()  : 0;
+	bRepDISEmitting  = DISEmitter  && DISEmitter->IsRunning();
+	bRepDISReceiving = DISReceiver && DISReceiver->IsRunning();
+	bRepDDSEmitting  = DDSEmitter  && DDSEmitter->IsRunning();
+	bRepDDSReceiving = DDSReceiver && DDSReceiver->IsRunning();
+
 	const bool bDISOn = DISEmitter && DISEmitter->IsRunning();
 	const bool bDDSOn = DDSEmitter && DDSEmitter->IsRunning();
 	if ((bDISOn || bDDSOn) && AirspaceManager)
@@ -4338,8 +4368,6 @@ void AClearanceSimulationController::StopDIS()
 
 bool AClearanceSimulationController::StartDDSEmitter(int32 DomainId)
 {
-	UE_LOG(LogTemp, Display, TEXT("[DDS] StartDDSEmitter on controller=%p world=%p netMode=%d bInitialised=%d DDSEmitter=%p"),
-		this, GetWorld(), int32(GetNetMode()), int32(bInitialised), DDSEmitter.Get());
 	if (!DDSEmitter)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[DDS] StartDDSEmitter: DDSEmitter is null - controller not initialised"));
@@ -4371,6 +4399,42 @@ bool AClearanceSimulationController::IsDDSEmitting() const
 int32 AClearanceSimulationController::GetDDSPacketsSent() const
 {
 	return DDSEmitter ? DDSEmitter->GetTotalPublishedCount() : 0;
+}
+
+bool AClearanceSimulationController::StartDDSReceiver(int32 DomainId)
+{
+	if (!DDSReceiver) { return false; }
+	// Keep the receiver's loopback identity in sync with the emitter so our
+	// own publications don't get re-ingested. Matches the DIS pattern. - TripleA
+	if (DDSEmitter)
+	{
+		DDSReceiver->LocalSiteId        = DDSEmitter->SiteId;
+		DDSReceiver->LocalApplicationId = DDSEmitter->ApplicationId;
+	}
+	const bool bOk = DDSReceiver->Start(DomainId);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
+			bOk ? FString::Printf(TEXT("DDS: listening on domain %d"), DomainId)
+			    : FString::Printf(TEXT("DDS: failed to bind domain %d"), DomainId));
+	}
+	return bOk;
+}
+
+void AClearanceSimulationController::StopDDSReceiver()
+{
+	if (DDSReceiver) { DDSReceiver->Stop(); }
+	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DDS: recv stopped")); }
+}
+
+bool AClearanceSimulationController::IsDDSReceiving() const
+{
+	return DDSReceiver && DDSReceiver->IsRunning();
+}
+
+int32 AClearanceSimulationController::GetDDSAircraftIngested() const
+{
+	return DDSReceiver ? DDSReceiver->GetTotalIngestedCount() : 0;
 }
 
 bool AClearanceSimulationController::StartDISReceiver(int32 Port)
@@ -6771,6 +6835,37 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSStopCmd(
 		}
 	}));
 
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSListenCmd(
+	TEXT("clearance.dds.listen"),
+	TEXT("clearance.dds.listen [domain] - ingest DDS clearance/aircraft/state samples from peer federates on the given domain. Default 0."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		const int32 Domain = (Args.Num() >= 1) ? FCString::Atoi(*Args[0]) : 0;
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStartDDSRecv(Domain);
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StartDDSReceiver(Domain);
+		}
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSUnlistenCmd(
+	TEXT("clearance.dds.unlisten"),
+	TEXT("clearance.dds.unlisten - stop ingesting DDS aircraft samples"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>&, UWorld* World)
+	{
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
+		{
+			PC->Server_InjectStopDDSRecv();
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			C->StopDDSReceiver();
+		}
+	}));
+
 // In-process DDS subscriber - creates its own participant on the given
 // domain, subscribes to all six clearance/* topics, and logs each sample
 // as it arrives. Proves the publish path end-to-end without needing an
@@ -6847,19 +6942,32 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceDDSUnsubscribeCmd(
 // as its own broadcast loopback. - TripleA
 static FAutoConsoleCommandWithWorldAndArgs GClearanceDISSiteCmd(
 	TEXT("clearance.dis.site"),
-	TEXT("clearance.dis.site <N> - set this instance's DIS Site ID (default 1). Set different IDs on two instances so they can hear each other."),
+	TEXT("clearance.dis.site <N> - set this instance's federate identity (Site ID, default 1). Applies to BOTH DIS and DDS emitters/receivers - set different IDs on two instances so they can hear each other's traffic without loopback filtering."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
 	{
 		if (Args.Num() < 1) { return; }
 		const int32 NewSite = FCString::Atoi(*Args[0]);
-		AClearanceSimulationController* C = FindClearanceController(World);
-		if (!C) { return; }
-		if (UClearanceDISEmitter* E = C->GetDISEmitter())   { E->SiteId        = NewSite; }
-		if (UClearanceDISReceiver* R = C->GetDISReceiver()) { R->LocalSiteId   = NewSite; }
-		if (GEngine)
+		// Route through the OperatorPC's Server RPC so the update lands on the
+		// server-authoritative controller. Client-side FindClearanceController
+		// finds the replicated ghost which has null DIS/DDS emitters - updating
+		// that would be a no-op, and the on-screen debug from GEngine would
+		// falsely suggest success. Standalone mode (no PC) falls back to the
+		// direct path. - TripleA
+		if (AClearanceOperatorPC* PC = FindClearanceOperatorPC(World))
 		{
-			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
-				FString::Printf(TEXT("DIS Site ID = %d (peers must use a different number)"), NewSite));
+			PC->Server_InjectSetFederateSiteId(NewSite);
+		}
+		else if (AClearanceSimulationController* C = FindClearanceController(World))
+		{
+			if (UClearanceDISEmitter*  E = C->GetDISEmitter())  { E->SiteId      = NewSite; }
+			if (UClearanceDISReceiver* R = C->GetDISReceiver()) { R->LocalSiteId = NewSite; }
+			if (UClearanceDDSEmitter*  E = C->GetDDSEmitter())  { E->SiteId      = NewSite; }
+			if (UClearanceDDSReceiver* R = C->GetDDSReceiver()) { R->LocalSiteId = NewSite; }
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
+					FString::Printf(TEXT("Federate Site ID = %d (standalone path)"), NewSite));
+			}
 		}
 	}));
 

@@ -8,6 +8,8 @@
 #include "Safety/ClearanceRadar.h"
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDISReceiver.h"
+#include "Simulation/ClearanceDDSEmitter.h"
+#include "Simulation/ClearanceDDSReceiver.h"
 #include "Scenario/ClearanceScenarioRunner.h"
 #include "Components/ScrollBox.h"
 #include "Components/Image.h"
@@ -196,6 +198,36 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
+	// Federation activity rate sampler - runs on the raw frame tick (not the
+	// throttled 5Hz refresh below) so the /s value in the panel is meaningful
+	// even while the rest of the UI is coasting. Snapshots cumulative counts
+	// once per second and stores the delta. - TripleA
+	RateSampleAccumSec += InDeltaTime;
+	if (RateSampleAccumSec >= 1.f)
+	{
+		const int32 CurDISEmit = GetDISPacketsSent();
+		const int32 CurDISRecv = GetDISPacketsReceived();
+		const int32 CurDDSEmit = GetDDSPacketsSent();
+		const int32 CurDDSRecv = GetDDSPacketsReceived();
+
+		auto ComputeRate = [Elapsed = RateSampleAccumSec](int32 Cur, int32 Last)
+		{
+			return FMath::Max(0, FMath::RoundToInt((Cur - Last) / Elapsed));
+		};
+
+		DISEmitRatePerSec = ComputeRate(CurDISEmit, LastDISEmitSample);
+		DISRecvRatePerSec = ComputeRate(CurDISRecv, LastDISRecvSample);
+		DDSEmitRatePerSec = ComputeRate(CurDDSEmit, LastDDSEmitSample);
+		DDSRecvRatePerSec = ComputeRate(CurDDSRecv, LastDDSRecvSample);
+
+		LastDISEmitSample = CurDISEmit;
+		LastDISRecvSample = CurDISRecv;
+		LastDDSEmitSample = CurDDSEmit;
+		LastDDSRecvSample = CurDDSRecv;
+
+		RateSampleAccumSec = 0.f;
+	}
+
 	TimeSinceRefreshSec += InDeltaTime;
 	if (TimeSinceRefreshSec < RefreshIntervalSec) { return; }
 	TimeSinceRefreshSec = 0.f;
@@ -336,6 +368,8 @@ bool UClearanceInstructorPanel::BuildAircraftRows(TArray<FInstructorAircraftRow>
 		R.bUnderGCIControl   = S.bUnderGCIControl;
 		R.bIsMilitary        = S.bIsMilitary;
 		R.bIFFOperational    = S.bIFFOperational;
+		R.bIsExternal        = S.bIsExternal;
+		R.OwnerSiteId        = S.OwnerSiteId;
 		R.PositionNm         = FVector2D(S.Position.X, S.Position.Y);
 		Out.Add(R);
 	}
@@ -652,26 +686,46 @@ TArray<FClearanceNotification> UClearanceInstructorPanel::GetRecentNotifications
 
 bool UClearanceInstructorPanel::IsDISEmitting() const
 {
-	if (!CachedController || !CachedController->GetDISEmitter()) { return false; }
-	return CachedController->GetDISEmitter()->IsRunning();
+	return CachedController && CachedController->bRepDISEmitting;
 }
 
 bool UClearanceInstructorPanel::IsDISReceiving() const
 {
-	if (!CachedController || !CachedController->GetDISReceiver()) { return false; }
-	return CachedController->GetDISReceiver()->IsRunning();
+	return CachedController && CachedController->bRepDISReceiving;
 }
 
+// Federation counter reads go via the controller's replicated Rep* fields
+// rather than dereferencing the (server-only, unreplicated) emitter/receiver
+// subobject pointers. Client-side proxies never see those subobjects, so
+// touching them directly would silently return 0. - TripleA
 int32 UClearanceInstructorPanel::GetDISPacketsSent() const
 {
-	if (!CachedController || !CachedController->GetDISEmitter()) { return 0; }
-	return CachedController->GetDISEmitter()->GetLastPacketsSent();
+	return CachedController ? CachedController->RepDISPacketsSent : 0;
 }
 
 int32 UClearanceInstructorPanel::GetDISPacketsReceived() const
 {
-	if (!CachedController || !CachedController->GetDISReceiver()) { return 0; }
-	return CachedController->GetDISReceiver()->GetLastPacketsReceived();
+	return CachedController ? CachedController->RepDISPacketsReceived : 0;
+}
+
+bool UClearanceInstructorPanel::IsDDSEmitting() const
+{
+	return CachedController && CachedController->bRepDDSEmitting;
+}
+
+bool UClearanceInstructorPanel::IsDDSReceiving() const
+{
+	return CachedController && CachedController->bRepDDSReceiving;
+}
+
+int32 UClearanceInstructorPanel::GetDDSPacketsSent() const
+{
+	return CachedController ? CachedController->RepDDSPacketsSent : 0;
+}
+
+int32 UClearanceInstructorPanel::GetDDSPacketsReceived() const
+{
+	return CachedController ? CachedController->RepDDSPacketsReceived : 0;
 }
 
 namespace
@@ -926,7 +980,7 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		"Live scroll of voice and text comms. Each entry: timestamp `MM:SS` + role stripe + role tag + speaker callsign + text content. Roles are color-coded - PILOT cyan, OPERATOR green, SYS grey, INSTR magenta, TWR/ACC/AWACS/GCI amber-family, ATIS/MET muted cyan.\n\n"
 		"**Filter dropdown** at the top lets you multi-select which roles to show. Click a role to toggle it in the filter set. Click **All** to select or deselect everything. Useful presets by selecting multiple: Voice Only (PILOT + OPERATOR + facilities), Instructor Actions Only (INSTR), Facility Broadcasts (TWR + ACC + AWACS + GCI + ATIS + MET).")));
 
-	Sections.Add(Make(TEXT("dis"), TEXT("DIS Interoperability"),
+	Sections.Add(Make(TEXT("federation"), TEXT("Federation Interoperability"),
 		TEXT("CLEARANCE speaks IEEE 1278 Distributed Interactive Simulation, the "
 		"defence-industry standard for federating multiple training simulators "
 		"across a network. When enabled, aircraft state emits as Entity State "
@@ -1007,8 +1061,51 @@ TArray<FManualSection> UClearanceInstructorPanel::GetManualSections() const
 		"broadcasts). Radio Communications family, raw-binary payload carrying "
 		"the ASCII transcript so an external federate can log the whole voice "
 		"picture without a codec dependency.\n\n"
-		"HLA (IEEE 1516) via Portico RTI in progress; can be bridged "
-		"externally today via KDIS / RPR-FOM gateways.")));
+		"### DDS wire (OMG Data Distribution Service via eProsima Fast DDS)\n\n"
+		"Alongside DIS, CLEARANCE publishes the same six data primitives as "
+		"OMG DDS topics under the `clearance/*` namespace. DDS is the middleware "
+		"next-generation defence platforms actually run on - Tempest / FCAS "
+		"combat cloud, FACE-compliant avionics, autonomous wingmen. Same aircraft "
+		"state, fire event, detonation event, radar emission, transmitter "
+		"heartbeat, and voice signal on both wires - a defence integrator sees "
+		"both legacy DIS and next-generation DDS federation in one project.\n\n"
+		"### Federation ownership\n\n"
+		"Each running CLEARANCE instance is a **federate** with a unique **Site "
+		"ID**. When two federates share a domain, each publishes its own "
+		"aircraft and ingests peer aircraft as **external tracks** (display-only, "
+		"non-commandable). The aircraft list shows an @@OWN@@ chip for locally-"
+		"owned aircraft and a `SITE N` chip for peer-owned ones. Only the "
+		"owning federate can RECLASSIFY, INJECT emergencies, or SCRAMBLE against "
+		"its own aircraft - matches real-world ATC handoff doctrine where each "
+		"facility has authority over aircraft in its sector.\n\n"
+		"### 2-federate setup (DIS + DDS)\n\n"
+		"Open two independent CLEARANCE processes (**Play Standalone** ×2, "
+		"NOT two client windows of the same editor). Then in each:\n\n"
+		"**Instance A console:**\n"
+		"- `clearance.dis.site 1` (identity for both wires)\n"
+		"- `clearance.dis.start` (broadcast DIS PDUs)\n"
+		"- `clearance.dis.listen 3000` (ingest peer's DIS)\n"
+		"- `clearance.dds.start` (publish DDS topics on domain 0)\n"
+		"- `clearance.dds.listen` (subscribe to peer's DDS topics)\n\n"
+		"**Instance B console (DIFFERENT site ID):**\n"
+		"- `clearance.dis.site 2`\n"
+		"- Same DIS/DDS start + listen sequence.\n\n"
+		"Both scopes now show each other's aircraft as external tracks. The "
+		"@@OWN@@ / `SITE N` chips make ownership obvious. Kill either instance "
+		"and its aircraft age out of the peer's scope after a few seconds.\n\n"
+		"### Instructor Station buttons (`DIS FEDERATION` + `DDS FEDERATION`)\n\n"
+		"Both panel sections have `EMIT` / `STOP` buttons for the publish side "
+		"and `RECV` / `STOP` buttons for the ingest side. DIS takes a HOST + "
+		"PORT (default 127.0.0.1 : 3000); DDS takes a DOMAIN ID (default 0). "
+		"Set the same values across two federates so they discover each other.\n\n"
+		"### HLA / IEEE 1516\n\n"
+		"Architecture + RPR-FOM 2.0 mapping documented in "
+		"`Docs/HLA_INTEGRATION.md`. Concrete FOM module ships at "
+		"`Plugins/ClearanceSim/FOM/ClearanceRPR-FOM.xml` - extends the SISO "
+		"RPR-FOM 2.0 base with an `ATCManagedAircraft` subclass carrying "
+		"SquawkCode / FlightPhase / ActiveClearance / ATCFacility. Runtime "
+		"integration deferred pending RTI vendor selection - see the doc for "
+		"the OpenRTI / Portico decision rationale.")));
 
 	Sections.Add(Make(TEXT("reference"), TEXT("Button Reference"),
 		TEXT("**Right panel**\n\n"

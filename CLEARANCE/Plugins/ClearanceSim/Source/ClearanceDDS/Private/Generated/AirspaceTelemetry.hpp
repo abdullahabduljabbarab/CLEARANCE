@@ -358,6 +358,14 @@ public:
 
                     m_PhiRad = x.m_PhiRad;
 
+                    m_TrueAffiliation = x.m_TrueAffiliation;
+
+                    m_SquawkCode = x.m_SquawkCode;
+
+                    m_ActiveEmergency = x.m_ActiveEmergency;
+
+                    m_FlightPhase = x.m_FlightPhase;
+
     }
 
     /*!
@@ -387,6 +395,10 @@ public:
         m_PsiRad = x.m_PsiRad;
         m_ThetaRad = x.m_ThetaRad;
         m_PhiRad = x.m_PhiRad;
+        m_TrueAffiliation = x.m_TrueAffiliation;
+        m_SquawkCode = x.m_SquawkCode;
+        m_ActiveEmergency = x.m_ActiveEmergency;
+        m_FlightPhase = x.m_FlightPhase;
     }
 
     /*!
@@ -437,6 +449,14 @@ public:
 
                     m_PhiRad = x.m_PhiRad;
 
+                    m_TrueAffiliation = x.m_TrueAffiliation;
+
+                    m_SquawkCode = x.m_SquawkCode;
+
+                    m_ActiveEmergency = x.m_ActiveEmergency;
+
+                    m_FlightPhase = x.m_FlightPhase;
+
         return *this;
     }
 
@@ -468,6 +488,10 @@ public:
         m_PsiRad = x.m_PsiRad;
         m_ThetaRad = x.m_ThetaRad;
         m_PhiRad = x.m_PhiRad;
+        m_TrueAffiliation = x.m_TrueAffiliation;
+        m_SquawkCode = x.m_SquawkCode;
+        m_ActiveEmergency = x.m_ActiveEmergency;
+        m_FlightPhase = x.m_FlightPhase;
         return *this;
     }
 
@@ -497,7 +521,11 @@ public:
            m_VzMps == x.m_VzMps &&
            m_PsiRad == x.m_PsiRad &&
            m_ThetaRad == x.m_ThetaRad &&
-           m_PhiRad == x.m_PhiRad);
+           m_PhiRad == x.m_PhiRad &&
+           m_TrueAffiliation == x.m_TrueAffiliation &&
+           m_SquawkCode == x.m_SquawkCode &&
+           m_ActiveEmergency == x.m_ActiveEmergency &&
+           m_FlightPhase == x.m_FlightPhase);
     }
 
     /*!
@@ -1110,6 +1138,122 @@ public:
     }
 
 
+    /*!
+     * @brief This function sets a value in member TrueAffiliation
+     * @param _TrueAffiliation New value for member TrueAffiliation
+     */
+    eProsima_user_DllExport void TrueAffiliation(
+            uint8_t _TrueAffiliation)
+    {
+        m_TrueAffiliation = _TrueAffiliation;
+    }
+
+    /*!
+     * @brief This function returns the value of member TrueAffiliation
+     * @return Value of member TrueAffiliation
+     */
+    eProsima_user_DllExport uint8_t TrueAffiliation() const
+    {
+        return m_TrueAffiliation;
+    }
+
+    /*!
+     * @brief This function returns a reference to member TrueAffiliation
+     * @return Reference to member TrueAffiliation
+     */
+    eProsima_user_DllExport uint8_t& TrueAffiliation()
+    {
+        return m_TrueAffiliation;
+    }
+
+
+    /*!
+     * @brief This function sets a value in member SquawkCode
+     * @param _SquawkCode New value for member SquawkCode
+     */
+    eProsima_user_DllExport void SquawkCode(
+            uint16_t _SquawkCode)
+    {
+        m_SquawkCode = _SquawkCode;
+    }
+
+    /*!
+     * @brief This function returns the value of member SquawkCode
+     * @return Value of member SquawkCode
+     */
+    eProsima_user_DllExport uint16_t SquawkCode() const
+    {
+        return m_SquawkCode;
+    }
+
+    /*!
+     * @brief This function returns a reference to member SquawkCode
+     * @return Reference to member SquawkCode
+     */
+    eProsima_user_DllExport uint16_t& SquawkCode()
+    {
+        return m_SquawkCode;
+    }
+
+
+    /*!
+     * @brief This function sets a value in member ActiveEmergency
+     * @param _ActiveEmergency New value for member ActiveEmergency
+     */
+    eProsima_user_DllExport void ActiveEmergency(
+            uint8_t _ActiveEmergency)
+    {
+        m_ActiveEmergency = _ActiveEmergency;
+    }
+
+    /*!
+     * @brief This function returns the value of member ActiveEmergency
+     * @return Value of member ActiveEmergency
+     */
+    eProsima_user_DllExport uint8_t ActiveEmergency() const
+    {
+        return m_ActiveEmergency;
+    }
+
+    /*!
+     * @brief This function returns a reference to member ActiveEmergency
+     * @return Reference to member ActiveEmergency
+     */
+    eProsima_user_DllExport uint8_t& ActiveEmergency()
+    {
+        return m_ActiveEmergency;
+    }
+
+
+    /*!
+     * @brief This function sets a value in member FlightPhase
+     * @param _FlightPhase New value for member FlightPhase
+     */
+    eProsima_user_DllExport void FlightPhase(
+            uint8_t _FlightPhase)
+    {
+        m_FlightPhase = _FlightPhase;
+    }
+
+    /*!
+     * @brief This function returns the value of member FlightPhase
+     * @return Value of member FlightPhase
+     */
+    eProsima_user_DllExport uint8_t FlightPhase() const
+    {
+        return m_FlightPhase;
+    }
+
+    /*!
+     * @brief This function returns a reference to member FlightPhase
+     * @return Reference to member FlightPhase
+     */
+    eProsima_user_DllExport uint8_t& FlightPhase()
+    {
+        return m_FlightPhase;
+    }
+
+
 
 private:
 
@@ -1133,6 +1277,10 @@ private:
     float m_PsiRad{0.0};
     float m_ThetaRad{0.0};
     float m_PhiRad{0.0};
+    uint8_t m_TrueAffiliation{0};
+    uint16_t m_SquawkCode{0};
+    uint8_t m_ActiveEmergency{0};
+    uint8_t m_FlightPhase{0};
 
 };
 /*!

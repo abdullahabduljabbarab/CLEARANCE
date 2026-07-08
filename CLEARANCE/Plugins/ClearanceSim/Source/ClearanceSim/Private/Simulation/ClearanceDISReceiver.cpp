@@ -3,6 +3,7 @@
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
+#include "Interfaces/IPv4/IPv4Address.h"
 #include "Common/UdpSocketBuilder.h"
 
 uint16 UClearanceDISReceiver::ReadU16BE(const uint8* P)
@@ -37,11 +38,21 @@ bool UClearanceDISReceiver::Start(int32 Port)
 {
 	Stop();
 
+	// Join the CLEARANCE default multicast group as part of the bind so we
+	// actually receive traffic addressed to 224.0.0.1 (the emitter's default
+	// target host). Without IP_ADD_MEMBERSHIP the OS drops multicast packets
+	// even though the port is bound. Unicast senders still work - joining a
+	// multicast group doesn't stop the socket from receiving normal UDP
+	// addressed directly to us. - TripleA
+	const FIPv4Address MulticastGroup(224, 0, 0, 1);
+
 	Socket = FUdpSocketBuilder(TEXT("ClearanceDISRecv"))
 		.AsReusable()
 		.AsNonBlocking()
 		.WithReceiveBufferSize(256 * 1024)
 		.BoundToPort(Port)
+		.JoinedToGroup(MulticastGroup)
+		.WithMulticastLoopback()
 		.Build();
 
 	if (!Socket)
@@ -49,7 +60,11 @@ bool UClearanceDISReceiver::Start(int32 Port)
 		UE_LOG(LogTemp, Warning, TEXT("DIS receiver: failed to bind UDP port %d"), Port);
 		return false;
 	}
-	UE_LOG(LogTemp, Display, TEXT("DIS receiver: listening on UDP port %d"), Port);
+	UE_LOG(LogTemp, Display, TEXT("DIS receiver: listening on UDP port %d, joined multicast %s"),
+		Port, *MulticastGroup.ToString());
+	// Cumulative packet count is reset on Start / Stop, not per Poll - the
+	// panel's rate sampler needs a monotonic counter to compute deltas from. - TripleA
+	LastPacketsReceived = 0;
 	return true;
 }
 
@@ -67,7 +82,9 @@ void UClearanceDISReceiver::Stop()
 
 void UClearanceDISReceiver::Poll(AClearanceAirspaceManager* Manager, double WorldTimeSeconds)
 {
-	LastPacketsReceived = 0;
+	// LastPacketsReceived is cumulative (matches the emitter's LastPacketsSent
+	// semantics), reset only on Start / Stop. Per-poll count is derivable
+	// downstream via delta if anyone needs it. - TripleA
 	if (!Socket || !Manager) { return; }
 
 	ISocketSubsystem* SS = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
@@ -240,7 +257,22 @@ bool UClearanceDISReceiver::ParseAndInject(const uint8* Data, int32 Length, ACle
 	State.ThreatClass  = ThreatClass;
 	State.FlightPhase  = EFlightPhase::Enroute;
 	State.bIsExternal  = true;
+	State.OwnerSiteId  = static_cast<int32>(SrcSite);   // "SITE N" chip source
 	State.bIsMilitary  = (ForceId == 1 || ForceId == 2);
+
+	// Never overwrite locally-owned aircraft. Two federates on the same
+	// scenario (matching callsigns) would otherwise clobber the operator's
+	// classifications and injected emergencies on his own aircraft with
+	// the peer's default state. Federation ownership: peers can only add
+	// or update external tracks, never touch what we own. - TripleA
+	{
+		const FAircraftState Existing = Manager->GetAircraftState(Callsign);
+		if (Existing.bIsValid && !Existing.bIsExternal)
+		{
+			OutFreshThisPoll.Add(Callsign);  // don't age out our own aircraft while ignoring peer copy
+			return true;
+		}
+	}
 
 	const bool bExisting = LastSeenSeconds.Contains(Callsign);
 	if (!bExisting)

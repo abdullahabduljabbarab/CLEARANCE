@@ -228,6 +228,18 @@ eProsima_user_DllExport size_t calculate_serialized_size(
         calculated_size += calculator.calculate_member_serialized_size(eprosima::fastcdr::MemberId(19),
                 data.PhiRad(), current_alignment);
 
+        calculated_size += calculator.calculate_member_serialized_size(eprosima::fastcdr::MemberId(20),
+                data.TrueAffiliation(), current_alignment);
+
+        calculated_size += calculator.calculate_member_serialized_size(eprosima::fastcdr::MemberId(21),
+                data.SquawkCode(), current_alignment);
+
+        calculated_size += calculator.calculate_member_serialized_size(eprosima::fastcdr::MemberId(22),
+                data.ActiveEmergency(), current_alignment);
+
+        calculated_size += calculator.calculate_member_serialized_size(eprosima::fastcdr::MemberId(23),
+                data.FlightPhase(), current_alignment);
+
 
     calculated_size += calculator.end_calculate_type_serialized_size(previous_encoding, current_alignment);
 
@@ -268,6 +280,10 @@ eProsima_user_DllExport void serialize(
         << eprosima::fastcdr::MemberId(17) << data.PsiRad()
         << eprosima::fastcdr::MemberId(18) << data.ThetaRad()
         << eprosima::fastcdr::MemberId(19) << data.PhiRad()
+        << eprosima::fastcdr::MemberId(20) << data.TrueAffiliation()
+        << eprosima::fastcdr::MemberId(21) << data.SquawkCode()
+        << eprosima::fastcdr::MemberId(22) << data.ActiveEmergency()
+        << eprosima::fastcdr::MemberId(23) << data.FlightPhase()
 ;
     scdr.end_serialize_type(current_state);
 }
@@ -367,6 +383,22 @@ eProsima_user_DllExport void deserialize(
                                                 dcdr >> data.PhiRad();
                                             break;
 
+                                        case 20:
+                                                dcdr >> data.TrueAffiliation();
+                                            break;
+
+                                        case 21:
+                                                dcdr >> data.SquawkCode();
+                                            break;
+
+                                        case 22:
+                                                dcdr >> data.ActiveEmergency();
+                                            break;
+
+                                        case 23:
+                                                dcdr >> data.FlightPhase();
+                                            break;
+
                     default:
                         ret_value = false;
                         break;
@@ -404,9 +436,17 @@ void serialize_key(
 
 
 
+
+
+
+
     static_cast<void>(scdr);
     static_cast<void>(data);
                         scdr << data.EntityNumber();
+
+
+
+
 
 
 

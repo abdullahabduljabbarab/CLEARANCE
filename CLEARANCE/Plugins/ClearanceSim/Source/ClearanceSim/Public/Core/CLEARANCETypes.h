@@ -258,6 +258,13 @@ struct CLEARANCESIM_API FAircraftState
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network")
 	bool bIsExternal = false;
 
+	// Which federate owns this aircraft. 0 = local (this instance owns it);
+	// >0 = the peer's Site ID (this instance received it via DIS/DDS ingest).
+	// Drives the "OWN" / "SITE N" chip on the aircraft list row so the
+	// operator can tell at a glance whose aircraft they're looking at. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Federation")
+	int32 OwnerSiteId = 0;
+
 	// Currently-declared emergency (or None for normal flight). Sets the squawk
 	// code automatically when transitioning out of None - 7700/7600/7500. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emergency")

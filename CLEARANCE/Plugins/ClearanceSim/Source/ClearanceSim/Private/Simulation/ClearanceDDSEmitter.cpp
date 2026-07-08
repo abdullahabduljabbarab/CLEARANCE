@@ -61,13 +61,10 @@ bool UClearanceDDSEmitter::Start(int32 DomainId)
 {
 	Publisher = TUniquePtr<ClearanceDDS::FClearancePublisher>(
 		ClearanceDDS::FClearancePublisher::Create(static_cast<std::uint32_t>(DomainId)).release());
-	UE_LOG(LogTemp, Display, TEXT("[DDS] UClearanceDDSEmitter::Start(domain=%d) publisher=%p"), DomainId, Publisher.Get());
+	UE_LOG(LogTemp, Display, TEXT("[DDS] Publisher on domain %d -> %s"),
+		DomainId, Publisher.IsValid() ? TEXT("OK") : TEXT("FAILED"));
 	return Publisher.IsValid();
 }
-
-// One-shot log after N ticks so we can see the emit path is running without
-// flooding the log. Reset when Start/Stop toggles. - TripleA
-static int32 GDDSEmitStatesTickLog = 0;
 
 void UClearanceDDSEmitter::Stop()
 {
@@ -87,12 +84,26 @@ int32 UClearanceDDSEmitter::GetTotalPublishedCount() const
 void UClearanceDDSEmitter::EmitStates(const TArray<FAircraftState>& States, float SimTimeSeconds)
 {
 	if (!Publisher.IsValid()) { return; }
-	if (GDDSEmitStatesTickLog++ % 60 == 0)   // log every ~1s at 60Hz
+
+	// Diagnostic: log ONCE PER SECOND showing what THIS instance is publishing.
+	// Time-gated so it doesn't flood. Two instances writing here will produce
+	// two distinguishable log lines with their own SiteId. - TripleA
+	static double LastEmitLogTime = 0.0;
+	const double NowSec = FPlatformTime::Seconds();
+	if (NowSec - LastEmitLogTime > 1.0)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[DDS] EmitStates tick=%d states=%d publisher=%p totalPublished=%llu"),
-			GDDSEmitStatesTickLog, States.Num(), Publisher.Get(),
+		LastEmitLogTime = NowSec;
+		FString Callsigns;
+		for (int32 i = 0; i < FMath::Min(3, States.Num()); ++i)
+		{
+			Callsigns += (i > 0 ? TEXT(",") : TEXT("")) + States[i].Callsign.ToString();
+		}
+		UE_LOG(LogTemp, Display,
+			TEXT("[DDS] EmitStates SiteId=%d NumStates=%d Sample=[%s] PublishedTotal=%llu"),
+			SiteId, States.Num(), *Callsigns,
 			(unsigned long long)Publisher->GetTotalPublishedCount());
 	}
+
 	for (const FAircraftState& S : States)
 	{
 		if (!S.bIsValid) { continue; }
@@ -121,6 +132,13 @@ void UClearanceDDSEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		M.PsiRad(HeadingRad);
 		M.ThetaRad(0.f);
 		M.PhiRad(FMath::DegreesToRadians(S.BankAngle));
+
+		// ATC extension fields - carry the ATC-specific state peers need to
+		// render the full picture (threat class, emergency, squawk, phase). - TripleA
+		M.TrueAffiliation(ForceIdFor(S.TrueAffiliation));
+		M.SquawkCode(static_cast<uint16_t>(S.SquawkCode));
+		M.ActiveEmergency(static_cast<uint8_t>(S.ActiveEmergency));
+		M.FlightPhase(static_cast<uint8_t>(S.FlightPhase));
 
 		Publisher->PublishAircraftState(M);
 	}

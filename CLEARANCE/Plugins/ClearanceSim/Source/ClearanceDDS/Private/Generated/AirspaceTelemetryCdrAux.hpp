@@ -24,7 +24,7 @@
 
 #include "AirspaceTelemetry.hpp"
 
-constexpr uint32_t ClearanceDDS_AircraftState_max_cdr_typesize {352UL};
+constexpr uint32_t ClearanceDDS_AircraftState_max_cdr_typesize {358UL};
 constexpr uint32_t ClearanceDDS_AircraftState_max_key_cdr_typesize {2UL};
 
 constexpr uint32_t ClearanceDDS_EmissionSnapshot_max_cdr_typesize {92UL};

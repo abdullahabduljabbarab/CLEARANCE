@@ -17,6 +17,7 @@ class UClearanceScoring;
 class UClearanceSessionRecorder;
 class UClearanceDISEmitter;
 class UClearanceDDSEmitter;
+class UClearanceDDSReceiver;
 class UClearanceDISReceiver;
 class UClearanceRadar;
 class ACameraActor;
@@ -144,6 +145,12 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceDISReceiver* GetDISReceiver() const { return DISReceiver; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	UClearanceDDSEmitter* GetDDSEmitter() const { return DDSEmitter; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	UClearanceDDSReceiver* GetDDSReceiver() const { return DDSReceiver; }
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceRadar* GetRadar() const { return Radar; }
@@ -299,6 +306,21 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Simulation|DDS")
 	int32 GetDDSPacketsSent() const;
+
+	// Ingest peer federate aircraft over DDS. Subscribes to the same
+	// clearance/aircraft/state topic we publish and lands external
+	// aircraft into the AirspaceManager. Sibling to StartDISReceiver. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DDS")
+	bool StartDDSReceiver(int32 DomainId);
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation|DDS")
+	void StopDDSReceiver();
+
+	UFUNCTION(BlueprintPure, Category = "Simulation|DDS")
+	bool IsDDSReceiving() const;
+
+	UFUNCTION(BlueprintPure, Category = "Simulation|DDS")
+	int32 GetDDSAircraftIngested() const;
 
 	// --- After-Action Review ------------------------------------------------
 
@@ -732,6 +754,36 @@ public:
 	UPROPERTY(Replicated)
 	float RepScoreNextSpawnSec = 0.f;
 
+	// Federation packet counters, server-mirrored from the DIS/DDS emitter+
+	// receiver subobjects. The subobject pointers themselves aren't replicated
+	// (they're server-only UPROPERTY() members), so the panel widget on a
+	// client couldn't read counts by dereferencing them - we mirror the ints
+	// here so any client sees live counts and the rate sampler on the panel
+	// has non-zero deltas to work with. Updated once per emit tick. - TripleA
+	UPROPERTY(Replicated)
+	int32 RepDISPacketsSent = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepDISPacketsReceived = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepDDSPacketsSent = 0;
+
+	UPROPERTY(Replicated)
+	int32 RepDDSPacketsReceived = 0;
+
+	UPROPERTY(Replicated)
+	bool bRepDISEmitting = false;
+
+	UPROPERTY(Replicated)
+	bool bRepDISReceiving = false;
+
+	UPROPERTY(Replicated)
+	bool bRepDDSEmitting = false;
+
+	UPROPERTY(Replicated)
+	bool bRepDDSReceiving = false;
+
 	// Full ordered list of scored events, server-mirrored from Scoring->GetSessionLog
 	// in the same pass that updates the rep counters. Each entry carries TimeStamp +
 	// Type + AircraftA/B + Details so the Performance tab can render per-category
@@ -920,6 +972,9 @@ private:
 	// DIS FEDERATION section. - TripleA
 	UPROPERTY()
 	TObjectPtr<UClearanceDDSEmitter> DDSEmitter;
+
+	UPROPERTY()
+	TObjectPtr<UClearanceDDSReceiver> DDSReceiver;
 
 	// Pending Fire / Detonation events queued between DIS emit ticks. The sim
 	// event points (SCRAMBLE launch, intercept success) push here; the emitter

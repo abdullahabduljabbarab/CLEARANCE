@@ -94,6 +94,34 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DIS")
 	int32 GetDISPacketsReceived() const;
 
+	// Per-second emit/receive rates for the federation panel activity indicators.
+	// Sampled from the emitter/receiver cumulative counters once per second and
+	// stored as an int rate - underlying counters reset to zero on Stop so the
+	// sampler clamps negative deltas to 0. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DIS")
+	int32 GetDISEmitRatePerSec() const { return DISEmitRatePerSec; }
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DIS")
+	int32 GetDISRecvRatePerSec() const { return DISRecvRatePerSec; }
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DDS")
+	bool IsDDSEmitting() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DDS")
+	bool IsDDSReceiving() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DDS")
+	int32 GetDDSPacketsSent() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DDS")
+	int32 GetDDSPacketsReceived() const;
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DDS")
+	int32 GetDDSEmitRatePerSec() const { return DDSEmitRatePerSec; }
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|DDS")
+	int32 GetDDSRecvRatePerSec() const { return DDSRecvRatePerSec; }
+
 	// In-station operator's manual - one entry per section. Content is
 	// hardcoded server-side so any packaged build carries the manual with it
 	// (no data-only content dependency). BP renders each section's Title in
@@ -654,6 +682,22 @@ private:
 
 	FName SelectedCallsign = NAME_None;
 	float TimeSinceRefreshSec = 0.f;
+
+	// Sliding-window rate sampler for the federation EMIT/RECV /s indicators.
+	// Emitters/receivers only expose cumulative counts, so we snapshot once per
+	// second and derive the per-second rate from the delta. On Stop the
+	// underlying counters go back to 0, which shows up here as a negative delta
+	// - clamped to 0 so the panel just reads "0/s" instead of a garbage value
+	// after teardown. - TripleA
+	float RateSampleAccumSec = 0.f;
+	int32 DISEmitRatePerSec = 0;
+	int32 DISRecvRatePerSec = 0;
+	int32 DDSEmitRatePerSec = 0;
+	int32 DDSRecvRatePerSec = 0;
+	int32 LastDISEmitSample = 0;
+	int32 LastDISRecvSample = 0;
+	int32 LastDDSEmitSample = 0;
+	int32 LastDDSRecvSample = 0;
 
 	// Callsigns currently rendered in the scroll box, in row order. Lets the
 	// populate path skip the destroy-and-recreate when only field values

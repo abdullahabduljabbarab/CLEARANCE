@@ -50,6 +50,11 @@ struct CLEARANCESIM_API FInstructorAircraftRow
 	UPROPERTY(BlueprintReadOnly) bool bIsMilitary = false;
 	UPROPERTY(BlueprintReadOnly) bool bIFFOperational = true;
 
+	// Federation ownership - drives the OWN / SITE N chip on the row.
+	// 0 = local (we own this aircraft); >0 = peer Site ID that owns it. - TripleA
+	UPROPERTY(BlueprintReadOnly) bool bIsExternal = false;
+	UPROPERTY(BlueprintReadOnly) int32 OwnerSiteId = 0;
+
 	// nm, sector-relative. Use UClearanceInstructorPanel::ScopeNmToPixel
 	// to project for the mini-scope. - TripleA
 	UPROPERTY(BlueprintReadOnly) FVector2D PositionNm = FVector2D::ZeroVector;

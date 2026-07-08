@@ -110,6 +110,19 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DDS")
 	void Server_InjectStopDDSEmit();
 
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DDS")
+	void Server_InjectStartDDSRecv(int32 DomainId);
+
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|DDS")
+	void Server_InjectStopDDSRecv();
+
+	// Sets the federate Site ID (both DIS and DDS wires) on the SERVER-side
+	// controller. Console command routes through this so client-side console
+	// input reaches the authoritative emitter/receiver (the client-side ghost
+	// has null DIS/DDS pointers). - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|Federation")
+	void Server_InjectSetFederateSiteId(int32 NewSiteId);
+
 	// Replay control: client UI fires these so the SERVER's controller flips
 	// into replay mode and poses the world to the recording. The server then
 	// replicates the airspace back so the client sees the scrubbed traffic. - TripleA

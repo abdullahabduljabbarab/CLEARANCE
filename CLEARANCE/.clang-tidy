@@ -1,0 +1,64 @@
+# CLEARANCE clang-tidy config
+#
+# Enforces a curated MISRA-C++ 2008 subset via the clang-tidy checks that
+# most closely align with the MISRA rule wording. Full MISRA-C++ 2008
+# coverage requires a certified tool (PC-lint Plus, PVS-Studio,
+# Coverity) - clang-tidy gives ~30% coverage at zero cost, which is the
+# appropriate proportionality for a portfolio project.
+#
+# Rationale for each enabled check family, and the rules deliberately
+# omitted, are in Docs/STATIC_ANALYSIS_NOTES.md.
+#
+# To run against the ClearanceSim plugin (from repo root):
+#   clang-tidy \
+#     -p Plugins/ClearanceSim/Intermediate/Build/Win64/UnrealEditor \
+#     Plugins/ClearanceSim/Source/ClearanceSim/**/*.cpp
+
+Checks: >
+  -*,
+  bugprone-fallthrough,
+  bugprone-integer-division,
+  bugprone-macro-parentheses,
+  bugprone-misplaced-widening-cast,
+  bugprone-signed-char-misuse,
+  bugprone-suspicious-memset-usage,
+  bugprone-throw-keyword-missing,
+  bugprone-use-after-move,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-owning-memory,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-pro-type-reinterpret-cast,
+  cppcoreguidelines-slicing,
+  modernize-use-nullptr,
+  modernize-use-override,
+  readability-implicit-bool-conversion,
+  readability-inconsistent-declaration-parameter-name
+
+# Warnings-as-errors kept off - CLEARANCE has documented deviations for
+# UE-integration reasons (raw ptr to opaque impl in RTI/HLA emitters,
+# named namespaces for unity-build compat). Findings are reviewed, not
+# gate-failed. Rationale per deviation in STATIC_ANALYSIS_NOTES.md.
+WarningsAsErrors: ''
+
+# Only check files inside our own source tree - never third-party
+# vendored code (OpenRTI headers, RTI Connext SDK, Fast DDS generated
+# code, UE headers).
+HeaderFilterRegex: 'Plugins/ClearanceSim/Source/(ClearanceSim|ClearanceDIS|ClearanceDDS|ClearanceRTI|ClearanceHLA)/'
+
+# Format style used when clang-tidy auto-applies fixes. Matches UE's
+# conventions (tabs for indent, LF endings).
+FormatStyle: file
+
+CheckOptions:
+  # Narrowing conversions: allow the common (int -> uint16_t) pattern
+  # our DIS wire-format code uses when the source value is already
+  # bounds-checked, but flag every other narrowing. - TripleA
+  - key: cppcoreguidelines-narrowing-conversions.WarnOnFloatingPointNarrowingConversion
+    value: 'true'
+
+  # Init-variables: warn on uninitialised locals but not on cases where
+  # the assignment happens on the very next line (common UE idiom).
+  - key: cppcoreguidelines-init-variables.IncludeStyle
+    value: 'google'

@@ -3601,6 +3601,16 @@ void AClearanceSimulationController::CheckExits()
 	}
 }
 
+bool AClearanceSimulationController::SetAircraftAutopilotEngaged(FName Callsign, bool bEngaged)
+{
+	TObjectPtr<UClearanceAircraftBehaviour>* Found = BehaviourMap.Find(Callsign);
+	if (!Found || !*Found) { return false; }
+	(*Found)->SetAutopilotEngaged(bEngaged);
+	UE_LOG(LogTemp, Log, TEXT("[Autopilot] %s -> %s"),
+		*Callsign.ToString(), bEngaged ? TEXT("ENGAGED") : TEXT("disengaged"));
+	return true;
+}
+
 EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const FAircraftInstruction& Instruction)
 {
 	// Civilian ATC can't command anything under air defence control, and can't
@@ -6301,6 +6311,43 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceSpeedCmd(
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
 	{
 		ClearanceIssueFromConsole(Args, World, EInstructionType::SpeedChange, TEXT("speed"));
+	}));
+
+static void ClearanceAutopilotToggleFromConsole(const TArray<FString>& Args, UWorld* World, bool bEngage)
+{
+	const TCHAR* Label = bEngage ? TEXT("engage") : TEXT("disengage");
+	if (Args.Num() < 1 || !World)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("clearance.autopilot.%s <callsign>"), Label);
+		return;
+	}
+	const FName Callsign(*Args[0]);
+	for (TActorIterator<AClearanceSimulationController> It(World); It; ++It)
+	{
+		const bool bOk = It->SetAircraftAutopilotEngaged(Callsign, bEngage);
+		const FString Msg = FString::Printf(TEXT("autopilot %s %s -> %s"), Label, *Callsign.ToString(),
+			bOk ? TEXT("OK") : TEXT("callsign not found"));
+		UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
+		return;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("clearance.autopilot.%s: no SimulationController in the world"), Label);
+}
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceAutopilotEngageCmd(
+	TEXT("clearance.autopilot.engage"),
+	TEXT("clearance.autopilot.engage <callsign> - hand control to the Simulink cascade autopilot"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		ClearanceAutopilotToggleFromConsole(Args, World, true);
+	}));
+
+static FAutoConsoleCommandWithWorldAndArgs GClearanceAutopilotDisengageCmd(
+	TEXT("clearance.autopilot.disengage"),
+	TEXT("clearance.autopilot.disengage <callsign> - return control to the built-in behaviour"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* World)
+	{
+		ClearanceAutopilotToggleFromConsole(Args, World, false);
 	}));
 
 static AClearanceSimulationController* FindClearanceController(UWorld* World)

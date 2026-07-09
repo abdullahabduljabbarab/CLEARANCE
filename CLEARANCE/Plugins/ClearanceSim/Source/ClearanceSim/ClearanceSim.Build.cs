@@ -17,7 +17,8 @@ public class ClearanceSim : ModuleRules
 			"ClearanceDIS", // Pure-C++ wire format for DIS PDU serialisation / parsing
 			"ClearanceDDS", // Fast DDS pub/sub middleware for real-time telemetry
 			"ClearanceRTI", // RTI Connext DDS pub/sub middleware - third wire alongside DDS
-			"ClearanceHLA"  // OpenRTI IEEE 1516-2010 HLA-Evolved federate - fourth wire
+			"ClearanceHLA",  // OpenRTI IEEE 1516-2010 HLA-Evolved federate - fourth wire
+			"ClearanceAutopilotMBD" // Simulink-generated cascade autopilot (Model-Based Design bridge)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

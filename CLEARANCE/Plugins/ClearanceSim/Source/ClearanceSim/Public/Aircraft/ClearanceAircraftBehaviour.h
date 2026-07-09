@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
 #include "Core/CLEARANCETypes.h"
+#include "AutopilotWrapper.h"
 #include "ClearanceAircraftBehaviour.generated.h"
 
 class AClearanceAirspaceManager;
@@ -51,6 +52,17 @@ public:
 	// plants in the runway rather than on the lip. Set by the Controller. - TripleA
 	float TouchdownZoneOffsetNm = 0.16f;
 
+	// --- Simulink autopilot integration -------------------------------------
+	// When engaged, UpdateMovement bypasses the built-in Step* kinematics
+	// and hands the throttle / elevator / aileron / bank / pitch loop off
+	// to the Embedded-Coder-generated autopilot in ClearanceAutopilotMBD.
+	// Toggle via clearance.autopilot.engage / disengage in the console. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Behaviour|Autopilot")
+	void SetAutopilotEngaged(bool bEngaged) { bAutopilotEngaged = bEngaged; }
+
+	UFUNCTION(BlueprintCallable, Category = "Behaviour|Autopilot")
+	bool IsAutopilotEngaged() const { return bAutopilotEngaged; }
+
 private:
 	UPROPERTY()
 	TObjectPtr<AClearanceAirspaceManager> Manager;
@@ -61,6 +73,15 @@ private:
 	int32 ActiveTurnDirection = 0; // -1 left / +1 right / 0 shortest, for the current turn
 	bool bExpediting = false;      // boosted climb/descent for the current altitude change
 	bool bApproachCaptured = false;// true once established on the localiser (then it flies the ILS)
+
+	// Simulink cascade autopilot state - the wrapper owns the model's
+	// internal timekeeping so each aircraft gets its own PID history.
+	// Default ON: every aircraft flies under the Embedded-Coder-
+	// generated autopilot. Toggle via clearance.autopilot.disengage
+	// to hand a specific aircraft back to the built-in slew logic
+	// for A/B comparison. - TripleA
+	bool bAutopilotEngaged = true;
+	FAutopilotWrapper AutopilotWrapper;
 
 	void ApplyInstruction(const FAircraftInstruction& Instruction, FAircraftState& State);
 	// True once the aircraft is positioned to intercept the localiser (the
@@ -78,6 +99,12 @@ private:
 	void StepAltitude(FAircraftState& State, float DeltaTime);
 	void StepSpeed(FAircraftState& State, float DeltaTime) const;
 	void StepPosition(FAircraftState& State, const FSectorEnvironment& Env, float DeltaTime) const;
+
+	// Alternate stepping path when bAutopilotEngaged: pushes state into
+	// the Simulink model, reads throttle / elevator / aileron back, and
+	// applies them to bank angle, climb rate, and speed. Kinematics then
+	// integrate heading from bank and position from speed + heading. - TripleA
+	void StepWithAutopilot(FAircraftState& State, const FSectorEnvironment& Env, float DeltaTime);
 
 	// Standard-rate-ish turn: rate falls off as speed rises for a fixed bank limit,
 	// which is why a Heavy turns lazier than a Light at the same heading change. - TripleA

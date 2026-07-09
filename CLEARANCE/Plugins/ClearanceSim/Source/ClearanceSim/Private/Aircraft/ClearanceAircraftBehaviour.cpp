@@ -204,10 +204,20 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 			}
 		}
 
-		StepHeading(State, DeltaTime);
-		StepAltitude(State, DeltaTime);
-		StepSpeed(State, DeltaTime);
-		StepPosition(State, Env, DeltaTime);
+		if (bAutopilotEngaged)
+		{
+			// Simulink cascade autopilot owns speed / bank / climb-rate
+			// this tick. Heading and position still integrate from the
+			// resulting bank angle + speed vector afterwards. - TripleA
+			StepWithAutopilot(State, Env, DeltaTime);
+		}
+		else
+		{
+			StepHeading(State, DeltaTime);
+			StepAltitude(State, DeltaTime);
+			StepSpeed(State, DeltaTime);
+			StepPosition(State, Env, DeltaTime);
+		}
 	}
 
 	const bool bHeadingDone = FMath::Abs(FMath::FindDeltaAngleDegrees(State.Heading, State.TargetHeading)) <= HeadingToleranceDeg;
@@ -384,6 +394,124 @@ void UClearanceAircraftBehaviour::StepPosition(FAircraftState& State, const FSec
 
 	State.Velocity = FVector(Ground.X, Ground.Y, 0.f);
 	State.Position += State.Velocity * DeltaTime;
+}
+
+void UClearanceAircraftBehaviour::StepWithAutopilot(FAircraftState& State, const FSectorEnvironment& Env, float DeltaTime)
+{
+	// Captured-state gate: if the aircraft is inside tolerance on every
+	// axis, freeze rates and hold state exactly. This bypasses the model
+	// when there's nothing to correct so its D-term noise can't excite
+	// the loop back into a low-amplitude oscillation. The gate re-opens
+	// automatically the moment a new instruction changes any target
+	// value or an external perturbation (wind, EW ghost) drifts the
+	// aircraft out of tolerance. - TripleA
+	const float HeadingError = FMath::Abs(FMath::FindDeltaAngleDegrees(State.Heading, State.TargetHeading));
+	const float AltitudeError = FMath::Abs(State.Altitude - State.TargetAltitude);
+	const float SpeedError    = FMath::Abs(State.Speed - State.TargetSpeed);
+	const bool bCaptured =
+		HeadingError  <= HeadingToleranceDeg  &&
+		AltitudeError <= AltitudeToleranceFt  &&
+		SpeedError    <= SpeedToleranceKnots;
+
+	if (bCaptured)
+	{
+		State.BankAngle = 0.f;
+		State.ClimbRate = 0.f;
+		StepPosition(State, Env, DeltaTime);
+		return;
+	}
+
+	// Push aircraft state + targets into the Simulink cascade autopilot.
+	// The wrapper computes phi_cmd / theta_cmd (heading -> bank, altitude
+	// -> pitch outer loops) internally and hands the model the full inner-
+	// loop input set. - TripleA
+	FClearanceAutopilotInputs In;
+	In.TargetHeadingDeg   = State.TargetHeading;
+	In.TargetAltitudeFt   = State.TargetAltitude;
+	In.TargetAirspeedKts  = State.TargetSpeed;
+	In.HeadingDeg         = State.Heading;
+	In.AltitudeFt         = State.Altitude;
+	In.AirspeedKts        = State.Speed;
+	In.BankAngleDeg       = State.BankAngle;
+	// Pitch angle isn't tracked as a first-class state field - approximate
+	// it from the current climb rate at the current airspeed. Small-angle
+	// approximation: pitch_deg ~ climb_fpm / (V_kt * 101.27) * 180/pi.
+	const float FpmPerKt = 101.27f;   // 1 kt = 101.27 ft/min ground rate
+	const float SafeSpeed = FMath::Max(60.f, State.Speed);
+	In.PitchAngleDeg      = FMath::RadiansToDegrees(
+		FMath::Atan2(State.ClimbRate, SafeSpeed * FpmPerKt));
+	In.VerticalSpeedFpm   = State.ClimbRate;
+	In.DeltaSeconds       = DeltaTime;
+
+	const FClearanceAutopilotOutputs Out = AutopilotWrapper.Step(In);
+
+	// Model outputs are in radians (for elevator/aileron) or 0..1 (throttle).
+	// Aileron and elevator are RATE commands - they modulate bank rate
+	// and pitch/climb rate. Treating them as position commands would
+	// create a positive-feedback loop with the model's inner PID (which
+	// uses current phi/theta as feedback) and drive the aircraft into
+	// a limit cycle. - TripleA
+	float ElevatorDeg = FMath::RadiansToDegrees(Out.ElevatorCmd);
+	float AileronDeg  = FMath::RadiansToDegrees(Out.AileronCmd);
+
+	// Deadband the control-surface outputs. Below the threshold, the
+	// signal is floating-point noise from the model's D-term filter
+	// picking up sub-degree bank/pitch state changes; letting it through
+	// re-excites the loop after the aircraft has settled. 1 degree kills
+	// the noise floor cleanly while preserving all real commands
+	// (heading errors above ~2 deg still produce aileron > 1 deg). - TripleA
+	constexpr float kControlDeadbandDeg = 1.0f;
+	if (FMath::Abs(AileronDeg)  < kControlDeadbandDeg) { AileronDeg  = 0.f; }
+	if (FMath::Abs(ElevatorDeg) < kControlDeadbandDeg) { ElevatorDeg = 0.f; }
+
+	// Aileron -> roll rate, softened so the model's high-frequency PID
+	// jitter doesn't propagate into visible bank oscillation. Slow enough
+	// to damp the inner loop; still fast enough to intercept a heading
+	// change in reasonable time. - TripleA
+	constexpr float kRollRateDegPerAileronDeg = 0.5f;
+	State.BankAngle = FMath::Clamp(
+		State.BankAngle + AileronDeg * kRollRateDegPerAileronDeg * DeltaTime,
+		-15.f, 15.f);
+
+	// Elevator -> climb-rate change, similarly damped.
+	const ClearanceConstants::FCategoryPerformance Perf =
+		ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary);
+	const float MaxClimbRateFpm = DensityAdjustedClimbRate(State);
+	const float ClimbRateChangePerElevDegPerSec = MaxClimbRateFpm * 0.05f;
+	State.ClimbRate = FMath::Clamp(
+		State.ClimbRate + ElevatorDeg * ClimbRateChangePerElevDegPerSec * DeltaTime,
+		-Perf.MaxDescentRateFtMin,
+		MaxClimbRateFpm);
+
+	// Throttle at 0.5 is level-trim; above accelerates, below decelerates.
+	// Full deflection uses the category accel / decel rate.
+	const float ThrottleTrim = 0.5f;
+	const float ThrottleDelta = Out.ThrottleCmd - ThrottleTrim;
+	const float SpeedRate = (ThrottleDelta > 0.f)
+		? (ThrottleDelta * 2.f) * Perf.AccelKtsPerSec
+		: (ThrottleDelta * 2.f) * Perf.DecelKtsPerSec;
+	State.Speed = FMath::Clamp(
+		State.Speed + SpeedRate * DeltaTime,
+		State.MinOperatingSpeed,
+		State.MaxOperatingSpeed);
+
+	// Coordinated-turn kinematics: bank commands heading rate via
+	// omega = g * tan(phi) / V.
+	const float SpeedMps = State.Speed * 0.514444f;
+	if (SpeedMps > 1.f)
+	{
+		const float BankRad = FMath::DegreesToRadians(State.BankAngle);
+		const float TurnRateDegPerSec = FMath::RadiansToDegrees(
+			9.81f * FMath::Tan(BankRad) / SpeedMps);
+		State.Heading = FMath::Fmod(State.Heading + TurnRateDegPerSec * DeltaTime, 360.f);
+		if (State.Heading < 0.f) { State.Heading += 360.f; }
+	}
+
+	// Altitude integrates from climb rate.
+	State.Altitude = FMath::Max(0.f, State.Altitude + (State.ClimbRate / 60.f) * DeltaTime);
+
+	// Ground track integration reuses the standard position stepper.
+	StepPosition(State, Env, DeltaTime);
 }
 
 bool UClearanceAircraftBehaviour::IsEstablishedOnApproach(const FAircraftState& State, const FSectorEnvironment& Env) const

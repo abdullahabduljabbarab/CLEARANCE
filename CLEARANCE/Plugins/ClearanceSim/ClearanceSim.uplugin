@@ -39,6 +39,11 @@
 			"Name": "ClearanceSim",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "ClearanceAutopilotMBD",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [

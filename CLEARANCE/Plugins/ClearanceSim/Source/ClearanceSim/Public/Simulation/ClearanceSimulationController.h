@@ -127,6 +127,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	EInstructionResult PlayerIssueInstruction(const FAircraftInstruction& Instruction);
 
+	// Toggle the Simulink cascade autopilot for one aircraft. When engaged,
+	// the aircraft's speed / bank / climb rate come from the Embedded-
+	// Coder-generated PID loops instead of the built-in slew logic. Returns
+	// false if the callsign isn't in the sim. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Autopilot")
+	bool SetAircraftAutopilotEngaged(FName Callsign, bool bEngaged);
+
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	AClearanceAirspaceManager* GetAirspaceManager() const { return AirspaceManager; }
 

@@ -139,6 +139,18 @@ FClearanceAutopilotOutputs FAutopilotWrapper::Step(const FClearanceAutopilotInpu
 {
 	if (!bInitialised) { Initialize(); }
 
+	// Fixed 20 Hz model rate. Frame comes in at 60 fps -> we only actually
+	// call autopilot_step every 3rd frame, holding the same outputs in
+	// between. Prevents the continuous-time PID's D-term from ringing on
+	// per-frame phi micro-jitter. - TripleA
+	constexpr double kFixedStepSeconds = 0.05;   // 20 Hz
+	StepAccumulatorSeconds += static_cast<double>(In.DeltaSeconds);
+	if (StepAccumulatorSeconds < kFixedStepSeconds)
+	{
+		return LastOutputs;
+	}
+	StepAccumulatorSeconds = FMath::Fmod(StepAccumulatorSeconds, kFixedStepSeconds);
+
 	FAutopilotInstance* Inst = static_cast<FAutopilotInstance*>(ModelState);
 
 #if CLEARANCE_AUTOPILOT_MBD_HAVE_CODEGEN
@@ -155,15 +167,16 @@ FClearanceAutopilotOutputs FAutopilotWrapper::Step(const FClearanceAutopilotInpu
 	double HeadingErrorDeg = In.TargetHeadingDeg - In.HeadingDeg;
 	while (HeadingErrorDeg >  180.0) { HeadingErrorDeg -= 360.0; }
 	while (HeadingErrorDeg < -180.0) { HeadingErrorDeg += 360.0; }
-	constexpr double kBankPerHeadingDeg = 0.3;
-	constexpr double kMaxBankDeg        = 15.0;
-	constexpr double kHeadingCaptureDeg = 2.0;
-	double TargetBankDeg = FMath::Clamp(
+	// Continuous P shaping - no hard capture step. The Simulink PID_phi
+	// has D = 0.05 with a 100 rad/s filter; any discontinuity in phi_cmd
+	// gets differentiated into a sharp aileron impulse that reads as
+	// wing rock on the roll-out. Instead just scale target bank linearly
+	// with heading error and let the aircraft-side capture gate freeze
+	// state completely when we're inside heading tolerance. - TripleA
+	constexpr double kBankPerHeadingDeg = 0.15;
+	constexpr double kMaxBankDeg        = 12.0;
+	const double TargetBankDeg = FMath::Clamp(
 		HeadingErrorDeg * kBankPerHeadingDeg, -kMaxBankDeg, kMaxBankDeg);
-	if (FMath::Abs(HeadingErrorDeg) < kHeadingCaptureDeg)
-	{
-		TargetBankDeg = 0.0;
-	}
 
 	// Outer loop 2: altitude error -> target pitch. Similar shape.
 	const double AltErrorFt = In.TargetAltitudeFt - In.AltitudeFt;
@@ -187,6 +200,7 @@ FClearanceAutopilotOutputs FAutopilotWrapper::Step(const FClearanceAutopilotInpu
 	Out.ElevatorCmd = static_cast<float>(Inst->Outputs.delta_e_out);
 	Out.AileronCmd  = static_cast<float>(Inst->Outputs.delta_a_out);
 	Out.RudderCmd   = 0.f;
+	LastOutputs = Out;
 	return Out;
 #else
 	Inst->LastInput = In;

@@ -7,9 +7,9 @@
  *
  * Code generated for Simulink model 'autopilot'.
  *
- * Model version                  : 1.25
+ * Model version                  : 1.28
  * Simulink Coder version         : 26.1 (R2026a) 20-Nov-2025
- * C/C++ source code generated on : Thu Jul  9 02:59:05 2026
+ * C/C++ source code generated on : Thu Jul  9 10:23:40 2026
  *
  * Target selection: ert.tlc
  * Embedded hardware selection: Intel->x86-64 (Windows64)
@@ -210,7 +210,6 @@ extern void autopilot_terminate(RT_MODEL_autopilot_T *const autopilot_M);
  * Block '<Root>/delta_e_log_ws' : Unused code path elimination
  * Block '<Root>/delta_e_scope' : Unused code path elimination
  * Block '<Root>/delta_e_to_ws' : Unused code path elimination
- * Block '<Root>/probe_force_phi' : Unused code path elimination
  */
 
 /*-

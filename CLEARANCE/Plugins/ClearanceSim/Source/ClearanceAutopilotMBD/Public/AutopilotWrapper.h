@@ -124,4 +124,14 @@ private:
 	// structs are C types from the generated header, allocated in the
 	// .cpp under the CLEARANCE_AUTOPILOT_MBD_HAVE_CODEGEN gate. - TripleA
 	void* ModelState = nullptr;
+
+	// Frame-rate decoupling: the model has a continuous-time PID with a
+	// D-term that gets discretised at whatever rate Step() is called.
+	// At 60 fps the tiny per-frame phi jitter drives the filtered
+	// derivative into a limit cycle (visible as wing rock); at 2 fps
+	// it doesn't. Solving it by calling the model at a fixed 20 Hz
+	// regardless of frame rate - between calls we return the cached
+	// last output. - TripleA
+	double StepAccumulatorSeconds = 0.0;
+	FClearanceAutopilotOutputs LastOutputs = {};
 };

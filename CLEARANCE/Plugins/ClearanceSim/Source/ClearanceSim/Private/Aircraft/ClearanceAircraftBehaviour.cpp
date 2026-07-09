@@ -408,8 +408,12 @@ void UClearanceAircraftBehaviour::StepWithAutopilot(FAircraftState& State, const
 	const float HeadingError = FMath::Abs(FMath::FindDeltaAngleDegrees(State.Heading, State.TargetHeading));
 	const float AltitudeError = FMath::Abs(State.Altitude - State.TargetAltitude);
 	const float SpeedError    = FMath::Abs(State.Speed - State.TargetSpeed);
+	// Wider heading capture (3 deg instead of the 1 deg property default)
+	// kills residual wing rock cold - the inner PID's small phi jitter
+	// can't excite a limit cycle once we've frozen state. - TripleA
+	const float EffectiveHeadingTol = FMath::Max(HeadingToleranceDeg, 3.f);
 	const bool bCaptured =
-		HeadingError  <= HeadingToleranceDeg  &&
+		HeadingError  <= EffectiveHeadingTol  &&
 		AltitudeError <= AltitudeToleranceFt  &&
 		SpeedError    <= SpeedToleranceKnots;
 

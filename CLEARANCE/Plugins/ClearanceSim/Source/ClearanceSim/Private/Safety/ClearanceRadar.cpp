@@ -77,6 +77,19 @@ void UClearanceRadar::Tick(float RealDeltaSeconds)
 	// visual sweep bar still rotates via the code above. - TripleA
 	if (bUseSimulinkDSP)
 	{
+		// Phase-stagger the CPI so multiple radar sites don't all fire
+		// their Simulink chain on the same game frame. Without this the
+		// I/Q synthesis for every site piles onto one frame, blows out
+		// frame time, and the autopilot's fixed-timestep integrator
+		// advances wrong on that tick - aircraft physics visibly jerks.
+		// Hashing SiteName gives each site a deterministic slot inside
+		// the CPI window without any central scheduler. - TripleA
+		if (LastSimulinkStepSeconds < -100.0)
+		{
+			const uint32 SiteHash = GetTypeHash(SiteName);
+			const double PhaseFrac = static_cast<double>(SiteHash % 1000) / 1000.0;
+			LastSimulinkStepSeconds = -static_cast<double>(SimulinkStepIntervalSeconds) * (1.0 - PhaseFrac);
+		}
 		if (RadarClockSeconds - LastSimulinkStepSeconds >= SimulinkStepIntervalSeconds)
 		{
 			UpdateTracksFromSimulinkDSP(Now);

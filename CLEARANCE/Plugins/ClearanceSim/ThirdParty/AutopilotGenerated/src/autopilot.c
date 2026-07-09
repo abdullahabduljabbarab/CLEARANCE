@@ -7,9 +7,9 @@
  *
  * Code generated for Simulink model 'autopilot'.
  *
- * Model version                  : 1.25
+ * Model version                  : 1.28
  * Simulink Coder version         : 26.1 (R2026a) 20-Nov-2025
- * C/C++ source code generated on : Thu Jul  9 02:59:05 2026
+ * C/C++ source code generated on : Thu Jul  9 10:23:40 2026
  *
  * Target selection: ert.tlc
  * Embedded hardware selection: Intel->x86-64 (Windows64)
@@ -152,12 +152,17 @@ void autopilot_step(RT_MODEL_autopilot_T *const autopilot_M)
   /* Sum: '<S1>/Sum_theta' */
   rtb_Filter = autopilot_U->theta_cmd - autopilot_U->theta;
 
+  /* Gain: '<S136>/Derivative Gain' incorporates:
+   *  Gain: '<S140>/Integral Gain'
+   */
+  autopilot_B->IntegralGain_j = 0.0 * rtb_Filter;
+
   /* Gain: '<S146>/Filter Coefficient' incorporates:
    *  Gain: '<S136>/Derivative Gain'
    *  Integrator: '<S138>/Filter'
    *  Sum: '<S138>/SumD'
    */
-  autopilot_B->FilterCoefficient_m = (0.05 * rtb_Filter -
+  autopilot_B->FilterCoefficient_m = (autopilot_B->IntegralGain_j -
     autopilot_X->Filter_CSTATE_p) * 100.0;
 
   /* Sum: '<S152>/Sum' incorporates:
@@ -185,18 +190,20 @@ void autopilot_step(RT_MODEL_autopilot_T *const autopilot_M)
   /* Outport: '<Root>/delta_e_out' */
   autopilot_Y->delta_e_out = autopilot_B->Sat_theta;
 
-  /* Gain: '<S140>/Integral Gain' */
-  autopilot_B->IntegralGain_j = 0.0 * rtb_Filter;
-
   /* Sum: '<S1>/Sum_phi' */
   rtb_Filter = autopilot_U->phi_cmd - autopilot_U->phi;
+
+  /* Gain: '<S84>/Derivative Gain' incorporates:
+   *  Gain: '<S88>/Integral Gain'
+   */
+  autopilot_B->IntegralGain_d = 0.0 * rtb_Filter;
 
   /* Gain: '<S94>/Filter Coefficient' incorporates:
    *  Gain: '<S84>/Derivative Gain'
    *  Integrator: '<S86>/Filter'
    *  Sum: '<S86>/SumD'
    */
-  autopilot_B->FilterCoefficient_j = (0.05 * rtb_Filter -
+  autopilot_B->FilterCoefficient_j = (autopilot_B->IntegralGain_d -
     autopilot_X->Filter_CSTATE_l) * 100.0;
 
   /* Sum: '<S100>/Sum' incorporates:
@@ -223,9 +230,6 @@ void autopilot_step(RT_MODEL_autopilot_T *const autopilot_M)
 
   /* Outport: '<Root>/delta_a_out' */
   autopilot_Y->delta_a_out = autopilot_B->Sat_delta_a;
-
-  /* Gain: '<S88>/Integral Gain' */
-  autopilot_B->IntegralGain_d = 0.0 * rtb_Filter;
   if (rtmIsMajorTimeStep(autopilot_M)) {
     rt_ertODEUpdateContinuousStates(&autopilot_M->solverInfo, autopilot_M);
 

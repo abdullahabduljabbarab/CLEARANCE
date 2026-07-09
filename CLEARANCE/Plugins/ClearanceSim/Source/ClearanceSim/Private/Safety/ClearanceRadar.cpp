@@ -64,10 +64,84 @@ void UClearanceRadar::Tick(float RealDeltaSeconds)
 	RadarClockSeconds += RealDeltaSeconds;
 	const float Now = static_cast<float>(RadarClockSeconds);
 
-	// Advance the sweep antenna.
+	// Advance the sweep antenna. Kept updating even under Simulink DSP
+	// so the visual sweep bar on the scope still rotates - the sweep
+	// itself doesn't drive detection when Simulink is on. - TripleA
 	SweepPrevDeg = SweepAngleDeg;
 	const float DegPerSec = SweepRpm * 6.f; // 1 rpm = 6 deg/sec
 	SweepAngleDeg = FMath::Fmod(SweepAngleDeg + DegPerSec * RealDeltaSeconds, 360.f);
+
+	// Simulink DSP branch - runs the auto-generated radar model at
+	// SimulinkStepIntervalSeconds cadence and replaces the Tracks map
+	// with its detections. Skips the analytic sweep entirely; the
+	// visual sweep bar still rotates via the code above. - TripleA
+	if (bUseSimulinkDSP)
+	{
+		if (RadarClockSeconds - LastSimulinkStepSeconds >= SimulinkStepIntervalSeconds)
+		{
+			UpdateTracksFromSimulinkDSP(Now);
+			LastSimulinkStepSeconds = RadarClockSeconds;
+		}
+
+		// Chaff clouds paint as a cluster of low-confidence ghost blips
+		// (a "bloom") near each cloud centre. The Simulink DSP path skips
+		// modelling chaff physics inside the I/Q cube because a chaff
+		// cloud radiates back thousands of individual dipole reflectors
+		// that would need per-particle Doppler + range spread - way
+		// heavier than aircraft synthesis for a purely visual feature.
+		// Instead we emit N ghosts directly, matching the analytic
+		// path's behaviour but with more particles per cloud so it
+		// visibly blooms on scope. - TripleA
+		constexpr int32 GhostsPerCloud = 5;
+		const TArray<FChaffCloud> Clouds = Manager->GetActiveChaffClouds();
+		for (const FChaffCloud& C : Clouds)
+		{
+			const FVector2D Rel = FVector2D(C.PositionNm.X, C.PositionNm.Y) - SitePositionNm;
+			if (Rel.Size() > RangeNm) { continue; }
+			for (int32 k = 0; k < GhostsPerCloud; ++k)
+			{
+				const FName GhostKey(*FString::Printf(TEXT("GHOST_%d_%d"), GetTypeHash(C.DropSessionTime), k));
+				FRadarTrack& Trk = Tracks.FindOrAdd(GhostKey);
+				Trk.TruthCallsign   = GhostKey;
+				Trk.DisplayCallsign = NAME_None;
+				Trk.Position        = C.PositionNm + FVector(FMath::FRandRange(-1.2f, 1.2f), FMath::FRandRange(-1.2f, 1.2f), 0.f);
+				Trk.Altitude        = FMath::RoundToFloat(C.AltitudeFt / 200.f) * 200.f;
+				Trk.Heading         = 0.f;
+				Trk.Speed           = 0.f;
+				Trk.bHasSecondary   = false;
+				Trk.LastPaintTime   = Now;
+				Trk.PaintConfidence = 0.4f;
+				Trk.Confidence      = Trk.PaintConfidence;
+			}
+		}
+
+		// Fade only kicks in AFTER the CPI grace period expires. Inside
+		// the grace, blips hold their paint confidence steady - between
+		// CPI updates the track is not stale, it's just quiescent.
+		// Otherwise every tick would nibble the confidence and the
+		// scope would visibly pulse at the CPI cadence. - TripleA
+		const float GraceSeconds = SimulinkStepIntervalSeconds * 1.5f;
+		TArray<FName> Dead;
+		for (TPair<FName, FRadarTrack>& Pair : Tracks)
+		{
+			FRadarTrack& Trk = Pair.Value;
+			const float Since = Now - Trk.LastPaintTime;
+			if (Since <= GraceSeconds)
+			{
+				// Fresh - keep confidence at the paint value
+				Trk.Confidence = Trk.PaintConfidence;
+			}
+			else
+			{
+				const float FadeSince = Since - GraceSeconds;
+				const float Freshness = FMath::Clamp(1.f - (FadeSince / FMath::Max(0.1f, TrackFadeSeconds)), 0.f, 1.f);
+				Trk.Confidence = Trk.PaintConfidence * Freshness;
+				if (Trk.Confidence <= 0.f) { Dead.Add(Pair.Key); }
+			}
+		}
+		for (const FName& K : Dead) { Tracks.Remove(K); }
+		return;
+	}
 
 	const TArray<FAircraftState> Truth = Manager->GetAllAircraftStates();
 
@@ -230,4 +304,226 @@ TArray<FRadarTrack> UClearanceRadar::GetTracks() const
 	Out.Reserve(Tracks.Num());
 	for (const TPair<FName, FRadarTrack>& Pair : Tracks) { Out.Add(Pair.Value); }
 	return Out;
+}
+
+// -----------------------------------------------------------------------
+// Simulink DSP integration - synthesise an I/Q cube from the live
+// airspace state, run one radar_step, match the detections back to
+// aircraft callsigns by (aliased range, Doppler) nearest-neighbour,
+// and populate the Tracks map with the matched entries. Every field
+// that would normally be filled by the analytic sweep is populated
+// from the matched aircraft state so downstream UI code (data blocks,
+// leader lines, fusion tags) works unchanged.
+// -----------------------------------------------------------------------
+
+namespace ClearanceRadarMBD_Internal
+{
+	// Long-range surveillance profile - see radar_repo/model/waveform_params.m
+	// NSpp_receive = PRI * fs = 10 ms * 250 kHz = 2500 (unchanged).
+	// NTx         = tau * fs = 100 us * 250 kHz = 25.
+	// R_unamb     = c * PRI / 2 = 1500 km ~ 810 nm.
+	// v_unamb     = lambda / (4 * PRI) = ~2.7 m/s - Doppler aliases, we
+	//              match on range only in the scoring below. - TripleA
+	constexpr int32  NSpp        = FClearanceRadarConstants::NRangeSamples;   // 2500
+	constexpr int32  NEl         = FClearanceRadarConstants::NElements;       // 8
+	constexpr int32  NPulses     = FClearanceRadarConstants::NPulses;         // 16
+	constexpr int32  NTx         = FClearanceRadarConstants::NTxSamples;      // 25
+	constexpr double FsHz        = 250.0e3;
+	constexpr double PriSec      = 10.0e-3;
+	constexpr double TauSec      = 100.0e-6;
+	constexpr double BwHz        = 100.0e3;
+	constexpr double Fc          = 2.8e9;
+	constexpr double C_MPS       = 2.99792458e8;
+	constexpr double LambdaM     = C_MPS / Fc;
+	constexpr double ElemSpacing = 0.5 * LambdaM;
+	constexpr double PI2         = 6.283185307179586;
+	constexpr double NoiseStd    = 1.0;
+	constexpr double RUnambM     = C_MPS * PriSec * 0.5;                       // ~1500 km
+	constexpr double RangeBinM   = C_MPS / (2.0 * FsHz);                       // 600 m per bin
+
+	FORCEINLINE int32 CubeIdx(int32 r, int32 e, int32 p)
+	{
+		return (p * NEl + e) * NSpp + r;
+	}
+	FORCEINLINE double ElementX(int32 ElemIdx)
+	{
+		return (static_cast<double>(ElemIdx) - 0.5 * (NEl - 1)) * ElemSpacing;
+	}
+	FORCEINLINE void GaussianComplex(double& OutRe, double& OutIm)
+	{
+		const double u1 = FMath::Max(1e-12, FMath::FRand());
+		const double u2 = FMath::FRand();
+		const double r  = FMath::Sqrt(-2.0 * FMath::Loge(u1));
+		OutRe = r * FMath::Cos(PI2 * u2) / FMath::Sqrt(2.0);
+		OutIm = r * FMath::Sin(PI2 * u2) / FMath::Sqrt(2.0);
+	}
+}
+
+void UClearanceRadar::UpdateTracksFromSimulinkDSP(float NowSeconds)
+{
+	using namespace ClearanceRadarMBD_Internal;
+
+	if (!Manager) { return; }
+
+	const TArray<FAircraftState> Truth = Manager->GetAllAircraftStates();
+
+	// ---- Build target geometries relative to this site ----
+	struct FGeom
+	{
+		FAircraftState Ac;
+		double AliasedRangeM = 0.0;
+		double AngleRad      = 0.0;
+		double VelocityMps   = 0.0;
+	};
+	TArray<FGeom> Geoms;
+	Geoms.Reserve(Truth.Num());
+
+	for (const FAircraftState& Ac : Truth)
+	{
+		const FVector2D RelNm = FVector2D(Ac.Position.X, Ac.Position.Y) - SitePositionNm;
+		const double RangeM  = FMath::Max(0.0, static_cast<double>(RelNm.Size()) * 1852.0);
+		if (RangeM <= 0.0) { continue; }
+
+		FGeom G;
+		G.Ac            = Ac;
+		G.AliasedRangeM = FMath::Fmod(RangeM, RUnambM);
+		G.AngleRad      = FMath::Atan2(static_cast<double>(RelNm.X), static_cast<double>(RelNm.Y));
+
+		// Radial velocity (positive closing). Ac.Velocity in nm/s.
+		const FVector2D VelMpsVec = FVector2D(Ac.Velocity.X, Ac.Velocity.Y) * 1852.0;
+		const double UnitX = (static_cast<double>(RelNm.X) * 1852.0) / RangeM;
+		const double UnitY = (static_cast<double>(RelNm.Y) * 1852.0) / RangeM;
+		G.VelocityMps = -(static_cast<double>(VelMpsVec.X) * UnitX + static_cast<double>(VelMpsVec.Y) * UnitY);
+
+		Geoms.Add(G);
+	}
+
+	// ---- Synthesise I/Q cube ----
+	FClearanceRadarInputs In;
+	In.LookAngleRad = 0.0;
+
+	// LFM chirp reference into tx
+	const double ChirpRate = BwHz / TauSec;
+	TArray<double> ChirpRe; ChirpRe.SetNumUninitialized(NTx);
+	TArray<double> ChirpIm; ChirpIm.SetNumUninitialized(NTx);
+	for (int32 k = 0; k < NTx; ++k)
+	{
+		const double t = static_cast<double>(k) / FsHz;
+		const double phi = PI2 * (-0.5 * BwHz * t + 0.5 * ChirpRate * t * t);
+		ChirpRe[k] = FMath::Cos(phi);
+		ChirpIm[k] = FMath::Sin(phi);
+		In.TxReal[k] = ChirpRe[k];
+		In.TxImag[k] = ChirpIm[k];
+	}
+
+	// Zero cube then add every target's contribution
+	constexpr int32 CubeSize = NSpp * NEl * NPulses;
+	FMemory::Memzero(In.RxCubeReal, sizeof(double) * CubeSize);
+	FMemory::Memzero(In.RxCubeImag, sizeof(double) * CubeSize);
+
+	for (const FGeom& G : Geoms)
+	{
+		const int32 DelaySamples = static_cast<int32>(FMath::RoundToInt(2.0 * G.AliasedRangeM / C_MPS * FsHz));
+		if (DelaySamples < 0 || DelaySamples + NTx > NSpp) { continue; }
+
+		const double FDoppler = 2.0 * G.VelocityMps / LambdaM;
+
+		for (int32 p = 0; p < NPulses; ++p)
+		{
+			const double DopPhase = PI2 * FDoppler * static_cast<double>(p) * PriSec;
+			const double DopRe = FMath::Cos(DopPhase);
+			const double DopIm = FMath::Sin(DopPhase);
+
+			for (int32 e = 0; e < NEl; ++e)
+			{
+				const double SteerPhase = PI2 * ElementX(e) * FMath::Sin(G.AngleRad) / LambdaM;
+				const double SteerRe = FMath::Cos(SteerPhase);
+				const double SteerIm = FMath::Sin(SteerPhase);
+				const double WRe = DopRe * SteerRe - DopIm * SteerIm;
+				const double WIm = DopRe * SteerIm + DopIm * SteerRe;
+
+				for (int32 k = 0; k < NTx; ++k)
+				{
+					const double TxRe = ChirpRe[k];
+					const double TxIm = ChirpIm[k];
+					const double AmpRe = WRe * TxRe - WIm * TxIm;
+					const double AmpIm = WRe * TxIm + WIm * TxRe;
+					const int32 Idx = CubeIdx(DelaySamples + k, e, p);
+					In.RxCubeReal[Idx] += AmpRe;
+					In.RxCubeImag[Idx] += AmpIm;
+				}
+			}
+		}
+	}
+
+	// Per-element AWGN
+	for (int32 p = 0; p < NPulses; ++p)
+	{
+		for (int32 e = 0; e < NEl; ++e)
+		{
+			for (int32 r = 0; r < NSpp; ++r)
+			{
+				double NRe, NIm;
+				GaussianComplex(NRe, NIm);
+				const int32 Idx = CubeIdx(r, e, p);
+				In.RxCubeReal[Idx] += NoiseStd * NRe;
+				In.RxCubeImag[Idx] += NoiseStd * NIm;
+			}
+		}
+	}
+
+	// ---- Run the model ----
+	const FClearanceRadarOutputs Out = SimulinkWrapper.Step(In);
+
+	// ---- Match each detection to the nearest aircraft ----
+	// Track which callsigns have already been claimed so we don't
+	// map two CFAR sidelobe hits from the same target to different
+	// aircraft. - TripleA
+	TSet<FName> Claimed;
+	for (int32 i = 0; i < Out.NumDetections; ++i)
+	{
+		const float DetR = Out.Detections[i].RangeMetres;
+
+		// Long-range profile: velocity aliases into a tiny +/-2.7 m/s
+		// window so Doppler is unusable for matching. Score on range
+		// only, normalised to one range bin. - TripleA
+		double BestScore = TNumericLimits<double>::Max();
+		int32  BestIdx   = INDEX_NONE;
+		for (int32 g = 0; g < Geoms.Num(); ++g)
+		{
+			if (Claimed.Contains(Geoms[g].Ac.Callsign)) { continue; }
+			const double DR = FMath::Abs(Geoms[g].AliasedRangeM - static_cast<double>(DetR)) / RangeBinM;
+			const double S  = DR * DR;
+			if (S < BestScore) { BestScore = S; BestIdx = g; }
+		}
+		if (BestIdx == INDEX_NONE) { continue; }
+
+		// Reject far matches - if score > 4 range cells, it's noise, not target.
+		if (BestScore > 16.0) { continue; }
+
+		const FGeom& Match = Geoms[BestIdx];
+		Claimed.Add(Match.Ac.Callsign);
+
+		FRadarTrack& Trk = Tracks.FindOrAdd(Match.Ac.Callsign);
+		Trk.TruthCallsign   = Match.Ac.Callsign;
+		Trk.DisplayCallsign = Match.Ac.Callsign;    // Simulink DSP produces "secondary-quality" tags
+		Trk.Position        = Match.Ac.Position;    // ground-truth 2D position for scope display
+		Trk.Altitude        = Match.Ac.Altitude;
+		Trk.Heading         = Match.Ac.Heading;
+		Trk.Speed           = Match.Ac.Speed;
+		Trk.bHasSecondary   = !Match.Ac.bJammingOn;   // jammer loses its transponder tag
+		Trk.LastPaintTime   = NowSeconds;
+		// Any CFAR-passing detection paints the blip at (near-)full brightness.
+		// Scaling brightness linearly with per-CPI SNR made the blip visibly
+		// pulse at 2 Hz as the noise realisation shifted the raw SNR reading
+		// - PPI scopes don't do that. Fade after the grace window still
+		// handles the "lost contact" case separately. - TripleA
+		float Base = FMath::Clamp(Out.Detections[i].SnrDb / 40.f, 0.9f, 1.f);
+		// Self-jamming: the aircraft radiating a noise jammer masks its own
+		// return in the receiver, so its blip dims. Every other aircraft on
+		// the scope is unaffected. - TripleA
+		if (Match.Ac.bJammingOn) { Base *= 0.3f; }
+		Trk.PaintConfidence = Base;
+		Trk.Confidence      = Trk.PaintConfidence;
+	}
 }

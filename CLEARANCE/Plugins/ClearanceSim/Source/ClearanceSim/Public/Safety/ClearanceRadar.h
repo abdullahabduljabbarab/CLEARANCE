@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
 #include "Core/CLEARANCETypes.h"
+#include "RadarWrapper.h"
 #include "ClearanceRadar.generated.h"
 
 class AClearanceAirspaceManager;
@@ -151,6 +152,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|Physics")
 	float CoverageReferenceRcsSqM = 10.f;
 
+	// --- Simulink DSP integration ---------------------------------------
+	// When on (default), the site's Tracks map is populated by the
+	// Embedded-Coder-generated radar model from the standalone radar-mbd
+	// repo instead of the built-in analytic sweep. Synthesises an I/Q
+	// cube from the live aircraft state, runs radar_step at
+	// SimulinkStepIntervalSeconds cadence, converts detections into
+	// FRadarTrack entries matched to the nearest aircraft by aliased
+	// range + Doppler. Toggle via clearance.radar.mbd.disable/enable
+	// live to A/B against the analytic path. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|MBD")
+	bool bUseSimulinkDSP = true;
+
+	// Wall-clock seconds between radar_step calls. Not tied to CPI
+	// cadence - one radar_step is a single 4 ms coherent burst but the
+	// game only needs an updated picture at a few Hz to feel real.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar|MBD")
+	float SimulinkStepIntervalSeconds = 0.5f;
+
 private:
 	UPROPERTY()
 	TObjectPtr<AClearanceAirspaceManager> Manager;
@@ -163,6 +182,17 @@ private:
 	float SweepPrevDeg = 0.f;
 	double RadarClockSeconds = 0.0; // accumulated real time, drives paint timestamps + fade
 
+	// Simulink DSP instance - one per radar site so a fleet runs
+	// concurrently without shared globals (matches the reusable-
+	// function packaging on the generated C). - TripleA
+	FRadarWrapper SimulinkWrapper;
+	double LastSimulinkStepSeconds = -1000.0;
+
 	static bool SweepCrossed(float Prev, float Now, float BearingDeg);
 	static float BearingDeg(const FVector& PosNm);
+
+	// Runs the Simulink DSP against the current airspace state and
+	// replaces the Tracks map with matched detections. Called from
+	// Tick() when bUseSimulinkDSP is true. - TripleA
+	void UpdateTracksFromSimulinkDSP(float NowSeconds);
 };

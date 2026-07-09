@@ -44,6 +44,11 @@
 			"Name": "ClearanceAutopilotMBD",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "ClearanceRadarMBD",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [

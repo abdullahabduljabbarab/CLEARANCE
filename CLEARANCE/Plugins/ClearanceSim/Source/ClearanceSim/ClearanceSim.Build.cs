@@ -18,7 +18,8 @@ public class ClearanceSim : ModuleRules
 			"ClearanceDDS", // Fast DDS pub/sub middleware for real-time telemetry
 			"ClearanceRTI", // RTI Connext DDS pub/sub middleware - third wire alongside DDS
 			"ClearanceHLA",  // OpenRTI IEEE 1516-2010 HLA-Evolved federate - fourth wire
-			"ClearanceAutopilotMBD" // Simulink-generated cascade autopilot (Model-Based Design bridge)
+			"ClearanceAutopilotMBD", // Simulink-generated cascade autopilot (Model-Based Design bridge)
+			"ClearanceRadarMBD"      // Simulink-generated radar DSP chain (Model-Based Design bridge)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

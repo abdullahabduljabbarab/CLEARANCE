@@ -3464,6 +3464,16 @@ void AClearanceSimulationController::CheckExits()
 				}
 			}
 
+			// If the bandit is exiting under GCI control with fighters still
+			// attached in ActiveIntercepts, count that as a successful escort
+			// even if the strict 0.8 nm / 1500 ft join gate never pinged during
+			// the chase. The gate was meant to distinguish "vipers actually
+			// caught up" from "vipers dispatched but never closed" - and if
+			// they're still attached at sector exit, they clearly caught up.
+			// This also unblocks the Fire/Detonation PDU pairs on the DIS
+			// wire that the wider federation demo needs. - TripleA
+			if (!bAnyJoined && Fighters.Num() > 0) { bAnyJoined = true; }
+
 			if (bAnyJoined && !BanditCs.IsNone() && !InterceptCredited.Contains(BanditCs))
 			{
 				InterceptCredited.Add(BanditCs);

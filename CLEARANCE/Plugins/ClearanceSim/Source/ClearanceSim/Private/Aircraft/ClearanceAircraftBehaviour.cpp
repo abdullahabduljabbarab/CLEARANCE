@@ -204,7 +204,13 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 			}
 		}
 
-		if (bAutopilotEngaged)
+		// GCI-controlled fighters use the classic rate-limited slew, not
+		// the Simulink cascade. The cascade's outer heading loop is tuned
+		// for airliner comfort (soft P + wide capture band), which is
+		// exactly wrong for lead-pursuit intercepts where the commanded
+		// heading changes fast as the fighter closes. Bypass keeps the
+		// interceptor latched onto the target. - TripleA
+		if (bAutopilotEngaged && !State.bUnderGCIControl)
 		{
 			// Simulink cascade autopilot owns speed / bank / climb-rate
 			// this tick. Heading and position still integrate from the

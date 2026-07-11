@@ -13,6 +13,8 @@
 #include "UI/ClearanceInstructorPanel.h"
 #include "Blueprint/UserWidget.h"
 #include "EngineUtils.h"
+#include "IHeadMountedDisplay.h"
+#include "IXRTrackingSystem.h"
 
 // Compact labels for instructor transcript lines - chosen for terseness so the
 // AAR scroll list stays readable. Each inject handler logs a System line so the
@@ -69,12 +71,28 @@ void AClearanceOperatorPC::BeginPlay()
 	{
 		InstructorPanel->AddToViewport();
 
-		// Lock input to UI-only so clicks hit buttons/combos, not the
-		// game world. Show the mouse cursor. - TripleA
-		FInputModeUIOnly UIMode;
-		UIMode.SetWidgetToFocus(InstructorPanel->TakeWidget());
-		SetInputMode(UIMode);
-		SetShowMouseCursor(true);
+		// Lock input to UI-only on desktop so clicks hit buttons/combos not
+		// the game world. In VR, use GameAndUI so motion-controller axes
+		// (locomotion, snap turn) reach the possessed VR pawn while the
+		// scope UI still receives WidgetInteractionComponent clicks. UIOnly
+		// blocks all axis input from reaching the pawn. - TripleA
+		const bool bIsInVR = GEngine && GEngine->XRSystem.IsValid()
+			&& GEngine->XRSystem->GetHMDDevice() != nullptr
+			&& GEngine->XRSystem->GetHMDDevice()->IsHMDConnected();
+		if (bIsInVR)
+		{
+			FInputModeGameAndUI GameUIMode;
+			GameUIMode.SetWidgetToFocus(InstructorPanel->TakeWidget());
+			GameUIMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+			SetInputMode(GameUIMode);
+		}
+		else
+		{
+			FInputModeUIOnly UIMode;
+			UIMode.SetWidgetToFocus(InstructorPanel->TakeWidget());
+			SetInputMode(UIMode);
+		}
+		SetShowMouseCursor(!bIsInVR);
 	}
 }
 

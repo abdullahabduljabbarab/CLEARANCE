@@ -21,6 +21,11 @@ public:
 	virtual void BeginPlay() override;
 	virtual void PlayerTick(float DeltaTime) override;
 
+	// Accessor so the VR operator pawn can dismiss the desktop instructor
+	// widget once it takes over. Desktop operators keep the panel; in VR
+	// the diegetic scope replaces it. - TripleA
+	UClearanceInstructorPanel* GetInstructorPanel() const { return InstructorPanel; }
+
 	// Soft class so we don't force-load UMG content from C++. Default points
 	// at /Game/UI/WBP_InstructorPanel. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor",

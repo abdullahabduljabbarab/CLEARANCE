@@ -159,11 +159,11 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 		StepHeading(State, DeltaTime); // keep it tracking straight down the runway
 
 		// Roll forward along the heading only - no wind drift on the ground, otherwise
-		// a stopped aircraft would slide sideways with the wind.
-		const float HeadingRad = FMath::DegreesToRadians(State.Heading);
-		const FVector2D Roll(
-			State.Speed * KnotsToNmPerSec * FMath::Sin(HeadingRad),
-			State.Speed * KnotsToNmPerSec * FMath::Cos(HeadingRad));
+		// a stopped aircraft would slide sideways with the wind. ENU convention:
+		// X=East=sin(bearing), Y=North=cos(bearing) - keeps the sim's compass math
+		// aligned with Cesium's local coordinate frame. - TripleA
+		const FVector2D Dir = ClearanceCoords::BearingToDir2D(State.Heading);
+		const FVector2D Roll = Dir * State.Speed * KnotsToNmPerSec;
 		State.Velocity = FVector(Roll.X, Roll.Y, 0.f);
 		State.Position += State.Velocity * DeltaTime;
 	}
@@ -245,10 +245,20 @@ void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& I
 	switch (Instruction.Type)
 	{
 	case EInstructionType::HeadingChange:
-		State.TargetHeading = FMath::Fmod(Instruction.TargetValue, 360.f);
-		if (State.TargetHeading < 0.f) State.TargetHeading += 360.f;
+	{
+		// Instruction.TargetValue arrives as the operator-facing MAGNETIC
+		// bearing (what pilot readbacks + transcript render, what the user
+		// typed / spoke). Rotate into the sim's internal frame so the aircraft
+		// converges to the heading the trainee actually meant - the internal
+		// State.Heading then renders back as the same magnetic value in the
+		// scope data block and camera overlay. - TripleA
+		const float MagOffset = Manager ? Manager->WorldNorthOffsetDeg : 0.f;
+		float Internal = FMath::Fmod(Instruction.TargetValue - MagOffset, 360.f);
+		if (Internal < 0.f) Internal += 360.f;
+		State.TargetHeading = Internal;
 		ActiveTurnDirection = Instruction.TurnDirection; // -1/0/+1
 		break;
+	}
 	case EInstructionType::AltitudeChange:
 		State.TargetAltitude = FMath::Clamp(Instruction.TargetValue, 0.f, State.ServiceCeiling);
 		bExpediting = Instruction.bExpedite;
@@ -384,17 +394,13 @@ void UClearanceAircraftBehaviour::StepSpeed(FAircraftState& State, float DeltaTi
 
 void UClearanceAircraftBehaviour::StepPosition(FAircraftState& State, const FSectorEnvironment& Env, float DeltaTime) const
 {
-	// Heading is a compass bearing (0 = North, 90 = East), so X is East and Y is
-	// North. Wind blows FROM Env.WindDirection, i.e. toward that bearing + 180. - TripleA
-	const float HeadingRad = FMath::DegreesToRadians(State.Heading);
-	const FVector2D Air(
-		State.Speed * KnotsToNmPerSec * FMath::Sin(HeadingRad),
-		State.Speed * KnotsToNmPerSec * FMath::Cos(HeadingRad));
-
-	const float WindToRad = FMath::DegreesToRadians(Env.WindDirection + 180.f);
-	const FVector2D Wind(
-		Env.WindSpeed * KnotsToNmPerSec * FMath::Sin(WindToRad),
-		Env.WindSpeed * KnotsToNmPerSec * FMath::Cos(WindToRad));
+	// Heading is a compass bearing (0 = North, 90 = East). ENU frame: X = East,
+	// Y = North, so a bearing decomposes as X = sin(H), Y = cos(H). Wind blows
+	// FROM Env.WindDirection, i.e. toward WindDirection + 180. - TripleA
+	const FVector2D Air = ClearanceCoords::BearingToDir2D(State.Heading) *
+		(State.Speed * KnotsToNmPerSec);
+	const FVector2D Wind = ClearanceCoords::BearingToDir2D(Env.WindDirection + 180.f) *
+		(Env.WindSpeed * KnotsToNmPerSec);
 
 	const FVector2D Ground = Air + Wind;
 
@@ -532,7 +538,7 @@ bool UClearanceAircraftBehaviour::IsEstablishedOnApproach(const FAircraftState& 
 	const float DistNm = Rel.Size();
 
 	const float FacRad = FMath::DegreesToRadians(FAC);
-	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));
+	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad)); // ENU: X=E, Y=N
 	const FVector2D RightOfCourse(Inbound.Y, -Inbound.X);
 
 	const float CrossTrackNm = FMath::Abs(FVector2D::DotProduct(Rel, RightOfCourse));
@@ -563,7 +569,7 @@ bool UClearanceAircraftBehaviour::HasMissedApproach(const FAircraftState& State,
 	const FVector2D Rel = FVector2D(State.Position.X, State.Position.Y) - Threshold;
 
 	const float FacRad = FMath::DegreesToRadians(FAC);
-	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));
+	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad)); // ENU: X=E, Y=N
 	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound);
 
 	// Past the threshold (out the departure end) and STILL airborne = it overflew the
@@ -581,7 +587,7 @@ void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, con
 	const FVector2D Rel = FVector2D(State.Position.X, State.Position.Y) - Threshold; // aircraft relative to threshold
 
 	const float FacRad = FMath::DegreesToRadians(FAC);
-	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad));   // direction flown to land
+	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad)); // ENU: X=E, Y=N   // direction flown to land
 	const FVector2D RightOfCourse(Inbound.Y, -Inbound.X);
 	const float CrossTrackNm = FVector2D::DotProduct(Rel, RightOfCourse);
 	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound); // < 0 before the threshold, 0 at it

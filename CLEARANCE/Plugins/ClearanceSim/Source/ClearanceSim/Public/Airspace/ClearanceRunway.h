@@ -27,6 +27,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
 	float LandingHeadingDeg = 270.f;
 
+	// Optional. When > 0 (1-36), overrides the auto-computed runway designator
+	// so the scope label + ATC readback shows the REAL magnetic designator even
+	// when LandingHeadingDeg is offset to compensate for the local coordinate
+	// frame (e.g. running on Cesium tiles at BAE Warton where a visual alignment
+	// value of 340 needs to still read as "RWY 07"). Reciprocal end auto-derives
+	// as (this + 18) mod 36, so setting 7 gets you 07/25 automatically. Leave at
+	// 0 to use the standard round(LandingHeadingDeg / 10) numbering. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway", meta = (ClampMin = "0", ClampMax = "36"))
+	int32 DesignatorNumberOverride = 0;
+
 	// Let traffic land from either end. Off = this strip is one-way (LandingHeadingDeg only).
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
 	bool bAllowReciprocal = true;

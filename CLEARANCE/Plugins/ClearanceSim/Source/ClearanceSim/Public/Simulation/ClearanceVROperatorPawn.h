@@ -34,11 +34,13 @@ public:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	// --- Locomotion tuning -----------------------------------------------
-	// Walking pace, cm/s. 140 cm/s = ~5 km/h, natural walking speed for a
-	// tower operator crossing the cab. Reduce to 90 for a slower creep;
-	// nudge up to 180 if the tower is oversized. - TripleA
+	// Stick locomotion speed, cm/s. Real-world walking pace (~140) feels
+	// like quicksand in VR because the vestibular system expects body
+	// exertion to match world speed and there's none. 300 cm/s reads as
+	// "comfortable brisk walk" for a seated operator crossing the cab.
+	// Drop to 200 for a slower creep; push to 400 for a jog. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Locomotion")
-	float MoveSpeed = 140.f;
+	float MoveSpeed = 300.f;
 
 	// Snap turn angle in degrees. 45 deg is the sweet spot: big enough to
 	// feel like you've turned, small enough that you don't lose spatial

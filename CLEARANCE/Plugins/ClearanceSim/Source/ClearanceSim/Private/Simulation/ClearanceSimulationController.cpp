@@ -373,6 +373,12 @@ void AClearanceSimulationController::InitialiseSystems()
 
 	if (AirspaceManager)
 	{
+		// Mirror the world-frame offset onto the Manager so per-aircraft
+		// Behaviour UObjects can convert operator magnetic-frame instructions
+		// back to the sim's internal frame at the point they hit the aircraft
+		// state, without needing a controller reference. - TripleA
+		AirspaceManager->WorldNorthOffsetDeg = WorldNorthOffsetDeg;
+
 		AirspaceManager->DefaultWindDirection = WindDirectionDeg;
 		AirspaceManager->DefaultWindSpeed = WindSpeedKts;
 		AirspaceManager->InitialiseEnvironment(WindDirectionDeg, WindSpeedKts);
@@ -385,27 +391,52 @@ void AClearanceSimulationController::InitialiseSystems()
 		bool bGroundSet = false;
 		for (TActorIterator<AClearanceRunway> It(GetWorld()); It; ++It)
 		{
+			// LandingHeadingDeg is authored in the sim's internal frame (i.e. the
+			// value that makes the strip visually align with the ground below).
+			// The magnetic designator falls out of the same value via
+			// ApplyWorldNorthOffset at display time, so ATC readbacks still say
+			// "RWY 07" even when the internal heading is 340. - TripleA
 			const float H = It->LandingHeadingDeg;
 			const float HRad = FMath::DegreesToRadians(H);
 			const FVector2D Inbound(FMath::Sin(HRad), FMath::Cos(HRad)); // direction flown to land on H
 
 			// Centre, length and ground height all come from the runway MESH bounds, so
 			// placing and scaling the mesh moves and sizes the runway - one object drives
-			// the touchdown points, the markers and everything else. - TripleA
+			// the touchdown points, the markers and everything else. When the actor has
+			// explicit OverrideLengthUnits / OverrideWidthUnits set, take them directly
+			// rather than reconstructing from the AABB - the AABB of an oriented long-and-
+			// thin rectangle at an oblique heading (Warton's 290 is a 50° tilt from world
+			// axes) is nearly square, so projecting it back leaks length into width and
+			// the sim ends up drawing a 1500 m wide runway. - TripleA
 			FVector CentreW = It->GetActorLocation();
 			float LengthW = 1600.f; // fallback (~1.6nm) until a mesh is assigned
 			float WidthW  = 4500.f; // fallback ~45m strip
 			float TopZ = CentreW.Z;
-			FVector MeshCentre, MeshExtent;
-			if (It->GetRunwayBounds(MeshCentre, MeshExtent))
+
+			if (It->OverrideLengthUnits > 0.f && It->OverrideWidthUnits > 0.f)
 			{
-				CentreW = MeshCentre;
-				LengthW = 2.f * (MeshExtent.X * FMath::Abs(Inbound.X) + MeshExtent.Y * FMath::Abs(Inbound.Y));
-				// Perpendicular to the heading - swaps the axis the projection
-				// reads. - TripleA
-				const FVector Perp(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
-				WidthW = 2.f * (MeshExtent.X * FMath::Abs(Perp.X) + MeshExtent.Y * FMath::Abs(Perp.Y));
-				TopZ = MeshCentre.Z + MeshExtent.Z;
+				LengthW = It->OverrideLengthUnits;
+				WidthW  = It->OverrideWidthUnits;
+				FVector MeshCentre, MeshExtent;
+				if (It->GetRunwayBounds(MeshCentre, MeshExtent))
+				{
+					CentreW = MeshCentre;
+					TopZ = MeshCentre.Z + MeshExtent.Z;
+				}
+			}
+			else
+			{
+				FVector MeshCentre, MeshExtent;
+				if (It->GetRunwayBounds(MeshCentre, MeshExtent))
+				{
+					CentreW = MeshCentre;
+					LengthW = 2.f * (MeshExtent.X * FMath::Abs(Inbound.X) + MeshExtent.Y * FMath::Abs(Inbound.Y));
+					// Perpendicular to the heading - swaps the axis the projection
+					// reads. - TripleA
+					const FVector Perp(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
+					WidthW = 2.f * (MeshExtent.X * FMath::Abs(Perp.X) + MeshExtent.Y * FMath::Abs(Perp.Y));
+					TopZ = MeshCentre.Z + MeshExtent.Z;
+				}
 			}
 
 			const FVector2D CentreNm((CentreW.X - Origin.X) / WorldUnitsPerNm, (CentreW.Y - Origin.Y) / WorldUnitsPerNm);
@@ -2751,10 +2782,25 @@ void AClearanceSimulationController::RefreshOperatorTracks()
 	}
 }
 
+// Global kill-switch for the whole DrawDebugView pass. Default off - the
+// debug layer was a scaffolding aid before the instructor scope and the
+// VR diegetic scope existed, and each frame it drew hundreds of circles,
+// lines and strings that ate the game thread (~15ms with a normal
+// aircraft count). Console: clearance.WorldDebugDraw 1 to bring it back
+// for sim testing. - TripleA
+static TAutoConsoleVariable<int32> CVarClearanceWorldDebugDraw(
+	TEXT("clearance.WorldDebugDraw"),
+	0,
+	TEXT("Draw the SimulationController's world-space debug primitives "
+	     "(sector rings, runway edges, zone circles, aircraft callsigns, "
+	     "chaff/jamming markers). 0 = off (default), 1 = on."),
+	ECVF_Cheat);
+
 void AClearanceSimulationController::DrawDebugView()
 {
 	UWorld* World = GetWorld();
-	if (!bDrawDebug || !AirspaceManager || !World)
+	if (CVarClearanceWorldDebugDraw.GetValueOnGameThread() == 0 ||
+		!bDrawDebug || !AirspaceManager || !World)
 	{
 		return;
 	}
@@ -2853,7 +2899,11 @@ void AClearanceSimulationController::DrawDebugView()
 	for (int32 Deg = 0; Deg < 360; Deg += 30)
 	{
 		const float R = FMath::DegreesToRadians((float)Deg);
-		const FVector Dir(FMath::Sin(R), FMath::Cos(R), 0.f);
+		// The overview camera's projection puts world +X on the LEFT of the
+		// rendered frame at Warton's georef; negating the east component here
+		// puts each tick on the compass side of the sector where a viewer
+		// EXPECTS to read that bearing (090 on the right, 270 on the left). - TripleA
+		const FVector Dir(-FMath::Sin(R), FMath::Cos(R), 0.f);
 		const FVector Edge = Origin + Dir * (ExitRadiusNm * S);
 		DrawDebugLine(World, Origin + Dir * (ExitRadiusNm * S - 1.5f * S), Edge, FColor(60, 110, 160), false, -1.f, 0, 90.f);
 
@@ -3022,17 +3072,31 @@ void AClearanceSimulationController::DrawDebugView()
 		int32 Number;
 		bool bIsReciprocal;
 	};
+	// Reciprocal of a designator: (N + 18) mod 36, with 0 folded up to 36. So 07
+	// becomes 25, 34 becomes 16, 18 becomes 36. - TripleA
+	auto ReciprocalNumber = [](int32 N)
+	{
+		int32 R = (N + 18) % 36;
+		return (R == 0) ? 36 : R;
+	};
+
 	TArray<FRwyEnd> Ends;
 	for (TActorIterator<AClearanceRunway> EIt(World); EIt; ++EIt)
 	{
 		FVector C = EIt->GetActorLocation();
 		FVector MC, ME;
 		if (EIt->GetRunwayBounds(MC, ME)) { C = MC; }
-		Ends.Add({ *EIt, EIt->LandingHeadingDeg, C, Designator(EIt->LandingHeadingDeg), false });
+		const int32 PrimaryNum = (EIt->DesignatorNumberOverride > 0)
+			? EIt->DesignatorNumberOverride
+			: Designator(EIt->LandingHeadingDeg);
+		Ends.Add({ *EIt, EIt->LandingHeadingDeg, C, PrimaryNum, false });
 		if (EIt->bAllowReciprocal)
 		{
 			const float H2 = FMath::Fmod(EIt->LandingHeadingDeg + 180.f, 360.f);
-			Ends.Add({ *EIt, H2, C, Designator(H2), true });
+			const int32 RecipNum = (EIt->DesignatorNumberOverride > 0)
+				? ReciprocalNumber(EIt->DesignatorNumberOverride)
+				: Designator(H2);
+			Ends.Add({ *EIt, H2, C, RecipNum, true });
 		}
 	}
 
@@ -3045,7 +3109,7 @@ void AClearanceSimulationController::DrawDebugView()
 		TArray<int32>& Grp = Pair.Value;
 		if (Grp.Num() < 2) { continue; }
 		const float HRad = FMath::DegreesToRadians(Ends[Grp[0]].HeadingDeg);
-		const FVector LeftDir(-FMath::Cos(HRad), FMath::Sin(HRad), 0.f); // 90deg CCW from landing direction = pilot's left
+		const FVector LeftDir(-FMath::Sin(HRad), FMath::Cos(HRad), 0.f); // 90deg CCW from landing direction = pilot's left
 		Grp.Sort([&](int32 A, int32 B)
 		{
 			return FVector::DotProduct(Ends[A].Centre, LeftDir) > FVector::DotProduct(Ends[B].Centre, LeftDir);
@@ -3079,14 +3143,29 @@ void AClearanceSimulationController::DrawDebugView()
 	// scale the mesh and this follows it exactly. - TripleA
 	for (TActorIterator<AClearanceRunway> It(World); It; ++It)
 	{
+		// LandingHeadingDeg is authored in the sim internal frame - use it as-is
+		// so the draw sits at the same world direction as the sim math. - TripleA
 		const float HRad = FMath::DegreesToRadians(It->LandingHeadingDeg);
 		const FVector Dir(FMath::Sin(HRad), FMath::Cos(HRad), 0.f);
 		const FVector Side(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);
 
 		FVector Cw = It->GetActorLocation();
 		float HalfLen = 800.f, HalfWidth = 0.025f * S, Zc = Cw.Z;
+		// Prefer the actor's oriented Override dimensions when set. Reconstructing
+		// runway half-length / half-width from the axis-aligned MeshExtent projected
+		// onto Dir/Side is only correct when the runway is axis-aligned (headings
+		// like 0/90/180/270). At any oblique heading (e.g. Warton's 070) that
+		// projection leaks length into width and vice versa, producing a huge
+		// square blob instead of a thin strip. - TripleA
+		if (It->OverrideLengthUnits > 0.f && It->OverrideWidthUnits > 0.f)
+		{
+			HalfLen = It->OverrideLengthUnits * 0.5f;
+			HalfWidth = It->OverrideWidthUnits * 0.5f;
+			Zc = Cw.Z;
+		}
 		FVector MeshCentre, MeshExtent;
-		if (It->GetRunwayBounds(MeshCentre, MeshExtent))
+		if (It->GetRunwayBounds(MeshCentre, MeshExtent) &&
+			!(It->OverrideLengthUnits > 0.f && It->OverrideWidthUnits > 0.f))
 		{
 			Cw = MeshCentre;
 			HalfLen = MeshExtent.X * FMath::Abs(Dir.X) + MeshExtent.Y * FMath::Abs(Dir.Y);
@@ -4317,13 +4396,8 @@ void AClearanceSimulationController::AppendTranscriptEntry(EClearanceCommsRole I
 	}
 	if (Text.IsEmpty())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Transcript] Append SKIPPED - empty text. Role=%d cs=%s"),
-			static_cast<int32>(InRole), *Callsign.ToString());
 		return;
 	}
-	UE_LOG(LogTemp, Display, TEXT("[Transcript] Appending: [%s] cs=%s text='%s' (total now %d)"),
-		InRole == EClearanceCommsRole::Operator ? TEXT("OP") : (InRole == EClearanceCommsRole::Pilot ? TEXT("PILOT") : TEXT("SYS")),
-		*Callsign.ToString(), *Text, Transcript.Num() + 1);
 
 	// Republish this transmission as a DIS Signal PDU. Every transcript line
 	// that represents actual radio traffic - operator commands, pilot readbacks,
@@ -4844,7 +4918,7 @@ TArray<FString> AClearanceSimulationController::GetApproachRunwayLabels() const
 	Designator.SetNum(N);
 	for (int32 i = 0; i < N; ++i)
 	{
-		int32 D = FMath::RoundToInt(All[i].HeadingDeg / 10.f);
+		int32 D = FMath::RoundToInt(ApplyWorldNorthOffset(All[i].HeadingDeg) / 10.f);
 		if (D <= 0) { D = 36; }
 		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
 		Designator[i] = D;
@@ -5202,12 +5276,16 @@ TArray<FInstructorCameraLine> AClearanceSimulationController::GetCameraOverlayLi
 		const FVector FL = NL + InboundDir * RwyLen;
 		const FVector FR = NR + InboundDir * RwyLen;
 
-		// Depth-aware occlusion only runs on Overview - that's the view
-		// where "see through terrain" actually reads as a bug. Chase wants
-		// the rectangle to act as a persistent HUD element regardless of
-		// the aircraft fuselage / ridges sitting between camera and asphalt
-		// (line-tracing there just makes the outline pop in and out). - TripleA
-		const bool bDepthOcclude = (InstructorPipView == EClearanceCameraView::Overview);
+		// Depth-aware occlusion is off across the board. Overview used to
+		// depth-trace so the outline "hid behind" terrain in a stylised map
+		// view, but the line trace hits Cesium tile collision meshes long
+		// before it reaches the tarmac at Warton - every segment fails the
+		// visibility check and the entire blue rectangle vanishes. Chase and
+		// the first-person views already wanted the outline to act as a
+		// persistent HUD element regardless of geometry between camera and
+		// asphalt, so disabling depth-occlude everywhere is the consistent
+		// fix. - TripleA
+		const bool bDepthOcclude = false;
 		auto SegmentVisible = [&](const FVector& A, const FVector& B) -> bool
 		{
 			if (!bDepthOcclude || !GetWorld()) { return true; }
@@ -5466,7 +5544,7 @@ TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayTe
 	Designator.SetNum(N);
 	for (int32 i = 0; i < N; ++i)
 	{
-		int32 D = FMath::RoundToInt(All[i].HeadingDeg / 10.f);
+		int32 D = FMath::RoundToInt(ApplyWorldNorthOffset(All[i].HeadingDeg) / 10.f);
 		if (D <= 0) { D = 36; }
 		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
 		Designator[i] = D;
@@ -5474,11 +5552,12 @@ TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayTe
 
 	const FVector Origin = GetActorLocation();
 	const float S = WorldUnitsPerNm;
-	// Pure white for the runway designator - matches real-world runway
-	// paint, sits cleanly in the cyan + orange palette without competing,
-	// and the drop-shadow in DrawCameraOverlayText keeps it legible over
-	// sky or asphalt. - TripleA
-	const FLinearColor TextColor(1.0f, 1.0f, 1.0f, 0.95f);
+	// Pure white for the reciprocal / inactive designator - matches real-world
+	// runway paint. Active end (the one wind picked for landing) gets amber so
+	// it's obvious at a glance which threshold traffic is using. - TripleA
+	const FLinearColor TextColor      (1.00f, 1.00f, 1.00f, 0.95f);
+	const FLinearColor ActiveTextColor(1.00f, 0.60f, 0.10f, 1.00f);
+	const float ActiveRunwayHdg = AirspaceManager->GetActiveRunway();
 
 	for (int32 i = 0; i < N; ++i)
 	{
@@ -5553,10 +5632,12 @@ TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayTe
 		FVector2D UV = ThrUV + OutwardDir * OffsetMag;
 		if (UV.X < 0.02f || UV.X > 0.98f || UV.Y < 0.02f || UV.Y > 0.98f) { continue; }
 
+		const bool bIsActive = (ActiveRunwayHdg >= 0.f) && FMath::IsNearlyEqual(Me.HeadingDeg, ActiveRunwayHdg, 0.5f);
+
 		FInstructorCameraText Entry;
 		Entry.Text = FString::Printf(TEXT("%02d%s"), MyDes, *Suffix);
 		Entry.ScreenUV = UV;
-		Entry.Color = TextColor;
+		Entry.Color = bIsActive ? ActiveTextColor : TextColor;
 		Entry.FontSize = 24;
 		Out.Add(Entry);
 
@@ -5621,9 +5702,13 @@ TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayTe
 		for (int32 Hdg = 0; Hdg < 360; Hdg += 30)
 		{
 			const float HdgRad = FMath::DegreesToRadians(static_cast<float>(Hdg));
+			// The overview camera projects world +X to the LEFT of the rendered
+			// frame at Warton's Cesium origin. Negate the east component here so
+			// each compass label lands on the side of the sector where a viewer
+			// EXPECTS to read that bearing (090 on the right, 270 on the left). - TripleA
 			const FVector HdgPos(
-				RingOrigin.X + FMath::Sin(HdgRad) * SectorRadiusW,
-				RingOrigin.Y + FMath::Cos(HdgRad) * SectorRadiusW,
+				RingOrigin.X + -FMath::Sin(HdgRad) * SectorRadiusW,
+				RingOrigin.Y +  FMath::Cos(HdgRad) * SectorRadiusW,
 				GroundWorldZ + 1500.f);
 
 			FVector2D HdgUV;

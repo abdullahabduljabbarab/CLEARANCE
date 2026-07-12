@@ -279,7 +279,7 @@ FString UClearanceConflictDetector::PairKey(FName A, FName B)
 bool UClearanceConflictDetector::FollowerIsBehindLeader(const FAircraftState& Leader, const FAircraftState& Follower)
 {
 	const float HeadingRad = FMath::DegreesToRadians(Leader.Heading);
-	const FVector2D LeaderDir(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad)); // X east, Y north
+	const FVector2D LeaderDir(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad)); // ENU: X=E, Y=N
 	const FVector2D ToFollower(Follower.Position.X - Leader.Position.X, Follower.Position.Y - Leader.Position.Y);
 	return FVector2D::DotProduct(LeaderDir, ToFollower) < 0.f; // behind = opposite the nose
 }

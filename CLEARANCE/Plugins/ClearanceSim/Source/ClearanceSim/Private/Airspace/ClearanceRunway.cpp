@@ -24,6 +24,8 @@ bool AClearanceRunway::GetRunwayBounds(FVector& OutCentre, FVector& OutExtent) c
 	// elsewhere in the level. - TripleA
 	if (OverrideLengthUnits > 0.f && OverrideWidthUnits > 0.f)
 	{
+		// ENU frame: Forward = (X=E=sin, Y=N=cos). Right is Forward rotated
+		// 90 clockwise, which in ENU is (cos, -sin). - TripleA
 		const float HRad = FMath::DegreesToRadians(LandingHeadingDeg);
 		const FVector Forward(FMath::Sin(HRad), FMath::Cos(HRad), 0.f);
 		const FVector Right(FMath::Cos(HRad), -FMath::Sin(HRad), 0.f);

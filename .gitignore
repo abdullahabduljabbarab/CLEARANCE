@@ -22,3 +22,8 @@ desktop.ini
 *.dll
 *.pdb
 *.lib
+
+# Cesium runtime caches
+cesium-request-cache.sqlite
+cesium-request-cache.sqlite-*
+CesiumIonServers/RequestCache/

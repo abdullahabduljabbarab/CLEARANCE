@@ -8,6 +8,42 @@
 #include "CLEARANCETypes.generated.h"
 
 // ============================================================================
+// COORDINATE HELPERS
+// ============================================================================
+
+// CLEARANCE runs in Cesium for Unreal's local frame at the georeference origin,
+// which is East-North-Up (ENU) - +X points East, +Y points North, +Z is Up.
+// Compass bearings are measured clockwise from North (0 = N, 90 = E, 180 = S,
+// 270 = W). All bearing-to-direction conversions go through these helpers so
+// the sim math matches Cesium's real-world coordinate frame; aircraft flying
+// heading 090 physically move East along +X, runways with LandingHeadingDeg=70
+// render at 070 magnetic on the Cesium tiles, and every downstream system
+// (radar, autopilot, federation output) stays coordinate-consistent. - TripleA
+namespace ClearanceCoords
+{
+	// Direction unit vector in world XY for a compass bearing (degrees).
+	// ENU: X = East = sin(bearing), Y = North = cos(bearing). - TripleA
+	FORCEINLINE FVector BearingToDir(float BearingDeg)
+	{
+		const float Rad = FMath::DegreesToRadians(BearingDeg);
+		return FVector(FMath::Sin(Rad), FMath::Cos(Rad), 0.f);
+	}
+
+	FORCEINLINE FVector2D BearingToDir2D(float BearingDeg)
+	{
+		const float Rad = FMath::DegreesToRadians(BearingDeg);
+		return FVector2D(FMath::Sin(Rad), FMath::Cos(Rad));
+	}
+
+	// Compass bearing (degrees, [0, 360)) for a direction vector in ENU. - TripleA
+	FORCEINLINE float DirToBearing(const FVector2D& Dir)
+	{
+		const float Deg = FMath::RadiansToDegrees(FMath::Atan2(Dir.X, Dir.Y));
+		return FMath::Fmod(Deg + 360.f, 360.f);
+	}
+}
+
+// ============================================================================
 // ENUMS
 // ============================================================================
 

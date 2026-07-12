@@ -83,13 +83,6 @@ void AClearanceAirspaceManager::OnRep_ReplicatedAircraft()
 	// "Array has changed during ranged-for iteration!". - TripleA
 	const TArray<FAircraftState> Snapshot = ReplicatedAircraft;
 
-	FString Dbg;
-	for (const FAircraftState& S : Snapshot)
-	{
-		Dbg += FString::Printf(TEXT(" %s"), *S.Callsign.ToString());
-	}
-	UE_LOG(LogTemp, Display, TEXT("[NET RepAircraft] count=%d%s"), Snapshot.Num(), *Dbg);
-
 	TSet<FName> SeenNow;
 	for (const FAircraftState& S : Snapshot)
 	{
@@ -126,20 +119,6 @@ void AClearanceAirspaceManager::RebuildReplicatedArray()
 	{
 		ReplicatedAircraft.Add(Pair.Value);
 	}
-	// Trace with world NetMode so we can finally tell which actor (server vs
-	// client local) is rebuilding. Two PIE windows have actors with the SAME
-	// name in DIFFERENT worlds. - TripleA
-	const TCHAR* RoleStr = TEXT("?");
-	if (UWorld* W = GetWorld())
-	{
-		RoleStr = W->GetNetMode() == NM_Client ? TEXT("CLIENT-WORLD")
-		        : W->GetNetMode() == NM_ListenServer ? TEXT("SERVER-WORLD")
-		        : W->GetNetMode() == NM_DedicatedServer ? TEXT("DEDSRV")
-		        : TEXT("STANDALONE");
-	}
-	FString Dump;
-	for (const FAircraftState& S : ReplicatedAircraft) { Dump += FString::Printf(TEXT(" %s"), *S.Callsign.ToString()); }
-	UE_LOG(LogTemp, Warning, TEXT("[REBUILD %s] %s[ac=%d]%s"), RoleStr, *GetName(), ReplicatedAircraft.Num(), *Dump);
 }
 
 void AClearanceAirspaceManager::BeginPlay()
@@ -198,7 +177,6 @@ bool AClearanceAirspaceManager::RegisterAircraft(const FAircraftState& NewAircra
 
 	AircraftStates.Add(State.Callsign, State);
 	RebuildReplicatedArray();
-	UE_LOG(LogTemp, Warning, TEXT("[REGISTER] %s (count now %d)"), *State.Callsign.ToString(), AircraftStates.Num());
 	OnAircraftRegistered.Broadcast(State.Callsign);
 	return true;
 }

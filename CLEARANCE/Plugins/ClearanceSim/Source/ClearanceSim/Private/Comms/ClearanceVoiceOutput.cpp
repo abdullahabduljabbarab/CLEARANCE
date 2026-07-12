@@ -411,10 +411,49 @@ void AClearanceVoiceOutput::DrainQueue()
 	SpeakInternal(Req.Callsign, Req.Text, Req.VoiceTag, Req.bPanic);
 }
 
+namespace ClearanceTTSCircuit
+{
+	// Simple circuit breaker: if the local TTS server rejects three requests
+	// in a row we assume it's down and skip HTTP for 30 seconds. Prevents a
+	// dead voice server from producing a wall of libcurl connection-refused
+	// warnings and a 2-second-per-callout HTTP wait. First successful reply
+	// resets the counter. Static state, no locking needed because SpeakInternal
+	// and OnProcessRequestComplete both run on the game thread. - TripleA
+	static constexpr int32 kFailureThreshold = 3;
+	static constexpr double kCooldownSeconds = 30.0;
+	static int32 ConsecutiveFailures = 0;
+	static double NextRetryTimeSeconds = 0.0;
+
+	static bool ShouldSkipCall()
+	{
+		if (ConsecutiveFailures < kFailureThreshold) { return false; }
+		return FPlatformTime::Seconds() < NextRetryTimeSeconds;
+	}
+	static void OnFailure()
+	{
+		++ConsecutiveFailures;
+		if (ConsecutiveFailures >= kFailureThreshold)
+		{
+			NextRetryTimeSeconds = FPlatformTime::Seconds() + kCooldownSeconds;
+		}
+	}
+	static void OnSuccess() { ConsecutiveFailures = 0; }
+}
+
 void AClearanceVoiceOutput::SpeakInternal(FName Callsign, const FString& Text, const FString& VoiceTag, bool bPanic)
 {
 	const FString Trim = TTSize(Text.TrimStartAndEnd());
 	if (Trim.IsEmpty()) { return; }
+
+	// Circuit breaker - if the TTS server has been down for the last few
+	// attempts, skip the HTTP call entirely and free the channel so the
+	// queue drains. - TripleA
+	if (ClearanceTTSCircuit::ShouldSkipCall())
+	{
+		bChannelBusy = false;
+		DrainQueue();
+		return;
+	}
 
 	const FString Voice = VoiceTag.IsEmpty() ? PickVoiceForCallsign(Callsign) : VoiceTag;
 
@@ -448,13 +487,16 @@ void AClearanceVoiceOutput::SpeakInternal(FName Callsign, const FString& Text, c
 			if (!WeakThis.IsValid()) { return; }
 			if (!bOk || !Response.IsValid() || Response->GetResponseCode() != 200)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("[VoiceOut] TTS request failed (%d)"),
+				ClearanceTTSCircuit::OnFailure();
+				UE_LOG(LogTemp, Verbose, TEXT("[VoiceOut] TTS request failed (%d)"),
 					Response.IsValid() ? Response->GetResponseCode() : -1);
 				// Free the channel so a failure doesn't stall the whole queue.
 				WeakThis->bChannelBusy = false;
 				WeakThis->DrainQueue();
 				return;
 			}
+
+			ClearanceTTSCircuit::OnSuccess();
 
 			TArray<uint8> Wav = Response->GetContent();
 			int32 SampleRate = 0, Channels = 0;

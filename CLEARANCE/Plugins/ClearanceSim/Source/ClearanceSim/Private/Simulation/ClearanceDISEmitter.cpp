@@ -186,6 +186,7 @@ void UClearanceDISEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		PodS.YMeters = double(S.Position.Y) * 1852.0;
 		PodS.ZMeters = double(S.Altitude)   * 0.3048;
 
+		// ENU velocity: Vx = East = sin(H), Vy = North = cos(H). - TripleA
 		const float HeadingRad = FMath::DegreesToRadians(S.Heading);
 		const float SpeedMps   = S.Speed * 0.514444f;
 		PodS.VxMps    = SpeedMps * FMath::Sin(HeadingRad);

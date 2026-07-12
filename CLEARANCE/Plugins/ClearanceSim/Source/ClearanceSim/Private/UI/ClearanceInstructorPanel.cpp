@@ -365,6 +365,12 @@ bool UClearanceInstructorPanel::BuildAircraftRows(TArray<FInstructorAircraftRow>
 		R.EmergencyTimerMinutes = (S.ActiveEmergency == EEmergencyType::FuelLow
 		                        || S.ActiveEmergency == EEmergencyType::GeneralMayday)
 			? S.FuelRemainingMinutes : -1.f;
+		// Heading + TargetHeading stay in the sim math frame so downstream
+		// direction math (leader lines, symbol orientation, waypoint bearings)
+		// keeps pointing where the aircraft is actually moving. The magnetic
+		// frame conversion happens at the text-display sites (BuildLabelLines
+		// etc) via ApplyWorldNorthOffset so the label numbers still read as
+		// true magnetic bearings. - TripleA
 		R.Heading            = S.Heading;
 		R.TargetHeading      = S.TargetHeading;
 		R.Altitude           = S.Altitude;
@@ -1471,10 +1477,23 @@ FVector2D UClearanceInstructorPanel::ScopeNmToPixel(FVector2D PositionNm, FVecto
 	// ScopeCentre is the sector origin (0,0) in pixel coords. +X (east) is
 	// pixel +X (right), +Y (north) is pixel -Y (up — screen Y is inverted).
 	// ScopePixelRadius defines how many pixels = ScopeRangeNm at the outer
-	// ring boundary. - TripleA
+	// ring boundary.
+	//
+	// PositionNm arrives in the sim's internal frame; rotating it by
+	// -WorldNorthOffsetDeg (CCW in Cartesian) shifts it into the operator-
+	// facing magnetic frame so aircraft visually move in the direction the
+	// data-block heading label reports, and the compass rose ticks (which
+	// stay in raw pixel space) line up as 000-top / 090-right / 180-bottom /
+	// 270-left. - TripleA
 	const float Range = FMath::Max(1.f, ScopeRangeNm);
-	const float Px = ScopeCentre.X + (PositionNm.X / Range) * ScopePixelRadius;
-	const float Py = ScopeCentre.Y - (PositionNm.Y / Range) * ScopePixelRadius;
+	const float OffsetDeg = CachedController ? CachedController->WorldNorthOffsetDeg : 0.f;
+	const float RotRad = FMath::DegreesToRadians(-OffsetDeg);
+	const float c = FMath::Cos(RotRad);
+	const float s = FMath::Sin(RotRad);
+	const float RotX = c * PositionNm.X - s * PositionNm.Y;
+	const float RotY = s * PositionNm.X + c * PositionNm.Y;
+	const float Px = ScopeCentre.X + (RotX / Range) * ScopePixelRadius;
+	const float Py = ScopeCentre.Y - (RotY / Range) * ScopePixelRadius;
 	return FVector2D(Px, Py);
 }
 
@@ -1607,8 +1626,14 @@ void UClearanceInstructorPanel::DrawAffiliationSymbol(
 	// its own PaintLine so the symbol polyline ends cleanly. - TripleA
 	PaintPolyline(Context, Frags, Frame);
 
-	// Bearing vector. Screen Y inverted: north (0deg) = -Y.
-	const float Rad = FMath::DegreesToRadians(HeadingDeg);
+	// Bearing vector. Screen Y inverted: north (0deg) = -Y. Heading rotates
+	// through ApplyWorldNorthOffset so the vector points in the same magnetic
+	// direction the data-block label reports - if the label says 070, the
+	// vector aims at the 070 tick on the rose. - TripleA
+	const float MagHdg = CachedController
+		? CachedController->ApplyWorldNorthOffset(HeadingDeg)
+		: HeadingDeg;
+	const float Rad = FMath::DegreesToRadians(MagHdg);
 	const FVector2D BearingTip = Centre + FVector2D(FMath::Sin(Rad), -FMath::Cos(Rad)) * H * 1.6f;
 	PaintLine(Context, Centre, BearingTip, Frame);
 
@@ -1667,10 +1692,10 @@ void UClearanceInstructorPanel::DrawScopeBoundary(FPaintContext& Context, FVecto
 
 		if (bMajor)
 		{
-			// 3-digit heading label sitting just outside the major tick. Pre-
-			// shift the text anchor by half its approximate pixel size so the
-			// label visually centres on the tick instead of hanging off it.
-			// 7px/char * 3 chars = ~21px wide, ~12px tall at default font. - TripleA
+			// 3-digit heading label sitting just outside the major tick. The
+			// scope's whole pixel frame is now the magnetic frame (positions
+			// are rotated in ScopeNmToPixel), so iteration Deg directly IS the
+			// magnetic bearing at that tick position. - TripleA
 			const int32 DegInt = FMath::RoundToInt(DegA);
 			const FString LabelText = FString::Printf(TEXT("%03d"), DegInt);
 			const FVector2D Anchor = ScopeCentre + Dir * (Outer + 14.f);
@@ -1758,13 +1783,35 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 	// relative to traffic as the scope zooms. - TripleA
 	const FVector2D Threshold = ScopeNmToPixel(Runway.ThresholdNm, ScopeCentre, ScopePixelRadius);
 
-	const float Rad = FMath::DegreesToRadians(Runway.HeadingDeg);
+	// Runway strip direction is drawn in the scope's magnetic frame (positions
+	// go through ScopeNmToPixel which rotates sim internal -> magnetic), so
+	// route Runway.HeadingDeg through ApplyWorldNorthOffset first. - TripleA
+	const float MagHdgDeg = CachedController
+		? CachedController->ApplyWorldNorthOffset(Runway.HeadingDeg)
+		: Runway.HeadingDeg;
+	const float Rad = FMath::DegreesToRadians(MagHdgDeg);
 	const FVector2D Along(FMath::Sin(Rad), -FMath::Cos(Rad));   // screen Y inverted
 	const FVector2D Cross(-Along.Y, Along.X);
 
+	// Compare this runway's internal heading against the wind-selected active
+	// heading; the ACTIVE end lights up amber so the trainee sees at a glance
+	// which threshold traffic is landing on. The inactive reciprocal end stays
+	// white. bIsActive is looked up per-runway just below. - TripleA
+	bool bIsActive = false;
+	if (CachedController && CachedController->GetAirspaceManager())
+	{
+		const float ActiveHdg = CachedController->GetAirspaceManager()->GetActiveRunway();
+		if (ActiveHdg >= 0.f)
+		{
+			bIsActive = FMath::IsNearlyEqual(Runway.HeadingDeg, ActiveHdg, 0.5f);
+		}
+	}
+
 	const FLinearColor StripTint     (0.95f, 0.95f, 0.95f, 0.95f);
 	const FLinearColor CentreTint    (0.85f, 0.85f, 0.85f, 0.55f);
-	const FLinearColor DesignatorTint(0.95f, 0.95f, 0.95f, 1.00f);
+	const FLinearColor DesignatorTint = bIsActive
+		? FLinearColor(1.00f, 0.60f, 0.10f, 1.00f)   // amber - active end
+		: FLinearColor(0.95f, 0.95f, 0.95f, 1.00f);  // white - reciprocal / inactive
 
 	// Runway strip - thick line from threshold along landing direction for
 	// the full asphalt length. Length is on the runway actor in UE units,
@@ -1801,8 +1848,13 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 	// Two-digit designator (heading / 10, rounded; 0 -> 36 per ICAO
 	// convention). L / R / C suffixes aren't on FRunwayInfo - parallel
 	// siblings can be told apart by their threshold positions on the scope
-	// itself. - TripleA
-	int32 Des = FMath::RoundToInt(Runway.HeadingDeg / 10.f);
+	// itself. The heading is rotated into the magnetic frame first so the
+	// number matches the real published designator regardless of how the
+	// world's local coord frame is rotated. - TripleA
+	const float DesHeadingDeg = CachedController
+		? CachedController->ApplyWorldNorthOffset(Runway.HeadingDeg)
+		: Runway.HeadingDeg;
+	int32 Des = FMath::RoundToInt(DesHeadingDeg / 10.f);
 	if (Des <= 0)  { Des = 36; }
 	if (Des > 36)  { Des = Des % 36; if (Des == 0) { Des = 36; } }
 	const FString DesText = FString::Printf(TEXT("%02d"), Des);
@@ -1873,9 +1925,18 @@ void UClearanceInstructorPanel::DrawSelectedRing(FPaintContext& Context, FVector
 namespace
 {
 	// Pre-formatted text for one aircraft's data block. Returns 2 lines for
-	// minimal mode, 4 lines for full ATC. - TripleA
-	TArray<FString> BuildLabelLines(const FInstructorAircraftRow& Row, bool bShowFullDataBlock)
+	// minimal mode, 4 lines for full ATC. HeadingOffsetDeg rotates every
+	// heading into the operator-facing magnetic frame before it hits the
+	// %03d - matches the compass rose + runway designators which apply the
+	// same offset. - TripleA
+	TArray<FString> BuildLabelLines(const FInstructorAircraftRow& Row, bool bShowFullDataBlock, float HeadingOffsetDeg)
 	{
+		auto ToMagInt = [HeadingOffsetDeg](float H) -> int32
+		{
+			const float Shifted = FMath::Fmod(FMath::Fmod(H + HeadingOffsetDeg, 360.f) + 360.f, 360.f);
+			return FMath::RoundToInt(Shifted) % 360;
+		};
+
 		TArray<FString> Lines;
 		Lines.Add(Row.Callsign.ToString());
 
@@ -1889,8 +1950,8 @@ namespace
 			Lines.Add(FString::Printf(TEXT("%dkt"), FMath::RoundToInt(Row.Speed)));
 
 			const float HdgDelta = FMath::Abs(FMath::FindDeltaAngleDegrees(Row.Heading, Row.TargetHeading));
-			const int32 Hdg    = FMath::RoundToInt(Row.Heading);
-			const int32 HdgTgt = FMath::RoundToInt(Row.TargetHeading);
+			const int32 Hdg    = ToMagInt(Row.Heading);
+			const int32 HdgTgt = ToMagInt(Row.TargetHeading);
 			if (HdgDelta > 5.f)
 			{
 				Lines.Add(FString::Printf(TEXT("%03d > %03d"), Hdg, HdgTgt));
@@ -1907,7 +1968,7 @@ namespace
 			// instead of having to mentally correct for the off-centre parallax
 			// when comparing the bearing vector against the rim's heading rose.
 			// Real STARS / DSR scopes do the same in minimum-block mode. - TripleA
-			const int32 Hdg = FMath::RoundToInt(Row.Heading);
+			const int32 Hdg = ToMagInt(Row.Heading);
 			Lines.Add(FString::Printf(TEXT("FL%03d %03d"), FL, Hdg));
 		}
 		return Lines;
@@ -1937,7 +1998,8 @@ void UClearanceInstructorPanel::DrawAircraftLabel(FPaintContext& Context, FVecto
 		: ColourForThreat(Row.ThreatClass);
 
 	constexpr float LineHeight = 12.f;
-	const TArray<FString> Lines = BuildLabelLines(Row, bShowFullDataBlock);
+	const float HdgOffset = CachedController ? CachedController->WorldNorthOffsetDeg : 0.f;
+	const TArray<FString> Lines = BuildLabelLines(Row, bShowFullDataBlock, HdgOffset);
 	for (int32 i = 0; i < Lines.Num(); ++i)
 	{
 		UWidgetBlueprintLibrary::DrawText(Context, Lines[i],
@@ -2314,7 +2376,8 @@ void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
 		// symbol position when two aircraft cluster - keeps label <-> symbol
 		// visual pairing intact even when traffic stacks. - TripleA
 		const FVector2D SymbolPx = GetDeclutteredSymbolPx(Row, Rows, ScopeCentre, ScopePixelRadius);
-		const TArray<FString> Lines = BuildLabelLines(Row, bShowFullDataBlock);
+		const float HdgOffset = CachedController ? CachedController->WorldNorthOffsetDeg : 0.f;
+		const TArray<FString> Lines = BuildLabelLines(Row, bShowFullDataBlock, HdgOffset);
 		const FVector2D LabelSize = EstimateLabelSize(Lines);
 
 		// Find the first candidate slot that doesn't overlap a placed label.

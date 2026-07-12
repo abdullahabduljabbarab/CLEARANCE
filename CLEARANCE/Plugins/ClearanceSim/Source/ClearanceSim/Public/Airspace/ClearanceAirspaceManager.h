@@ -118,6 +118,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Airspace|Environment")
 	TArray<float> AvailableRunwayHeadings;
 
+	// Mirrored from the SimulationController at init so per-aircraft Behaviour
+	// UObjects can convert magnetic-frame instructions to the sim's internal
+	// frame without having to reach up the actor hierarchy. Set once by the
+	// Controller in BeginPlay - never edited after. Plain C++ field (no UPROPERTY)
+	// so Live Coding recompiles pick it up without a full rebuild. - TripleA
+	float WorldNorthOffsetDeg = 0.f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;

@@ -163,8 +163,17 @@ void AClearanceVROperatorPawn::HandleMove(const FInputActionValue& Value)
 	// Camera-relative locomotion: the direction the HMD is facing is
 	// forward, not the pawn's yaw. Project camera forward + right onto the
 	// horizontal plane so the operator can't fly by looking down. - TripleA
-	const FVector2D Input = Value.Get<FVector2D>();
-	if (Input.IsNearlyZero() || !Camera) { return; }
+	const FVector2D RawInput = Value.Get<FVector2D>();
+
+	// Radial deadzone. Stick centre often idles at ~0.02-0.05; without a
+	// deadzone HandleMove fires every frame with sub-pixel motion, and the
+	// slight noise makes the whole pawn micro-judder. Below 0.15 magnitude
+	// = treat as no input. - TripleA
+	constexpr float kMoveDeadzone = 0.15f;
+	if (RawInput.SizeSquared() < kMoveDeadzone * kMoveDeadzone || !Camera)
+	{
+		return;
+	}
 
 	FVector CamForward = Camera->GetForwardVector();
 	CamForward.Z = 0.f;
@@ -175,13 +184,16 @@ void AClearanceVROperatorPawn::HandleMove(const FInputActionValue& Value)
 	CamRight.Normalize();
 
 	const float Dt = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
-	const FVector Delta = (CamForward * Input.Y + CamRight * Input.X) * MoveSpeed * Dt;
+	const FVector Delta = (CamForward * RawInput.Y + CamRight * RawInput.X) * MoveSpeed * Dt;
 
 	// Move the actor, not just VROrigin - HMD tracking origin follows the
 	// actor transform, so this is what actually shifts the player's view in
-	// world space. Sweep for collision with tower walls once geometry
-	// exists. - TripleA
-	AddActorWorldOffset(Delta, /*bSweep*/ true);
+	// world space. Sweep=false: the operator sits at the tower desk, there
+	// is no walkable geometry yet, and a sweep per stick event costs a
+	// physics query per frame that can reject motion by tiny amounts when
+	// the ground plane is close - reads as rubber-banding. Turn sweep back
+	// on once tower walls exist and we need real collision. - TripleA
+	AddActorWorldOffset(Delta, /*bSweep*/ false);
 }
 
 void AClearanceVROperatorPawn::HandleSnapTurn(const FInputActionValue& Value)

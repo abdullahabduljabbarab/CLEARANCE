@@ -1,6 +1,7 @@
 #include "Aircraft/ClearanceAircraftSpawner.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Core/ClearanceConstants.h"
+#include "Core/CLEARANCETypes.h"
 
 AClearanceAircraftSpawner::AClearanceAircraftSpawner()
 {
@@ -18,8 +19,6 @@ void AClearanceAircraftSpawner::TickSpawning(float DeltaTime)
 	{
 		return;
 	}
-	// Trace - if this fires while a scenario should be locking, my gate is broken. - TripleA
-	UE_LOG(LogTemp, Warning, TEXT("[Spawner] TICKING (autospawn=%d locked=%d)"), bAutoSpawn?1:0, bScenarioLocked?1:0);
 
 	SpawnTimer += DeltaTime;
 	if (SpawnTimer >= CurrentSpawnIntervalSeconds)
@@ -102,12 +101,15 @@ FAircraftSpawnData AClearanceAircraftSpawner::GenerateSpawnData()
 	Data.InitialPhase = EFlightPhase::Enroute;
 
 	// Enter somewhere on the sector boundary circle, pointing roughly inbound.
+	// ENU frame: bearing angle H gives position (X=E=sin(H), Y=N=cos(H)) at the
+	// boundary radius. - TripleA
 	const float AngleDeg = FMath::FRandRange(0.f, 360.f);
-	const float AngleRad = FMath::DegreesToRadians(AngleDeg);
-	Data.EntryPosition = FVector(EntryRadiusNm * FMath::Sin(AngleRad), EntryRadiusNm * FMath::Cos(AngleRad), 0.f);
+	const FVector2D BoundaryDir = ClearanceCoords::BearingToDir2D(AngleDeg);
+	Data.EntryPosition = FVector(EntryRadiusNm * BoundaryDir.X, EntryRadiusNm * BoundaryDir.Y, 0.f);
 
-	// Inbound bearing = toward origin, with a little spread so they don't all aim
-	// dead-centre and collide. Compass bearing from (east, north) deltas.
+	// Inbound bearing = toward origin, with a little spread so they don't all
+	// aim dead-centre and collide. In ENU: bearing from (East, North) deltas
+	// is Atan2(dEast, dNorth) = Atan2(-X, -Y). - TripleA
 	const float Inbound = FMath::RadiansToDegrees(FMath::Atan2(-Data.EntryPosition.X, -Data.EntryPosition.Y));
 	Data.EntryHeading = FMath::Fmod(Inbound + FMath::FRandRange(-25.f, 25.f) + 360.f, 360.f);
 

@@ -915,6 +915,41 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|Debug")
 	bool bDrawDebug = true;
 
+	// Rotation offset (degrees) applied to every runway/heading calculation to
+	// match the world's local coordinate frame to true north. Needed when the
+	// sim runs on Cesium tiles: Cesium's ENU local frame at the georeference
+	// origin rotates the "world forward" relative to compass north, so a
+	// runway with LandingHeadingDeg=70 renders visually off by whatever the
+	// local frame is rotated. Set this once for the level (typical value for
+	// EGNO Warton on Cesium is around 225) and every downstream direction
+	// calculation - runway draw, aircraft approach, autopilot vectors - stays
+	// consistent. LandingHeadingDeg on placed runways still means true magnetic
+	// bearing (070 for Warton's 07/25), which keeps ATC readbacks correct. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|World")
+	float WorldNorthOffsetDeg = 0.f;
+
+	// Internal (sim math frame) -> magnetic (operator-facing frame). Everything
+	// the trainee reads on the scope - aircraft heading, wind, runway designator,
+	// ATC readback numbers - goes through this so the operator sees true magnetic
+	// bearings regardless of how the underlying math frame is rotated to match
+	// Cesium tiles. Wrap into [0, 360). - TripleA
+	UFUNCTION(BlueprintPure, Category = "Simulation|World")
+	float ApplyWorldNorthOffset(float HeadingDeg) const
+	{
+		return FMath::Fmod(FMath::Fmod(HeadingDeg + WorldNorthOffsetDeg, 360.f) + 360.f, 360.f);
+	}
+
+	// Magnetic (operator-facing) -> internal (sim math frame). Every operator
+	// INPUT of a bearing - "cleared heading 070", wind SetWind(DirDeg), a
+	// scripted vector in a scenario file - runs through here on ingest so the
+	// stored value is in the frame the motion/draw code uses. Inverse of
+	// ApplyWorldNorthOffset. - TripleA
+	UFUNCTION(BlueprintPure, Category = "Simulation|World")
+	float RemoveWorldNorthOffset(float HeadingDeg) const
+	{
+		return FMath::Fmod(FMath::Fmod(HeadingDeg - WorldNorthOffsetDeg, 360.f) + 360.f, 360.f);
+	}
+
 	// Central radar tuning - the one toggled by `clearance.radar on/off`. Sits at the
 	// Controller's location, acts as the "centre" sensor in fusion. Placed RadarSite
 	// actors carry their own tuning and stack on top. - TripleA

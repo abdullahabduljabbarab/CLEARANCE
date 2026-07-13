@@ -68,29 +68,56 @@ void AClearanceVoiceOutput::TryLaunchServer()
 		? FPaths::Combine(FPaths::ProjectDir(), TEXT("TtsServer"))
 		: ServerDirectory;
 	Dir = FPaths::ConvertRelativePathToFull(Dir);
-	const FString Script = FPaths::Combine(Dir, ServerScriptName);
 
-	if (!FPaths::FileExists(Script))
+	// Prefer the PyInstaller-bundled tts_server.exe next to the .py script -
+	// end users of a packaged build don't have Python installed, so shipping a
+	// standalone .exe is the only path to a "just works" runtime. Falls back
+	// to the .py + Python interpreter for development iteration when the exe
+	// hasn't been built yet. - TripleA
+	const FString ExePath    = FPaths::Combine(Dir, TEXT("tts_server.exe"));
+	const FString ScriptPath = FPaths::Combine(Dir, ServerScriptName);
+	const bool bHaveExe    = FPaths::FileExists(ExePath);
+	const bool bHaveScript = FPaths::FileExists(ScriptPath);
+
+	if (!bHaveExe && !bHaveScript)
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[VoiceOut] tts_server.py not found in '%s' - voice readbacks won't speak until it's there"),
-			*Dir);
+			TEXT("[VoiceOut] neither tts_server.exe nor %s found in '%s' - voice readbacks won't speak"),
+			*ServerScriptName, *Dir);
 		return;
 	}
 
-	const FString Args = FString::Printf(TEXT("\"%s\" --host 127.0.0.1 --port %d"), *Script, ServerPort);
-	ServerProcHandle = FPlatformProcess::CreateProc(*PythonExe, *Args,
-		/*bLaunchDetached*/ false, /*bLaunchHidden*/ true, /*bLaunchReallyHidden*/ true,
+	FString Executable;
+	FString Args;
+	if (bHaveExe)
+	{
+		Executable = ExePath;
+		Args = FString::Printf(TEXT("--host 127.0.0.1 --port %d"), ServerPort);
+	}
+	else
+	{
+		Executable = PythonExe;
+		Args = FString::Printf(TEXT("\"%s\" --host 127.0.0.1 --port %d"), *ScriptPath, ServerPort);
+	}
+
+	// Hide the console for the bundled .exe (self-contained, no debug value in
+	// a visible window) but show it when falling back to Python (developers
+	// want to see import errors). Detached in both modes keeps the server
+	// alive across PIE stop/start so it doesn't have to reload the voice
+	// model every session. - TripleA
+	const bool bHide = bHaveExe;
+	ServerProcHandle = FPlatformProcess::CreateProc(*Executable, *Args,
+		/*bLaunchDetached*/ true, /*bLaunchHidden*/ bHide, /*bLaunchReallyHidden*/ bHide,
 		nullptr, 0, *Dir, nullptr);
 
 	if (ServerProcHandle.IsValid())
 	{
 		bLaunchedServer = true;
-		UE_LOG(LogTemp, Display, TEXT("[VoiceOut] launched TTS server '%s %s' from '%s'"), *PythonExe, *Args, *Dir);
+		UE_LOG(LogTemp, Display, TEXT("[VoiceOut] launched TTS server '%s %s' from '%s'"), *Executable, *Args, *Dir);
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[VoiceOut] failed to launch TTS server (is Python on PATH?)"));
+		UE_LOG(LogTemp, Warning, TEXT("[VoiceOut] failed to launch TTS server '%s'"), *Executable);
 	}
 }
 

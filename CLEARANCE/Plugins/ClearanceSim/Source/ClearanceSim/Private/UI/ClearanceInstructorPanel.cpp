@@ -253,7 +253,15 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 		// across aircraft, zones, and runways - so scenarios with fixed-position
 		// overlays at large radii (e.g. a protected zone far out) still render
 		// inside the outer ring. Floored to keep the scope from collapsing on
-		// an empty sector. - TripleA
+		// an empty sector.
+		//
+		// Growth is instant (so an aircraft entering the sector at 60 nm is
+		// visible on the next paint), but shrinking is smoothed toward the
+		// target by ShrinkLerp per refresh so a single aircraft flying inward
+		// doesn't yank the whole scope in and back out every second. Loading
+		// scenarios used to thrash the zoom for this reason - a wide traffic
+		// spawn, then several aircraft crossing the same radius each tick,
+		// each frame the auto-fit picked a different one as farthest. - TripleA
 		if (bAutoFitScopeRange)
 		{
 			float MaxDistNm = MinAutoFitRangeNm;
@@ -271,6 +279,14 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 			{
 				MaxDistNm = FMath::Max(MaxDistNm, Rwy.ThresholdNm.Size());
 			}
+			// Waypoints and restricted / violation zones live at scenario-authored
+			// radii that can be much further out than the current traffic; include
+			// them so the scope doesn't zoom in past them the moment a scenario
+			// loads and cut them off the ring. - TripleA
+			for (const FInstructorWaypointMarker& WP : GetWaypointMarkers())
+			{
+				MaxDistNm = FMath::Max(MaxDistNm, WP.PositionNm.Size());
+			}
 			// The sector boundary is the hard ceiling - nothing outside it is real
 			// airspace, so the scope shouldn't zoom out past it. Anything reporting
 			// a position beyond ExitRadius is either stale or a unit error, and
@@ -281,7 +297,21 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 			{
 				MaxDistNm = FMath::Min(MaxDistNm, CachedController->ExitRadiusNm);
 			}
-			ScopeRangeNm = MaxDistNm * FMath::Max(1.f, AutoFitMarginFactor);
+			const float TargetRange = MaxDistNm * FMath::Max(1.f, AutoFitMarginFactor);
+			if (TargetRange > ScopeRangeNm)
+			{
+				// Grow instantly - a new contact appearing at wider range must
+				// be visible on the next paint. - TripleA
+				ScopeRangeNm = TargetRange;
+			}
+			else
+			{
+				// Smoothed shrink at 8% per refresh - a ~2 s convergence at
+				// the default RefreshIntervalSec so the trainee sees the scope
+				// settle rather than jitter. - TripleA
+				constexpr float ShrinkLerp = 0.08f;
+				ScopeRangeNm = FMath::Lerp(ScopeRangeNm, TargetRange, ShrinkLerp);
+			}
 		}
 
 		if (AircraftListChanged(Rows, LastAircraft))
@@ -1474,26 +1504,11 @@ void UClearanceInstructorPanel::PopulateEventLogScrollBox(UScrollBox* ScrollBox,
 
 FVector2D UClearanceInstructorPanel::ScopeNmToPixel(FVector2D PositionNm, FVector2D ScopeCentre, float ScopePixelRadius) const
 {
-	// ScopeCentre is the sector origin (0,0) in pixel coords. +X (east) is
-	// pixel +X (right), +Y (north) is pixel -Y (up — screen Y is inverted).
-	// ScopePixelRadius defines how many pixels = ScopeRangeNm at the outer
-	// ring boundary.
-	//
-	// PositionNm arrives in the sim's internal frame; rotating it by
-	// -WorldNorthOffsetDeg (CCW in Cartesian) shifts it into the operator-
-	// facing magnetic frame so aircraft visually move in the direction the
-	// data-block heading label reports, and the compass rose ticks (which
-	// stay in raw pixel space) line up as 000-top / 090-right / 180-bottom /
-	// 270-left. - TripleA
+	// Cesium X-mirror applied on scope so aircraft visual motion matches the
+	// direction the data-block label reports. - TripleA
 	const float Range = FMath::Max(1.f, ScopeRangeNm);
-	const float OffsetDeg = CachedController ? CachedController->WorldNorthOffsetDeg : 0.f;
-	const float RotRad = FMath::DegreesToRadians(-OffsetDeg);
-	const float c = FMath::Cos(RotRad);
-	const float s = FMath::Sin(RotRad);
-	const float RotX = c * PositionNm.X - s * PositionNm.Y;
-	const float RotY = s * PositionNm.X + c * PositionNm.Y;
-	const float Px = ScopeCentre.X + (RotX / Range) * ScopePixelRadius;
-	const float Py = ScopeCentre.Y - (RotY / Range) * ScopePixelRadius;
+	const float Px = ScopeCentre.X - (PositionNm.X / Range) * ScopePixelRadius;
+	const float Py = ScopeCentre.Y - (PositionNm.Y / Range) * ScopePixelRadius;
 	return FVector2D(Px, Py);
 }
 
@@ -1626,14 +1641,9 @@ void UClearanceInstructorPanel::DrawAffiliationSymbol(
 	// its own PaintLine so the symbol polyline ends cleanly. - TripleA
 	PaintPolyline(Context, Frags, Frame);
 
-	// Bearing vector. Screen Y inverted: north (0deg) = -Y. Heading rotates
-	// through ApplyWorldNorthOffset so the vector points in the same magnetic
-	// direction the data-block label reports - if the label says 070, the
-	// vector aims at the 070 tick on the rose. - TripleA
-	const float MagHdg = CachedController
-		? CachedController->ApplyWorldNorthOffset(HeadingDeg)
-		: HeadingDeg;
-	const float Rad = FMath::DegreesToRadians(MagHdg);
+	// Bearing vector - mirror (360 - H) so it matches the data-block label. - TripleA
+	const float MirroredHdg = FMath::Fmod(FMath::Fmod(360.f - HeadingDeg, 360.f) + 360.f, 360.f);
+	const float Rad = FMath::DegreesToRadians(MirroredHdg);
 	const FVector2D BearingTip = Centre + FVector2D(FMath::Sin(Rad), -FMath::Cos(Rad)) * H * 1.6f;
 	PaintLine(Context, Centre, BearingTip, Frame);
 
@@ -1783,13 +1793,9 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 	// relative to traffic as the scope zooms. - TripleA
 	const FVector2D Threshold = ScopeNmToPixel(Runway.ThresholdNm, ScopeCentre, ScopePixelRadius);
 
-	// Runway strip direction is drawn in the scope's magnetic frame (positions
-	// go through ScopeNmToPixel which rotates sim internal -> magnetic), so
-	// route Runway.HeadingDeg through ApplyWorldNorthOffset first. - TripleA
-	const float MagHdgDeg = CachedController
-		? CachedController->ApplyWorldNorthOffset(Runway.HeadingDeg)
-		: Runway.HeadingDeg;
-	const float Rad = FMath::DegreesToRadians(MagHdgDeg);
+	// Runway strip direction under Cesium mirror. - TripleA
+	const float MirroredHdg = FMath::Fmod(FMath::Fmod(360.f - Runway.HeadingDeg, 360.f) + 360.f, 360.f);
+	const float Rad = FMath::DegreesToRadians(MirroredHdg);
 	const FVector2D Along(FMath::Sin(Rad), -FMath::Cos(Rad));   // screen Y inverted
 	const FVector2D Cross(-Along.Y, Along.X);
 
@@ -1845,16 +1851,22 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 			CentreTint, 1.5f);
 	}
 
-	// Two-digit designator (heading / 10, rounded; 0 -> 36 per ICAO
-	// convention). L / R / C suffixes aren't on FRunwayInfo - parallel
-	// siblings can be told apart by their threshold positions on the scope
-	// itself. The heading is rotated into the magnetic frame first so the
-	// number matches the real published designator regardless of how the
-	// world's local coord frame is rotated. - TripleA
-	const float DesHeadingDeg = CachedController
-		? CachedController->ApplyWorldNorthOffset(Runway.HeadingDeg)
-		: Runway.HeadingDeg;
-	int32 Des = FMath::RoundToInt(DesHeadingDeg / 10.f);
+	// Two-digit designator. DesignatorOverride (1-36) forces the number when
+	// set - use it to fix which end is 07 vs 25 without touching heading math.
+	// Otherwise fall back to round(HeadingDeg / 10). - TripleA
+	int32 Des;
+	if (Runway.DesignatorOverride > 0)
+	{
+		Des = Runway.DesignatorOverride;
+	}
+	else
+	{
+		const float MagBearing = FMath::Fmod(FMath::Fmod(360.f - Runway.HeadingDeg, 360.f) + 360.f, 360.f);
+		Des = FMath::RoundToInt(MagBearing / 10.f);
+	}
+	UE_LOG(LogTemp, Warning, TEXT("[Runway] DRAW HeadingDeg=%.1f Override=%d ThresholdNm=(%.2f,%.2f) ThresholdPx=(%.1f,%.1f) ScopeCentre=(%.1f,%.1f) -> label='%d'"),
+		Runway.HeadingDeg, Runway.DesignatorOverride, Runway.ThresholdNm.X, Runway.ThresholdNm.Y,
+		Threshold.X, Threshold.Y, ScopeCentre.X, ScopeCentre.Y, Des);
 	if (Des <= 0)  { Des = 36; }
 	if (Des > 36)  { Des = Des % 36; if (Des == 0) { Des = 36; } }
 	const FString DesText = FString::Printf(TEXT("%02d"), Des);
@@ -1925,15 +1937,14 @@ void UClearanceInstructorPanel::DrawSelectedRing(FPaintContext& Context, FVector
 namespace
 {
 	// Pre-formatted text for one aircraft's data block. Returns 2 lines for
-	// minimal mode, 4 lines for full ATC. HeadingOffsetDeg rotates every
-	// heading into the operator-facing magnetic frame before it hits the
-	// %03d - matches the compass rose + runway designators which apply the
-	// same offset. - TripleA
-	TArray<FString> BuildLabelLines(const FInstructorAircraftRow& Row, bool bShowFullDataBlock, float HeadingOffsetDeg)
+	// minimal mode, 4 lines for full ATC. Heading is shown raw - the sim's
+	// internal frame IS the display frame under the current Warton Cesium
+	// setup. HeadingOffsetDeg is kept as a param for BP compat but unused. - TripleA
+	TArray<FString> BuildLabelLines(const FInstructorAircraftRow& Row, bool bShowFullDataBlock, float /*HeadingOffsetDeg*/)
 	{
-		auto ToMagInt = [HeadingOffsetDeg](float H) -> int32
+		auto ToMagInt = [](float H) -> int32
 		{
-			const float Shifted = FMath::Fmod(FMath::Fmod(H + HeadingOffsetDeg, 360.f) + 360.f, 360.f);
+			const float Shifted = FMath::Fmod(FMath::Fmod(360.f - H, 360.f) + 360.f, 360.f);
 			return FMath::RoundToInt(Shifted) % 360;
 		};
 

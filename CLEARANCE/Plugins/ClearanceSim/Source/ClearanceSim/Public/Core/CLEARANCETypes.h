@@ -524,6 +524,14 @@ struct CLEARANCESIM_API FRunwayInfo
 	// centerline. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
 	float WidthUnits = 0.f;
+
+	// Hard override for the two-digit ICAO designator. 0 = compute from HeadingDeg
+	// through the Cesium mirror. 1..36 = force this exact number at this end;
+	// the reciprocal end automatically shows (this + 18) mod 36. Set when the
+	// heading-based formula doesn't produce the label you want on your specific
+	// runway placement. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway")
+	int32 DesignatorOverride = 0;
 };
 
 /** What the RADAR believes about one aircraft. Distinct from the truth held in the

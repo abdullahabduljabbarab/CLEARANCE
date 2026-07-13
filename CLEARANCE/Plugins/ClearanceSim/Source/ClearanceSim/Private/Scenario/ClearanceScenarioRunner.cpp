@@ -409,14 +409,23 @@ void UClearanceScenarioRunner::ApplyEnvironment()
 void UClearanceScenarioRunner::FireInitialSpawns()
 {
 	if (!Manager) { return; }
+	// Scenario headings are used directly (sim internal frame == display
+	// frame under the current Warton setup). - TripleA
+	auto ToInternal = [](float MagDeg) -> float
+	{
+		float H = FMath::Fmod(360.f - MagDeg, 360.f);
+		if (H < 0.f) H += 360.f;
+		return H;
+	};
 	for (const FScenarioSpawn& Sp : Scenario.InitialSpawns)
 	{
+		const float InternalHdg = ToInternal(Sp.HeadingDeg);
 		FAircraftState A;
 		A.Callsign        = Sp.Callsign;
 		A.Position        = FVector(Sp.PositionNm.X, Sp.PositionNm.Y, Sp.AltitudeFt);
-		A.Heading         = Sp.HeadingDeg;
+		A.Heading         = InternalHdg;
 		A.Speed           = Sp.SpeedKts;
-		A.TargetHeading   = Sp.HeadingDeg;
+		A.TargetHeading   = InternalHdg;
 		A.TargetSpeed     = Sp.SpeedKts;
 		A.TargetAltitude  = Sp.AltitudeFt;
 		A.Altitude        = Sp.AltitudeFt;
@@ -594,12 +603,16 @@ void UClearanceScenarioRunner::ExecuteAction(const FScenarioAction& Act)
 		const FString* If_ = Act.Params.Find(TEXT("iff"));
 		Sp.bIFFOn     = If_ ? (If_->Equals(TEXT("true"), ESearchCase::IgnoreCase) || *If_ == TEXT("1")) : true;
 
+		// Scenario headings used directly (sim frame == display frame). - TripleA
+		float InternalMid = FMath::Fmod(360.f - Sp.HeadingDeg, 360.f);
+		if (InternalMid < 0.f) InternalMid += 360.f;
+
 		FAircraftState A;
 		A.Callsign        = Sp.Callsign;
 		A.Position        = FVector(Sp.PositionNm.X, Sp.PositionNm.Y, Sp.AltitudeFt);
-		A.Heading         = Sp.HeadingDeg;
+		A.Heading         = InternalMid;
 		A.Speed           = Sp.SpeedKts;
-		A.TargetHeading   = Sp.HeadingDeg;
+		A.TargetHeading   = InternalMid;
 		A.TargetSpeed     = Sp.SpeedKts;
 		A.TargetAltitude  = Sp.AltitudeFt;
 		A.Altitude        = Sp.AltitudeFt;

@@ -246,17 +246,11 @@ void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& I
 	{
 	case EInstructionType::HeadingChange:
 	{
-		// Instruction.TargetValue arrives as the operator-facing MAGNETIC
-		// bearing (what pilot readbacks + transcript render, what the user
-		// typed / spoke). Rotate into the sim's internal frame so the aircraft
-		// converges to the heading the trainee actually meant - the internal
-		// State.Heading then renders back as the same magnetic value in the
-		// scope data block and camera overlay. - TripleA
-		const float MagOffset = Manager ? Manager->WorldNorthOffsetDeg : 0.f;
-		float Internal = FMath::Fmod(Instruction.TargetValue - MagOffset, 360.f);
+		// Mirror magnetic input to internal frame. - TripleA
+		float Internal = FMath::Fmod(360.f - Instruction.TargetValue, 360.f);
 		if (Internal < 0.f) Internal += 360.f;
 		State.TargetHeading = Internal;
-		ActiveTurnDirection = Instruction.TurnDirection; // -1/0/+1
+		ActiveTurnDirection = Instruction.TurnDirection;
 		break;
 	}
 	case EInstructionType::AltitudeChange:

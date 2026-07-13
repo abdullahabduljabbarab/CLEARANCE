@@ -444,11 +444,26 @@ void AClearanceSimulationController::InitialiseSystems()
 
 			// Landing on H, you cross the near threshold (behind the centre) and roll
 			// through; the reciprocal lands the other way from the far end. - TripleA
+			// The actor's DesignatorOverride (1-36) forces the primary label at
+			// this end; reciprocal = (this + 18) mod 36 with the 0->36 fold. When
+			// the override is 0 the draw code falls back to the heading-based
+			// formula. - TripleA
+			auto ReciprocalOf = [](int32 N) -> int32
+			{
+				if (N <= 0) { return 0; }
+				int32 R = (N + 18) % 36;
+				return (R == 0) ? 36 : R;
+			};
+
 			FRunwayInfo A;
 			A.ThresholdNm = CentreNm - Inbound * HalfNm;
 			A.HeadingDeg = H;
 			A.LengthUnits = LengthW;
 			A.WidthUnits  = WidthW;
+			A.DesignatorOverride = FMath::Clamp(It->DesignatorNumberOverride, 0, 36);
+			UE_LOG(LogTemp, Warning, TEXT("[Runway] REGISTER actor=%s LandingHeadingDeg=%.1f OverrideProp=%d -> RunwayInfo{HeadingDeg=%.1f, DesignatorOverride=%d}"),
+				*It->GetName(), It->LandingHeadingDeg, It->DesignatorNumberOverride,
+				A.HeadingDeg, A.DesignatorOverride);
 			RunwayInfos.Add(A);
 			if (It->bAllowReciprocal)
 			{
@@ -457,6 +472,7 @@ void AClearanceSimulationController::InitialiseSystems()
 				B.HeadingDeg = FMath::Fmod(H + 180.f, 360.f);
 				B.LengthUnits = LengthW;
 				B.WidthUnits  = WidthW;
+				B.DesignatorOverride = ReciprocalOf(A.DesignatorOverride);
 				RunwayInfos.Add(B);
 			}
 			if (!bGroundSet) { GroundWorldZ = TopZ; bGroundSet = true; } // 0ft = top of the runway mesh
@@ -3511,8 +3527,13 @@ void AClearanceSimulationController::CheckExits()
 
 		// GCI-controlled aircraft leaving: a flight (bandit + 1-3 fighters) shares one
 		// bandit key. Credit Successful Intercept once per bandit and deregister the
-		// whole flight. Unjoined / lone aircraft just leave quietly. - TripleA
-		if (State.bUnderGCIControl && Dist > ExitRadiusNm)
+		// whole flight. Unjoined / lone aircraft just leave quietly.
+		//
+		// Gate on EverEnteredSector - fighters spawn EXACTLY at the boundary (SpawnR ==
+		// ExitRadiusNm), so without the entry gate the first-tick position round can put
+		// them narrowly outside and the "attached fighters count as an escort" fallback
+		// below fires a fake Successful Intercept the instant the scramble launches. - TripleA
+		if (State.bUnderGCIControl && Dist > ExitRadiusNm && EverEnteredSector.Contains(State.Callsign))
 		{
 			FName BanditCs;
 			if (ActiveIntercepts.Contains(State.Callsign))
@@ -4918,7 +4939,16 @@ TArray<FString> AClearanceSimulationController::GetApproachRunwayLabels() const
 	Designator.SetNum(N);
 	for (int32 i = 0; i < N; ++i)
 	{
-		int32 D = FMath::RoundToInt(ApplyWorldNorthOffset(All[i].HeadingDeg) / 10.f);
+		int32 D;
+		if (All[i].DesignatorOverride > 0)
+		{
+			D = All[i].DesignatorOverride;
+		}
+		else
+		{
+			const float MagBearingI = FMath::Fmod(FMath::Fmod(360.f - All[i].HeadingDeg, 360.f) + 360.f, 360.f);
+			D = FMath::RoundToInt(MagBearingI / 10.f);
+		}
 		if (D <= 0) { D = 36; }
 		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
 		Designator[i] = D;
@@ -5080,10 +5110,9 @@ TArray<FInstructorCameraLabel> AClearanceSimulationController::GetCameraLabels()
 		Label.ScreenUV = FVector2D(UV_X, UV_Y);
 		Label.ThreatClass = State.TrueAffiliation;
 		Label.FlightLevel = FMath::RoundToInt(State.Altitude / 100.f);
-		// Heading wrapped to 0..360 and rounded; speed rounded to whole kt
-		// for a clean readout. - TripleA
-		const float HdgWrapped = FMath::Fmod(FMath::Fmod(State.Heading, 360.f) + 360.f, 360.f);
-		Label.HeadingDeg = FMath::RoundToInt(HdgWrapped);
+		// Cesium mirror to match scope. - TripleA
+		const float HdgMirrored = FMath::Fmod(FMath::Fmod(360.f - State.Heading, 360.f) + 360.f, 360.f);
+		Label.HeadingDeg = FMath::RoundToInt(HdgMirrored) % 360;
 		Label.SpeedKts = FMath::RoundToInt(State.Speed);
 		Out.Add(Label);
 	}
@@ -5544,7 +5573,16 @@ TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayTe
 	Designator.SetNum(N);
 	for (int32 i = 0; i < N; ++i)
 	{
-		int32 D = FMath::RoundToInt(ApplyWorldNorthOffset(All[i].HeadingDeg) / 10.f);
+		int32 D;
+		if (All[i].DesignatorOverride > 0)
+		{
+			D = All[i].DesignatorOverride;
+		}
+		else
+		{
+			const float MagBearingI = FMath::Fmod(FMath::Fmod(360.f - All[i].HeadingDeg, 360.f) + 360.f, 360.f);
+			D = FMath::RoundToInt(MagBearingI / 10.f);
+		}
 		if (D <= 0) { D = 36; }
 		if (D > 36) { D = D % 36; if (D == 0) { D = 36; } }
 		Designator[i] = D;
@@ -5701,11 +5739,11 @@ TArray<FInstructorCameraText> AClearanceSimulationController::GetCameraOverlayTe
 		const float SectorRadiusW = ExitRadiusNm * S * 0.90f;
 		for (int32 Hdg = 0; Hdg < 360; Hdg += 30)
 		{
+			// Cesium at Warton mirrors world +X to visual west. Place label
+			// "090" at world -X so it visually reads on the east side of the
+			// sector ring (screen right on Overview). Matches the scope's
+			// compass which uses the same mirror convention. - TripleA
 			const float HdgRad = FMath::DegreesToRadians(static_cast<float>(Hdg));
-			// The overview camera projects world +X to the LEFT of the rendered
-			// frame at Warton's Cesium origin. Negate the east component here so
-			// each compass label lands on the side of the sector where a viewer
-			// EXPECTS to read that bearing (090 on the right, 270 on the left). - TripleA
 			const FVector HdgPos(
 				RingOrigin.X + -FMath::Sin(HdgRad) * SectorRadiusW,
 				RingOrigin.Y +  FMath::Cos(HdgRad) * SectorRadiusW,

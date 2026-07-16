@@ -60,7 +60,7 @@ The scope splits into five interlocking systems, each with a single defined resp
 
 The loop can also be driven by a scripted scenario in place of the free-play spawner. Seven scenarios ship: Baltic Intercept, Hijack Response, Mass Divert, Mayday Engine Fire, NORDO Inbound, Cold War Probe, and Mixed Ops. Each authors traffic, weather, emergencies, and voice injects on a timeline.
 
-**Flowchart 1: Core gameplay loop** (pre-production sketch, to be redrawn in draw.io)
+**Flowchart 1: Core gameplay loop** (architecture sketch, to be redrawn in draw.io)
 
 ```
    Aircraft enters sector
@@ -122,7 +122,7 @@ The five original systems on paper were Airspace Management, Aircraft Behaviour,
 | Checkpoint | Snapshots the whole sector into a named save. Load restores every aircraft, wind, and score. | Airspace Management, Scoring, Scenario Runner |
 | After-Action Report | On demand, writes a Markdown report of the session with timeline, critical incidents, and transcript. | Scoring, Session Recorder, Communication |
 | Networked Instructor Station | Server-authoritative replication so a second operator (the instructor) joins the running session and injects events. | Simulation Controller, all systems above |
-| Federation | Publishes sim state to DIS, DDS, RTI Connext, and HLA. Subscribes to peer sims through the same wire. | Airspace Management (delegate subscriber) |
+| Federation | Publishes sim state to DIS, DDS, RTI Connext, and HLA. Subscribes to peer sims through the same integration seam. | Airspace Management (delegate subscriber) |
 
 Each of the newer systems is described in the same shape as the core five (description, purpose, rationale, boundaries, inputs, outputs, edge cases, success criteria), with the length matched to actual complexity.
 
@@ -180,7 +180,7 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 | Any system | Iterating all aircraft | `GetAllAircraftStates` | none | Array of `FAircraftState` | Consumer sees the whole sector |
 | Wind change | Crosswind exceeds threshold on current active runway | `RecalculateActiveRunway` | none (internal) | New active heading | Runway swaps, `OnRunwayChanged` broadcast to camera overlay, approach picker, aircraft on approach |
 
-**Flowchart 2: Aircraft registration flow** (pre-production sketch)
+**Flowchart 2: Aircraft registration flow** (architecture sketch)
 
 ```
    Spawner or Scenario Runner
@@ -201,7 +201,7 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
      Initialise() sets targets
 ```
 
-**Flowchart 3: State update flow, per tick** (pre-production sketch)
+**Flowchart 3: State update flow, per tick** (architecture sketch)
 
 ```
    Simulation Controller tick
@@ -222,7 +222,7 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
      stored + broadcast to subscribers
 ```
 
-**Flowchart 4: Aircraft deregistration flow** (pre-production sketch)
+**Flowchart 4: Aircraft deregistration flow** (architecture sketch)
 
 ```
    Aircraft: exits / lands / crashes
@@ -325,7 +325,7 @@ The Simulink model is generated from a MATLAB source via Embedded Coder in reusa
 - Simulation Controller: owns the map of behaviour objects, drives the tick.
 - Simulink autopilot wrapper (when engaged): computes control-surface commands.
 
-**Flowchart 5: Instruction execution flow** (pre-production sketch)
+**Flowchart 5: Instruction execution flow** (architecture sketch)
 
 ```
    Validated instruction
@@ -349,7 +349,7 @@ The Simulink model is generated from a MATLAB source via Embedded Coder in reusa
    next tick     instruction complete
 ```
 
-**Flowchart 6: Go-around flow** (pre-production sketch)
+**Flowchart 6: Go-around flow** (architecture sketch)
 
 ```
    Conflict Detection: Critical on approach pair
@@ -443,7 +443,7 @@ Facility voice injects (TOWER, ACC, AWACS, GCI, ATIS, MET) use distinct voices s
 
 Every transmission (Pilot, Operator, System, Instructor, and the six facility roles) is appended to `Transcript` on the Simulation Controller, replicated to all clients, and displayed in the Performance tab. The transcript is capped at 500 entries, filterable by role via the dropdown, and included verbatim in the After-Action Report.
 
-**Flowchart 7: Instruction validation flow** (pre-production sketch)
+**Flowchart 7: Instruction validation flow** (architecture sketch)
 
 ```
    Voice or console input
@@ -544,7 +544,7 @@ Not every close encounter is a civilian safety violation. When both aircraft are
 | Firing graded alerts and TCAS RAs | Scoring computations (Scoring reads our events) |
 | Wake advisory broadcasts | Persistent logging (Session Recorder captures events, not us) |
 
-**Flowchart 8: Separation check flow** (pre-production sketch)
+**Flowchart 8: Separation check flow** (architecture sketch)
 
 ```
    Detector tick
@@ -579,7 +579,7 @@ Not every close encounter is a civilian safety violation. When both aircraft are
                         Critical? -> also fire TCAS RA
 ```
 
-**Flowchart 9: TCAS Resolution Advisory flow** (pre-production sketch)
+**Flowchart 9: TCAS Resolution Advisory flow** (architecture sketch)
 
 ```
    Critical separation fires TCAS RA
@@ -656,7 +656,7 @@ Efficiency percentage tracks total handled aircraft against total incidents. Dis
 
 Every scored event is appended to the log with its timestamp (wall clock, replicated). The log is the source of truth for the After-Action Report generator, the Performance tab drilldown, the transcript alignment, and the critical-incident selector.
 
-**Flowchart 10: Scoring event flow** (pre-production sketch)
+**Flowchart 10: Scoring event flow** (architecture sketch)
 
 ```
    Sim event (landing / incident / handoff / etc)
@@ -952,7 +952,7 @@ The Simulation Controller drives every tick in a fixed order. The comment in the
 
 The order is fixed and matters. Behaviour must run before conflict, because conflict analyses the committed state. Conflict must run before scoring, because scoring logs conflict events. Radar sites run after airspace commits, because radar reads the fresh aircraft positions. Replication runs last so every client reads a consistent snapshot. Slipping any step means downstream systems read stale data.
 
-**Flowchart 11: Tick pipeline** (pre-production sketch)
+**Flowchart 11: Tick pipeline** (architecture sketch)
 
 ```
    Simulation Controller Tick

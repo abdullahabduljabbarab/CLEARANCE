@@ -45,7 +45,7 @@ The shared types live under `Plugins/ClearanceSim/Source/ClearanceSim/Public/Cor
 
 ## Enums
 
-Defined in `Public/Core/CLEARANCETypes.h`. Every enum is `UENUM(BlueprintType)` so the presentation layer can read them.
+Defined in `Public/Core/CLEARANCETypes.h`. Blueprint-facing enums are declared as `UENUM(BlueprintType)` so the presentation layer can read them.
 
 ### EFlightPhase
 
@@ -101,7 +101,7 @@ Every aircraft carries two threat fields: `ThreatClass` (what the operator sees)
 
 ### EEmergencyType
 
-ICAO emergency states. The transponder squawk code is the universal signal any controller or federation peer picks up.
+Emergency states used by CLEARANCE. Some map directly to ICAO transponder squawks; others are simulator-specific training conditions. The squawk column below shows the transponder code where one exists, and "ordinary" where no dedicated squawk applies.
 
 | Value | Squawk | Meaning | Used by |
 |---|---|---|---|
@@ -113,7 +113,7 @@ ICAO emergency states. The transponder squawk code is the universal signal any c
 
 ### EIncidentType
 
-Category of logged incident driving the scoring policy.
+Category of logged incident driving the scoring policy. These are the code-facing enum names; UI and AAR labels may present shorter display names such as Crash, Misidentification, or Airspace Bust.
 
 | Value | Meaning | Reward or penalty |
 |---|---|---|
@@ -172,7 +172,7 @@ Role of a transcript entry. Drives colour and speaker attribution on the transcr
 
 ## Core data structs
 
-Defined in `Public/Core/CLEARANCETypes.h`. Every struct is `USTRUCT(BlueprintType)`.
+Defined in `Public/Core/CLEARANCETypes.h`. Blueprint-facing structs are declared as `USTRUCT(BlueprintType)`.
 
 ### FAircraftState
 

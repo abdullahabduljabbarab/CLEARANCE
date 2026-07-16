@@ -34,7 +34,7 @@
 
 CLEARANCE is a first-person air traffic control simulator built in Unreal Engine 5, targeted at civil/defence-relevant sector-control training scenarios. The player runs the sector for EGNO Warton, sequencing arrivals against wind-selected runways, handing off transits, resolving conflicts, and managing emergencies while an instructor watches from a second connected station.
 
-The design goal is cognitive fidelity, not aerodynamic realism. Aircraft respond to instructions on realistic timescales; conflicts escalate through a three-level alert ladder; wake separation follows ICAO Doc 4444; and emergencies produce the same pressure a real controller feels because the tools available to resolve them are the same. The simulator is not a pilot trainer and does not attempt to be.
+The design goal is cognitive fidelity, not aerodynamic realism. Aircraft respond to instructions on realistic timescales; conflicts escalate through a three-level alert ladder; wake separation follows ICAO Doc 4444; and emergencies are designed to create comparable procedural pressure by limiting the operator to representative ATC tools. The simulator is not a pilot trainer and does not attempt to be.
 
 CLEARANCE is a portfolio demonstrator and training-simulation prototype, not an operationally validated ATC or military training product. The project demonstrates architecture, integration, cognitive-fidelity design, verification discipline, and instructor workflow rather than certified training effectiveness.
 
@@ -54,7 +54,7 @@ The scope splits into five interlocking systems, each with a single defined resp
 3. The player issues an instruction over voice (push-to-talk) or the console. Heading, altitude, speed, approach clearance, handoff, or emergency-specific commands.
 4. The Communication System validates the instruction against current aircraft state. Physically impossible or unsafe instructions are rejected with a spoken reason.
 5. The Aircraft Behaviour System executes the accepted instruction gradually. Bank angle, climb rate, and wake corridor are all enforced during execution.
-6. The Conflict Detection System monitors every pair on every tick. When separation drops through Advisory, Warning, and Critical thresholds, the operator sees graded alerts. A TCAS Resolution Advisory fires below Critical and splits the pair vertically.
+6. The Conflict Detection System monitors every pair on every tick. When separation drops through Advisory, Warning, and Critical thresholds, the operator sees graded alerts. At Critical, a simulated TCAS-style Resolution Advisory fires and splits the pair vertically.
 7. The aircraft lands, is handed off to an adjacent sector, exits the boundary, or fails one of the above and is scored accordingly.
 8. Difficulty scales up on success and backs off on failure. The next aircraft enters.
 
@@ -170,7 +170,7 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 | Session Recorder | Reads per-tick snapshots for replay capture. |
 | Federation | Subscribes to `OnAircraftStateUpdated` and publishes wire packets. |
 
-### Communication
+### Interface table
 
 | Source | Trigger | Call | Data | Response | Outcome |
 |---|---|---|---|---|---|
@@ -918,11 +918,11 @@ Instructor and server-side RPCs on the operator's `AClearanceOperatorPC`. Every 
 
 ### Description
 
-Publishes sim state through four interoperability stacks and subscribes from them: IEEE 1278.1 DIS, DDS via Fast DDS, DDS via RTI Connext, and IEEE 1516 HLA via OpenRTI (or a Portico peer). HLA uses an RPR-FOM 2.0 base with CLEARANCE-specific extensions for ATC-managed aircraft.
+Publishes sim state through four interoperability stacks and subscribes from them: IEEE 1278.1 DIS, DDS via Fast DDS, DDS via RTI Connext, and IEEE 1516 HLA via OpenRTI. HLA uses an RPR-FOM 2.0 base with CLEARANCE-specific extensions for ATC-managed aircraft.
 
 ### Wire format
 
-DIS Entity State PDUs at 5 Hz per aircraft, matching the DIS heartbeat convention. Transmitter PDU per operator radio at 5 Hz, Signal PDUs for voice, Fire and Detonation PDUs for weapon events, Emission PDUs for radar operations. The DIS codecs are tested for fixed sizes, offsets, padding, round-trip behaviour, and malformed rejection, with live output verified through Wireshark's DIS dissector.
+DIS Entity State PDUs at 5 Hz per aircraft, matching the DIS heartbeat convention. Transmitter PDU per operator radio at 5 Hz, Signal PDUs for voice, Fire and Detonation PDUs for engagement and intercept event modelling, Emission PDUs for radar operations. The DIS codecs are tested for fixed sizes, offsets, padding, round-trip behaviour, and malformed rejection, with live output verified through Wireshark's DIS dissector.
 
 ### Ownership
 
@@ -940,17 +940,17 @@ Verified by 22 REQ-DIS automation tests and 6 REQ-FED tests. See `REQUIREMENTS.m
 
 The Simulation Controller drives every tick in a fixed order. The comment in the source calls it "the authoritative tick order from the architecture doc" and it is:
 
-1. **Spawner check.** If no scenario is running, ask the spawner whether to inject a new aircraft this frame.
+1. **Spawner and scenario injection.** If no scenario is running, ask the spawner whether to inject a new aircraft this frame. If a scenario is running, evaluate its next timed action instead.
 2. **Behaviour step.** Every aircraft's behaviour object reads current state, applies pending instructions, integrates one frame, commits back to the Airspace Manager.
 3. **Conflict detection.** Full snapshot analysis of horizontal, vertical, trajectory, and wake separation. Fires alerts and RAs.
 4. **Alert stamping.** Every aircraft's `CurrentAlertLevel` is written back to the Airspace Manager so replication carries it to clients.
-5. **GCI intercept tick.** Joined-up viper flights track their assigned targets.
-6. **Bandit EW tick.** Hostile aircraft react to closing interceptors by dropping chaff or activating jammers.
-7. **Crashing aircraft tick.** Aircraft in `Crashed` phase fall visibly to the ground with the timed collapse animation.
-8. **Exit checks.** Aircraft crossing the boundary are handed off, exited, or scored as strayed.
-9. **Visual sync.** Instructor panel and operator HUD read the fresh state and update.
+5. **Scoring and event consumption.** Scoring subscribes to conflict, phase, and instruction events fired earlier in the tick. Incidents are logged, score recalculated, difficulty threshold checked.
+6. **GCI intercept and bandit EW reactions.** Joined-up viper flights track their assigned targets. Hostile aircraft under intercept respond with chaff or jammer activation.
+7. **Radar paint and fusion.** Every enabled radar site paints tracks against the fresh airspace state. The controller fuses across sites into `RepOperatorTracks`.
+8. **Exit and crash checks.** Aircraft crossing the boundary are handed off, exited, or scored as strayed. Aircraft in `Crashed` phase fall to the ground with the timed collapse.
+9. **Replication and visual sync.** Replicated arrays (aircraft, scoring log, tracks, notifications) refresh. Instructor panel and operator HUD read the fresh state and repaint.
 
-The order is fixed and matters. Behaviour must run before conflict, because conflict analyses the committed state. Conflict must run before scoring, because scoring logs conflict events. Radar sites run after airspace commits, because radar reads the fresh aircraft positions. Slipping any step means downstream systems read stale data.
+The order is fixed and matters. Behaviour must run before conflict, because conflict analyses the committed state. Conflict must run before scoring, because scoring logs conflict events. Radar sites run after airspace commits, because radar reads the fresh aircraft positions. Replication runs last so every client reads a consistent snapshot. Slipping any step means downstream systems read stale data.
 
 **Flowchart 11: Tick pipeline** (pre-production sketch)
 
@@ -958,31 +958,31 @@ The order is fixed and matters. Behaviour must run before conflict, because conf
    Simulation Controller Tick
              |
              v
-     1. Spawner check
+   1. Spawner / scenario injection
              |
              v
-     2. Behaviour step (all aircraft)
+   2. Behaviour step (all aircraft)
              |
              v
-     3. Conflict Detection
+   3. Conflict detection
              |
              v
-     4. Alert level stamp
+   4. Alert stamping
              |
              v
-     5. GCI intercept tick
+   5. Scoring / event consumption
              |
              v
-     6. Bandit EW reactions
+   6. GCI intercept + bandit EW
              |
              v
-     7. Crashing aircraft physics
+   7. Radar paint + fusion
              |
              v
-     8. Exit checks
+   8. Exit / crash checks
              |
              v
-     9. Visual sync
+   9. Replication + visual sync
              |
              v
         next frame

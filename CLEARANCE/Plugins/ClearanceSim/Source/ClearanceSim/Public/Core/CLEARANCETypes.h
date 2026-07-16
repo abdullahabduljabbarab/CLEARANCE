@@ -534,6 +534,40 @@ struct CLEARANCESIM_API FRunwayInfo
 	int32 DesignatorOverride = 0;
 };
 
+/** One row on the operator's emergency / priority board. Auto-populated from
+ *  aircraft state on the airspace manager - the operator doesn't manually add
+ *  entries, the sim watches for abnormal states and lists them here sorted by
+ *  urgency (shortest timer first). Matches how a real modern ATC position's
+ *  CAAD / Emergency Alert Board works. - TripleA */
+USTRUCT(BlueprintType)
+struct CLEARANCESIM_API FOperatorEmergencyEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Emergency")
+	FName Callsign = NAME_None;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Emergency")
+	EEmergencyType Type = EEmergencyType::None;
+
+	// Minutes of countdown remaining. -1.f = no countdown (Hijack / CommsFailure
+	// have no fuel clock). Widgets should show "--:--" for negative values and
+	// pulse red when < 1.f (60s).
+	UPROPERTY(BlueprintReadOnly, Category = "Emergency")
+	float TimerMinutesRemaining = -1.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Emergency")
+	int32 SquawkCode = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Emergency")
+	EThreatClass ThreatClass = EThreatClass::Unknown;
+
+	// Free-form detail string from the aircraft state (e.g. "smoke in cockpit"
+	// for GeneralMayday). Empty if the emergency type has no extra context.
+	UPROPERTY(BlueprintReadOnly, Category = "Emergency")
+	FString Detail;
+};
+
 /** What the RADAR believes about one aircraft. Distinct from the truth held in the
  *  Airspace Manager: position is the last paint (with sensor noise), heading/speed
  *  are estimated, callsign is only present if the transponder return was good. */

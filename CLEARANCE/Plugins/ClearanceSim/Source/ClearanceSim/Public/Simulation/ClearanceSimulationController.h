@@ -230,6 +230,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Emergency")
 	bool ClearEmergencyOn(FName Callsign);
 
+	// Snapshot of every aircraft in an abnormal state (Mayday / FuelLow /
+	// CommsFailure / Hijack). Sorted by urgency - shortest timer first;
+	// timerless emergencies (Hijack, NORDO) rank ahead of any timed one to
+	// stay pinned at the top of the operator's board. Backing store is the
+	// airspace manager's replicated aircraft states, so this is safe to call
+	// from either server or client and refreshes for free every tick. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Emergency")
+	TArray<FOperatorEmergencyEntry> GetActiveEmergencies() const;
+
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Scenario")
 	class UClearanceScenarioRunner* GetScenarioRunner() const { return ScenarioRunner; }
 

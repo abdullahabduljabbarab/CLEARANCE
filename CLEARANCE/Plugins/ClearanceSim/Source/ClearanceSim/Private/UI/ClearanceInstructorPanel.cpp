@@ -16,6 +16,7 @@
 #include "Components/ScrollBox.h"
 #include "Components/Image.h"
 #include "Components/Slider.h"
+#include "Components/WidgetComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "Rendering/DrawElements.h"
@@ -134,6 +135,21 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 	// root, not from those children. - TripleA
 	if (bShowScopeOrCamera)
 	{
+		// AllottedGeometry.GetLocalSize() is the auto-sized content bounds of
+		// the UUserWidget root. On a screen-space HUD (added to viewport) the
+		// viewport forces the widget to fill the screen, so this happens to
+		// equal the render area. On a world-space WidgetComponent (VR
+		// operator monitor), the root auto-sizes to its content and reports
+		// something tiny like 80x80 - the scope then paints in the top-left
+		// corner. Detect the WidgetComponent case and swap in its DrawSize.
+		// FPaintContext still uses the real AllottedGeometry (Slate needs it
+		// for hit-testing); only the PanelSize passed to BP is overridden. - TripleA
+		FVector2D PaintSize = AllottedGeometry.GetLocalSize();
+		if (UWidgetComponent* WC = Cast<UWidgetComponent>(GetOuter()))
+		{
+			PaintSize = FVector2D(WC->GetDrawSize());
+		}
+
 		// Skip the scope paint entirely when the panel is in camera-feed mode -
 		// otherwise the vectors would render on top of the camera Image widget
 		// (NativePaint runs after child widgets so its LayerId is higher) and
@@ -148,7 +164,7 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 			// already the const& we got passed. - TripleA
 			FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
 				LayerId, InWidgetStyle, bParentEnabled);
-			const_cast<UClearanceInstructorPanel*>(this)->BP_PaintScope(Context, AllottedGeometry.GetLocalSize());
+			const_cast<UClearanceInstructorPanel*>(this)->BP_PaintScope(Context, PaintSize);
 		}
 		else
 		{
@@ -159,7 +175,7 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 			// the panel root) and the lines get hidden behind the feed. - TripleA
 			FPaintContext Context(AllottedGeometry, MyCullingRect, OutDrawElements,
 				Result + 1, InWidgetStyle, bParentEnabled);
-			const_cast<UClearanceInstructorPanel*>(this)->BP_PaintCameraOverlay(Context, AllottedGeometry.GetLocalSize());
+			const_cast<UClearanceInstructorPanel*>(this)->BP_PaintCameraOverlay(Context, PaintSize);
 		}
 	}
 
@@ -1574,7 +1590,13 @@ void UClearanceInstructorPanel::DrawAffiliationSymbol(
 	bool bIsMilitary, float HeadingDeg, EAlertLevel Alert, float HalfSizePx, float Alpha)
 {
 	const float A = FMath::Clamp(Alpha, 0.f, 1.f);
-	FLinearColor Frame = (Alert == EAlertLevel::Critical) ? ColourForAlert(Alert) : ColourForThreat(Threat);
+	// Graduated alert tint: Warning and Critical stomp the affiliation colour
+	// so the symbol reads instantly as "in trouble"; Advisory keeps the type
+	// visible (still important to know friend vs hostile at 8nm) and lets the
+	// alert ring below carry the amber. - TripleA
+	FLinearColor Frame = (Alert == EAlertLevel::Critical || Alert == EAlertLevel::Warning)
+		? ColourForAlert(Alert)
+		: ColourForThreat(Threat);
 	Frame.A *= A;
 	const float H = FMath::Max(2.f, HalfSizePx);
 
@@ -1651,7 +1673,19 @@ void UClearanceInstructorPanel::DrawAffiliationSymbol(
 	{
 		FLinearColor AlertRing = ColourForAlert(Alert);
 		AlertRing.A *= A;
-		PaintCircle(Context, Centre, H * 1.4f, 24, AlertRing);
+		// Ring radius grows with alert level so Advisory reads clearly against
+		// the affiliation symbol and Critical dominates the scope. - TripleA
+		const float RingScale = (Alert == EAlertLevel::Critical) ? 1.60f
+			: (Alert == EAlertLevel::Warning) ? 1.50f
+			: 1.40f;
+		PaintCircle(Context, Centre, H * RingScale, 24, AlertRing);
+		// Double-draw the Advisory ring one pixel offset for visibility
+		// against the affiliation colour; symbols are small at scope zoom
+		// and a single 24-segment stroke can vanish into the fill. - TripleA
+		if (Alert == EAlertLevel::Advisory)
+		{
+			PaintCircle(Context, Centre, H * RingScale + 1.f, 24, AlertRing);
+		}
 	}
 
 	if (bIsMilitary)
@@ -2004,8 +2038,11 @@ void UClearanceInstructorPanel::DrawAircraftLabel(FPaintContext& Context, FVecto
 	// Position offset: 1 o'clock from the symbol, clear of the bearing vector.
 	const FVector2D LabelTopLeft = Centre + FVector2D(14.f, -22.f);
 
-	const FLinearColor Tint = (Row.CurrentAlertLevel == EAlertLevel::Critical)
-		? FLinearColor(1.00f, 0.24f, 0.24f, 1.f)
+	// Data-block tint mirrors the symbol's graduated alert palette. Any
+	// non-None alert stomps the affiliation colour so an operator scanning
+	// the block can't miss "this aircraft is a problem". - TripleA
+	const FLinearColor Tint = (Row.CurrentAlertLevel != EAlertLevel::None)
+		? ColourForAlert(Row.CurrentAlertLevel)
 		: ColourForThreat(Row.ThreatClass);
 
 	constexpr float LineHeight = 12.f;

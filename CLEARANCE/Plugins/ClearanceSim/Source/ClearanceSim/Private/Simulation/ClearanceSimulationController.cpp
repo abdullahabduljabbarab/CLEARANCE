@@ -1920,6 +1920,45 @@ bool AClearanceSimulationController::ClearEmergencyOn(FName Callsign)
 	return true;
 }
 
+TArray<FOperatorEmergencyEntry> AClearanceSimulationController::GetActiveEmergencies() const
+{
+	TArray<FOperatorEmergencyEntry> Out;
+	if (!AirspaceManager) { return Out; }
+
+	for (const FAircraftState& S : AirspaceManager->GetAllAircraftStates())
+	{
+		if (!S.bIsValid || S.ActiveEmergency == EEmergencyType::None) { continue; }
+
+		FOperatorEmergencyEntry E;
+		E.Callsign    = S.Callsign;
+		E.Type        = S.ActiveEmergency;
+		E.SquawkCode  = S.SquawkCode;
+		E.ThreatClass = S.ThreatClass;
+		E.Detail      = S.EmergencyDetail;
+		// Only the two timed emergencies expose a countdown - Hijack (7500)
+		// and CommsFailure (7600) are indefinite states with no clock, so
+		// they carry -1 and the widget shows "--:--". - TripleA
+		E.TimerMinutesRemaining =
+			(S.ActiveEmergency == EEmergencyType::GeneralMayday ||
+			 S.ActiveEmergency == EEmergencyType::FuelLow)
+			? S.FuelRemainingMinutes
+			: -1.f;
+		Out.Add(E);
+	}
+
+	// Sort by urgency: timerless emergencies (Hijack, NORDO) pinned at the
+	// top; timed emergencies below them shortest-first. Two-key comparator
+	// via a synthetic sort key - negative timers get a large positive
+	// sentinel so they sort AHEAD of any real countdown. - TripleA
+	Out.Sort([](const FOperatorEmergencyEntry& A, const FOperatorEmergencyEntry& B)
+	{
+		const float KA = (A.TimerMinutesRemaining < 0.f) ? -1.f : A.TimerMinutesRemaining;
+		const float KB = (B.TimerMinutesRemaining < 0.f) ? -1.f : B.TimerMinutesRemaining;
+		return KA < KB;
+	});
+	return Out;
+}
+
 // ============================================================================
 // Instructor station - server-side RPCs called by client console / UMG. Each is
 // a thin wrapper around the existing single-machine API; all sim writes stay
@@ -5109,6 +5148,7 @@ TArray<FInstructorCameraLabel> AClearanceSimulationController::GetCameraLabels()
 		Label.Callsign = State.Callsign;
 		Label.ScreenUV = FVector2D(UV_X, UV_Y);
 		Label.ThreatClass = State.TrueAffiliation;
+		Label.AlertLevel = State.CurrentAlertLevel;
 		Label.FlightLevel = FMath::RoundToInt(State.Altitude / 100.f);
 		// Cesium mirror to match scope. - TripleA
 		const float HdgMirrored = FMath::Fmod(FMath::Fmod(360.f - State.Heading, 360.f) + 360.f, 360.f);
@@ -5276,8 +5316,16 @@ TArray<FInstructorCameraLine> AClearanceSimulationController::GetCameraOverlayLi
 		(InstructorPipView != EClearanceCameraView::Tower) &&
 		(InstructorPipView != EClearanceCameraView::Approach) &&
 		(InstructorPipView != EClearanceCameraView::Operator);
+	// Centerline hides on Tower, Approach, and Operator - all three are
+	// first-person views looking down or along the strip, and any Z drift
+	// between the mesh top (which the overlay uses as its ground plane) and
+	// what the eye sees on the terrain projects to a visible screen-space
+	// offset at oblique angles. Overview and Chase keep it because top-down
+	// or elevated-behind angles cancel that error. - TripleA
 	const bool bShowRunwayCenterline =
-		(InstructorPipView != EClearanceCameraView::Operator);
+		(InstructorPipView != EClearanceCameraView::Operator) &&
+		(InstructorPipView != EClearanceCameraView::Tower) &&
+		(InstructorPipView != EClearanceCameraView::Approach);
 
 	// Wind picks the landing end - only that runway gets the corridor /
 	// glide-slope / fix labels, the reciprocal end stays clean. Updates
@@ -7490,11 +7538,27 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceTestConflictCmd(
 		AClearanceSimulationController* C = FindClearanceController(World);
 		if (!C || !C->GetAirspaceManager()) { return; }
 		C->ClearTraffic();
+		// Force sim time scale to 1x for the duration of the demo. Anything
+		// higher (default is 10x, user often runs 20x) closes the pair in a
+		// handful of real seconds so they look like they spawned on top of
+		// each other. 1x gives a watchable ~40 sec dead-air before Advisory,
+		// then the alert ladder plays out in real time. Operator can bump
+		// the slider back up afterwards. - TripleA
+		C->SimulationTimeScale = 1.f;
 		AClearanceAirspaceManager* M = C->GetAirspaceManager();
-		// 12 nm apart on the E-W line, same altitude, flying at each other.
-		SpawnTestAircraft(M, TEXT("CONFL1"), FVector(-6.f, 0.f, 0.f), 10000.f,  90.f, 250.f, EWakeCategory::Medium);
-		SpawnTestAircraft(M, TEXT("CONFL2"), FVector( 6.f, 0.f, 0.f), 10000.f, 270.f, 250.f, EWakeCategory::Medium);
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, TEXT("TEST: CONFL1/CONFL2 head-on at FL100 - alert should escalate ADVISORY->WARNING->CRITICAL")); }
+		// 20 nm apart on the E-W line, same altitude, 340 kt each = 680 kt
+		// closure. Wide enough to read as two very clearly separated symbols
+		// on any scope range. At 1x sim time: Advisory ~42 sec, Warning ~58
+		// sec, Critical ~68 sec, TCAS RA immediately, vertical split visible
+		// well before horizontal merge. Both aircraft have MBD autopilot
+		// disengaged so they use the analytic StepAltitude path which
+		// respects bExpedite = true and climbs / descends at 1.5x max rate.
+		// Sim default autopilot behaviour for scenario traffic is unchanged. - TripleA
+		SpawnTestAircraft(M, TEXT("CONFL1"), FVector(-10.f, 0.f, 0.f), 10000.f,  90.f, 340.f, EWakeCategory::Medium);
+		SpawnTestAircraft(M, TEXT("CONFL2"), FVector( 10.f, 0.f, 0.f), 10000.f, 270.f, 340.f, EWakeCategory::Medium);
+		C->SetAircraftAutopilotEngaged(TEXT("CONFL1"), false);
+		C->SetAircraftAutopilotEngaged(TEXT("CONFL2"), false);
+		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, TEXT("TEST: sim time forced 1x, CONFL1/CONFL2 head-on 20nm 340kt - ADVISORY ~42s, TCAS RA ~68s, vertical split visible before merge")); }
 	}));
 
 // light/small/L, medium/M, heavy/big/H, super/S - forgiving so you can type the word

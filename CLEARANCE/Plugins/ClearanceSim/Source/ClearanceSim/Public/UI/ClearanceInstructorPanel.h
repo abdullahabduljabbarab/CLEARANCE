@@ -630,10 +630,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor")
 	int32 MaxNotifications = 40;
 
-	// How often the panel polls replicated state. 0.2s = 5Hz, plenty for an
-	// instructor view without thrashing the BP layer. - TripleA
+	// How often the panel polls replicated state and rebuilds the aircraft
+	// row list. 0.5s = 2Hz - the scope symbols repaint every frame in C++
+	// regardless, this only throttles the widget row diff + score/scenario
+	// view refresh, which do not need to run at 72Hz. VR game-thread win
+	// with no perceptible UI hit unless a plane spawns mid-tick. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor")
-	float RefreshIntervalSec = 0.2f;
+	float RefreshIntervalSec = 0.5f;
 
 	// --- Combo-box option lists + string<->enum helpers -------------------
 	// BP combo boxes return strings; the inject RPCs want enums. These

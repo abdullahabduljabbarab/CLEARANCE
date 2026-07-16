@@ -175,6 +175,9 @@ struct CLEARANCESIM_API FInstructorCameraLabel
 	// image's render size to get pixel coords. - TripleA
 	UPROPERTY(BlueprintReadOnly) FVector2D ScreenUV = FVector2D::ZeroVector;
 	UPROPERTY(BlueprintReadOnly) EThreatClass ThreatClass = EThreatClass::Unknown;
+	// Current TCAS-style alert level - drives amber/red label tint on the
+	// camera HUD. None = normal affiliation colour on the BP side. - TripleA
+	UPROPERTY(BlueprintReadOnly) EAlertLevel AlertLevel = EAlertLevel::None;
 	UPROPERTY(BlueprintReadOnly) int32 FlightLevel = 0;
 	// Compass heading in degrees (0..360, 0 = North). - TripleA
 	UPROPERTY(BlueprintReadOnly) int32 HeadingDeg = 0;

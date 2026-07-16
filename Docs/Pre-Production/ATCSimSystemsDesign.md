@@ -4,18 +4,46 @@
 **Author:** Abdullah Ameed Abduljabbar
 **Role:** Systems Designer
 
+## Table of contents
+
+- [Project overview](#project-overview)
+- [The design emphasises](#the-design-emphasises)
+- [Core gameplay loop](#core-gameplay-loop)
+- [Design principles](#design-principles)
+- [Planned vs production evolution](#planned-vs-production-evolution)
+- [Systems list](#systems-list)
+- [Airspace Management System](#airspace-management-system)
+- [Aircraft Behaviour System](#aircraft-behaviour-system)
+- [Communication System](#communication-system)
+- [Conflict Detection System](#conflict-detection-system)
+- [Scoring and Assessment System](#scoring-and-assessment-system)
+- [Aircraft Spawner](#aircraft-spawner)
+- [Scenario Runner](#scenario-runner)
+- [Sensor Layer](#sensor-layer)
+- [Electronic Warfare](#electronic-warfare)
+- [Emergency and Contingency Handling](#emergency-and-contingency-handling)
+- [Session Recorder and Replay](#session-recorder-and-replay)
+- [Checkpoint](#checkpoint)
+- [After-Action Report](#after-action-report)
+- [Networked Instructor Station](#networked-instructor-station)
+- [Federation](#federation)
+- [Simulation controller tick pipeline](#simulation-controller-tick-pipeline)
+- [References](#references)
+
 ## Project overview
 
-CLEARANCE is a first-person air traffic control simulator built in Unreal Engine 5, targeted at civil and defence sector-control training. The player runs the sector for EGNO Warton, sequencing arrivals against wind-selected runways, handing off transits, resolving conflicts, and managing emergencies while an instructor watches from a second connected station.
+CLEARANCE is a first-person air traffic control simulator built in Unreal Engine 5, targeted at civil/defence-relevant sector-control training scenarios. The player runs the sector for EGNO Warton, sequencing arrivals against wind-selected runways, handing off transits, resolving conflicts, and managing emergencies while an instructor watches from a second connected station.
 
 The design goal is cognitive fidelity, not aerodynamic realism. Aircraft respond to instructions on realistic timescales; conflicts escalate through a three-level alert ladder; wake separation follows ICAO Doc 4444; and emergencies produce the same pressure a real controller feels because the tools available to resolve them are the same. The simulator is not a pilot trainer and does not attempt to be.
+
+CLEARANCE is a portfolio demonstrator and training-simulation prototype, not an operationally validated ATC or military training product. The project demonstrates architecture, integration, cognitive-fidelity design, verification discipline, and instructor workflow rather than certified training effectiveness.
 
 The scope splits into five interlocking systems, each with a single defined responsibility, plus a set of supporting systems that were added during production once the core loop was stable. Everything communicates through delegates. State has one owner. Movement has one executor. Safety analysis is read-only. Instructions are validated before they can move anything.
 
 ### The design emphasises
 
 - Systemic interactions between the Airspace Management, Aircraft Behaviour, Communication, Conflict Detection, and Scoring systems, driven by a shared event map rather than direct cross-calls.
-- A simulation that produces genuine cognitive pressure consistent with real ATC decision-making. Aircraft do not teleport, aircraft do not politely wait, and instructions cannot be un-issued once they hit the wire.
+- A simulation that produces genuine cognitive pressure consistent with real ATC decision-making. Aircraft do not teleport, traffic continues to evolve while the operator decides, and instructions have consequences once accepted into the simulation.
 - Physics-constrained aircraft behaviour including bank-limited turns, category-specific climb rates, wake turbulence separation from the ICAO matrix, wind drift on ground track, service ceilings, and speed envelopes.
 - A geospatial reconstruction of the actual EGNO airfield built on Cesium 3D tiles. Approach corridors, runway thresholds, and headings match the real airfield to the extent public data permits.
 
@@ -32,6 +60,35 @@ The scope splits into five interlocking systems, each with a single defined resp
 
 The loop can also be driven by a scripted scenario in place of the free-play spawner. Seven scenarios ship: Baltic Intercept, Hijack Response, Mass Divert, Mayday Engine Fire, NORDO Inbound, Cold War Probe, and Mixed Ops. Each authors traffic, weather, emergencies, and voice injects on a timeline.
 
+**Flowchart 1: Core gameplay loop** (pre-production sketch, to be redrawn in draw.io)
+
+```
+   Aircraft enters sector
+             |
+             v
+   Player reads data block
+             |
+             v
+   Player issues instruction
+             |
+             v
+     +---- validated? ----+
+     |                    |
+   reject               accept
+     |                    |
+     v                    v
+   refusal          aircraft moves
+   spoken                 |
+                          v
+              conflict detection watches
+                          |
+                          v
+              lands / handoff / exit
+                          |
+                          v
+                  scored, loop back
+```
+
 ### Design principles
 
 Six principles shape the whole codebase. They are enforced by class boundaries, not by convention. Every system in this document is a specific application of one or more of them.
@@ -41,7 +98,11 @@ Six principles shape the whole codebase. They are enforced by class boundaries, 
 3. **Read-only safety analysis.** The Conflict Detector reads snapshots and broadcasts events. It never mutates anything. Reactions to its events (go-arounds, RA vertical splits, scoring log entries, operator alerts) happen elsewhere.
 4. **Validate before execute.** Every instruction the player issues is checked by a stateless Instruction Validator against current aircraft state before it reaches the behaviour object. Rejected instructions produce a spoken negative readback and never touch the sim.
 5. **Controller-driven tick.** The Simulation Controller drives the order every frame. Spawner, behaviour, conflict, scoring, sensor, replication, presentation. Nothing else has independent tick authority.
-6. **Strict presentation boundary.** All simulation logic lives in C++. All UI lives in Blueprint. Blueprint reads through BlueprintCallable getters. Blueprint never writes to sim state. If the entire UMG layer were deleted, the simulation would still run correctly with no display.
+6. **Strict presentation boundary.** Simulation logic lives in C++. Presentation is exposed through Blueprint/UMG and C++ widget paint hooks. Blueprint reads through BlueprintCallable getters and sends user intent through C++ RPCs; it does not own or mutate simulation state. If the entire UMG layer were deleted, the simulation would still run correctly with no display.
+
+## Planned vs production evolution
+
+The five original systems on paper were Airspace Management, Aircraft Behaviour, Communication, Conflict Detection, and Scoring. Everything else in the table below was added only after the core loop stabilised, each because a training or integration need appeared: a sensor layer for operator vs truth-scope separation, electronic warfare for degraded-picture decision-making, session recorder and checkpoint and After-Action Report for the instructor workflow, and federation for interoperability with peer simulators.
 
 ## Systems list
 
@@ -63,9 +124,7 @@ Six principles shape the whole codebase. They are enforced by class boundaries, 
 | Networked Instructor Station | Server-authoritative replication so a second operator (the instructor) joins the running session and injects events. | Simulation Controller, all systems above |
 | Federation | Publishes sim state to DIS, DDS, RTI Connext, and HLA. Subscribes to peer sims through the same wire. | Airspace Management (delegate subscriber) |
 
-The five original systems (Airspace Management, Aircraft Behaviour, Communication, Conflict Detection, Scoring) form the core. Everything else was added during production because a specific need arose. Sensor Layer came in when the scope needed to show what the operator's radar actually saw versus what the god view knew. Electronic Warfare came in when scenarios needed to test degraded-picture decision-making. Session Recorder and Checkpoint came in when the instructor workflow needed retry and review. Federation came in when the sim needed to talk to other simulators.
-
-Each of those newer systems is described in the same shape as the core five (description, purpose, rationale, boundaries, inputs, outputs, edge cases, success criteria) but with the length matched to actual complexity.
+Each of the newer systems is described in the same shape as the core five (description, purpose, rationale, boundaries, inputs, outputs, edge cases, success criteria), with the length matched to actual complexity.
 
 ## Airspace Management System
 
@@ -120,6 +179,69 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 | Any system | Reading current state | `GetAircraftState(callsign)` | Callsign | Copy of `FAircraftState` (with `bIsValid = false` if unknown) | Consumer gets a stable snapshot |
 | Any system | Iterating all aircraft | `GetAllAircraftStates` | none | Array of `FAircraftState` | Consumer sees the whole sector |
 | Wind change | Crosswind exceeds threshold on current active runway | `RecalculateActiveRunway` | none (internal) | New active heading | Runway swaps, `OnRunwayChanged` broadcast to camera overlay, approach picker, aircraft on approach |
+
+**Flowchart 2: Aircraft registration flow** (pre-production sketch)
+
+```
+   Spawner or Scenario Runner
+             |
+             v
+       RegisterAircraft
+             |
+             v
+       stored in TMap
+             |
+             v
+     OnAircraftRegistered
+             |
+             v
+   controller creates behaviour
+             |
+             v
+     Initialise() sets targets
+```
+
+**Flowchart 3: State update flow, per tick** (pre-production sketch)
+
+```
+   Simulation Controller tick
+             |
+             v
+   Behaviour reads current state
+             |
+             v
+     Applies pending target
+             |
+             v
+     Integrates one frame
+             |
+             v
+       RequestStateUpdate
+             |
+             v
+     stored + broadcast to subscribers
+```
+
+**Flowchart 4: Aircraft deregistration flow** (pre-production sketch)
+
+```
+   Aircraft: exits / lands / crashes
+             |
+             v
+     phase set on aircraft
+             |
+             v
+   controller CheckExits catches it
+             |
+             v
+       DeregisterAircraft
+             |
+             v
+   OnAircraftDeregistered broadcast
+             |
+             v
+   behaviour destroyed, scoring logs
+```
 
 ### Edge cases
 
@@ -203,6 +325,55 @@ The Simulink model is generated from a MATLAB source via Embedded Coder in reusa
 - Simulation Controller: owns the map of behaviour objects, drives the tick.
 - Simulink autopilot wrapper (when engaged): computes control-surface commands.
 
+**Flowchart 5: Instruction execution flow** (pre-production sketch)
+
+```
+   Validated instruction
+             |
+             v
+     queued on behaviour
+             |
+             v
+   next tick: read target
+             |
+             v
+   step axis (heading / altitude / speed)
+             |
+             v
+     commit updated state
+             |
+        target reached?
+        /            \
+     no              yes
+      |               |
+   next tick     instruction complete
+```
+
+**Flowchart 6: Go-around flow** (pre-production sketch)
+
+```
+   Conflict Detection: Critical on approach pair
+             |
+             v
+     OnGoAroundRequired
+             |
+             v
+   Comms Router receives event
+             |
+             v
+   routes go-around to behaviour
+             |
+             v
+       bGoingAround = true
+             |
+             v
+     aircraft climbs 3000ft
+   pilot voices "going around"
+             |
+             v
+     rejoins pattern
+```
+
 ### Edge cases
 
 | Scenario | System response |
@@ -264,13 +435,43 @@ Anything the parser handles is documented in `Docs/PHRASEOLOGY.md`. Anything not
 
 Pilot readbacks and facility voices are rendered by a local TTS server (Piper primary voices, Edge TTS for facilities). The server is bundled as a standalone executable via PyInstaller so packaged builds do not require Python on the target machine.
 
-Readbacks follow ICAO Doc 4444 chapter 12 strict format: target value first, no action verb, callsign at the end. `Heading two seven zero, flight level two one zero, Speedbird four seven two`. Not `Speedbird four seven two, roger, turning left to heading two seven zero`. Real ATC convention.
+Readbacks follow an ICAO Doc 4444 chapter 12 style: target value first, no action verb, callsign at the end. `Heading two seven zero, flight level two one zero, Speedbird four seven two`. Not `Speedbird four seven two, roger, turning left to heading two seven zero`. ATC-style readback convention.
 
 Facility voice injects (TOWER, ACC, AWACS, GCI, ATIS, MET) use distinct voices so the operator learns to recognise "who is speaking" without needing the transcript. Each role has its own colour on the transcript display.
 
 ### Transcript
 
 Every transmission (Pilot, Operator, System, Instructor, and the six facility roles) is appended to `Transcript` on the Simulation Controller, replicated to all clients, and displayed in the Performance tab. The transcript is capped at 500 entries, filterable by role via the dropdown, and included verbatim in the After-Action Report.
+
+**Flowchart 7: Instruction validation flow** (pre-production sketch)
+
+```
+   Voice or console input
+             |
+             v
+     Phraseology parser
+             |
+             v
+     Comms Router receives
+             |
+             v
+   GetAircraftState(callsign)
+             |
+             v
+   Instruction Validator checks:
+     envelope? active? IFF?
+             |
+      valid?
+      /       \
+    no        yes
+     |         |
+     v         v
+   speak    route to
+   refusal  behaviour
+             |
+             v
+       speak pilot readback
+```
 
 ### Success criteria
 
@@ -343,6 +544,67 @@ Not every close encounter is a civilian safety violation. When both aircraft are
 | Firing graded alerts and TCAS RAs | Scoring computations (Scoring reads our events) |
 | Wake advisory broadcasts | Persistent logging (Session Recorder captures events, not us) |
 
+**Flowchart 8: Separation check flow** (pre-production sketch)
+
+```
+   Detector tick
+        |
+        v
+   read all aircraft states
+        |
+        v
+   for each pair:
+        |
+   engagement suppressed?
+   /                    \
+  yes                    no
+   |                     |
+   v                     v
+ skip     compute horiz + vert separation
+                         |
+                         v
+              also project 60s ahead
+                         |
+                         v
+                 Level = alert threshold
+                         |
+                         v
+              new or escalated?
+              /               \
+             no                yes
+             |                  |
+             v                  v
+          nothing        broadcast OnConflictDetected
+                                 |
+                        Critical? -> also fire TCAS RA
+```
+
+**Flowchart 9: TCAS Resolution Advisory flow** (pre-production sketch)
+
+```
+   Critical separation fires TCAS RA
+             |
+             v
+     pick climber + descender
+      (higher / lower altitude,
+       tie-break by callsign)
+             |
+             v
+     compute +1500 / -1500 targets
+             |
+             v
+   issue AltitudeChange (bExpedite = true)
+             |
+             v
+     behaviour objects climb / descend
+             |
+             v
+     Scoring logs TCASResolutionAdvisory
+             |
+             v
+   ActiveTCAS clears when pair separates
+```
+
 ### Success criteria
 
 1. When separation drops below 8 nm horizontal with less than 1000 ft vertical, an Advisory fires within the same tick.
@@ -393,6 +655,36 @@ Efficiency percentage tracks total handled aircraft against total incidents. Dis
 ### Session log
 
 Every scored event is appended to the log with its timestamp (wall clock, replicated). The log is the source of truth for the After-Action Report generator, the Performance tab drilldown, the transcript alignment, and the critical-incident selector.
+
+**Flowchart 10: Scoring event flow** (pre-production sketch)
+
+```
+   Sim event (landing / incident / handoff / etc)
+             |
+             v
+   Source system broadcasts delegate
+             |
+             v
+     Scoring receives event
+             |
+             v
+       LogIncident
+             |
+             v
+   recalculate score + efficiency
+             |
+             v
+     OnScoreUpdated broadcast
+             |
+             v
+     difficulty threshold crossed?
+     /                          \
+    no                           yes
+    |                             |
+    v                             v
+ nothing            adjust spawn interval
+                   OnDifficultyAdjusted
+```
 
 ### Success criteria
 
@@ -608,7 +900,7 @@ CLEARANCE runs server-authoritative. The player is the operator and owns the run
 
 ### Inject RPCs
 
-Fifteen `Server_Inject*` RPCs on the operator's `AClearanceOperatorPC`. Every instructor action funnels through here. Every one is authoritative on the server and replicates its effect out to every client.
+Instructor and server-side RPCs on the operator's `AClearanceOperatorPC`. Every instructor action funnels through here. Every one is authoritative on the server and replicates its effect out to every client. The current set covers emergency lifecycle, aircraft classification, scramble launch, wind and time-scale controls, spawning and traffic clearing, scenario load/stop/reset, checkpoint save/load/delete, AAR export, and federation start/stop across DIS, DDS, RTI, and HLA.
 
 `InjectEmergency`, `ClearEmergency`, `ClassifyAircraft`, `ScrambleFighters`, `SetWind`, `SetTimeScale`, `SetMaxAircraft`, `SpawnAircraft`, `ClearTraffic`, `LoadScenario`, `StopScenario`, `ResetScenario`, `SaveCheckpoint`, `LoadCheckpoint`, `DeleteCheckpoint`, `ExportAAR`, `StartDDS`, `StopDDS`, `StartDIS`, `StopDIS`, `HLAJoin`, `HLAResign`.
 
@@ -626,11 +918,11 @@ Fifteen `Server_Inject*` RPCs on the operator's `AClearanceOperatorPC`. Every in
 
 ### Description
 
-Publishes sim state to four network protocols and subscribes from them: IEEE 1278.1 DIS (Distributed Interactive Simulation), OMG DDS (Data Distribution Service, via Fast DDS), RTI Connext DDS (commercial), and IEEE 1516 HLA (High-Level Architecture, via OpenRTI or a Portico peer). RPR-FOM 2.0 for cross-vendor compatibility.
+Publishes sim state through four interoperability stacks and subscribes from them: IEEE 1278.1 DIS, DDS via Fast DDS, DDS via RTI Connext, and IEEE 1516 HLA via OpenRTI (or a Portico peer). HLA uses an RPR-FOM 2.0 base with CLEARANCE-specific extensions for ATC-managed aircraft.
 
 ### Wire format
 
-DIS Entity State PDUs at 5 Hz per aircraft, matching the DIS heartbeat convention. Transmitter PDU per operator radio at 5 Hz, Signal PDUs for voice, Fire and Detonation PDUs for weapon events, Emission PDUs for radar operations. Every PDU is bit-exact to IEEE 1278.1-2012 §7. Round-trip tests in the automation suite verify every PDU type.
+DIS Entity State PDUs at 5 Hz per aircraft, matching the DIS heartbeat convention. Transmitter PDU per operator radio at 5 Hz, Signal PDUs for voice, Fire and Detonation PDUs for weapon events, Emission PDUs for radar operations. The DIS codecs are tested for fixed sizes, offsets, padding, round-trip behaviour, and malformed rejection, with live output verified through Wireshark's DIS dissector.
 
 ### Ownership
 
@@ -659,6 +951,42 @@ The Simulation Controller drives every tick in a fixed order. The comment in the
 9. **Visual sync.** Instructor panel and operator HUD read the fresh state and update.
 
 The order is fixed and matters. Behaviour must run before conflict, because conflict analyses the committed state. Conflict must run before scoring, because scoring logs conflict events. Radar sites run after airspace commits, because radar reads the fresh aircraft positions. Slipping any step means downstream systems read stale data.
+
+**Flowchart 11: Tick pipeline** (pre-production sketch)
+
+```
+   Simulation Controller Tick
+             |
+             v
+     1. Spawner check
+             |
+             v
+     2. Behaviour step (all aircraft)
+             |
+             v
+     3. Conflict Detection
+             |
+             v
+     4. Alert level stamp
+             |
+             v
+     5. GCI intercept tick
+             |
+             v
+     6. Bandit EW reactions
+             |
+             v
+     7. Crashing aircraft physics
+             |
+             v
+     8. Exit checks
+             |
+             v
+     9. Visual sync
+             |
+             v
+        next frame
+```
 
 ## References
 

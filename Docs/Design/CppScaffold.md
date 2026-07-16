@@ -7,6 +7,7 @@
 ## Table of contents
 
 - [Purpose](#purpose)
+- [How to read this document](#how-to-read-this-document)
 - [File setup](#file-setup)
 - [Enums](#enums)
 - [Core data structs](#core-data-structs)
@@ -19,13 +20,17 @@
 
 ## Purpose
 
-Class-level companion to the Systems Design document. Describes the enums, structs, delegates, and per-system class breakdown as they exist in the shipped codebase. Header line numbers and namespaces are current at the time of writing; anywhere the code has drifted, the code wins and this document trails.
+Class-level companion to the Systems Design document. Describes the enums, structs, delegates, and per-system class breakdown as they exist in the shipped codebase. Class names, headers, and interfaces are current at the time of writing; anywhere the code has drifted, the code wins and this document trails.
 
 CLEARANCE is a portfolio demonstrator and training-simulation prototype. This scaffold documents the classes that carry the simulation, not the certification artefacts an operational programme would require.
 
+## How to read this document
+
+This document is not a tutorial and not a full API reference. It is a class-level map of the shipped CLEARANCE simulation layer: the shared data types, event delegates, major system classes, ownership boundaries, and tuning constants. For implementation details, the code is authoritative.
+
 ## File setup
 
-Every simulation header follows the same include pattern. The plugin module is `ClearanceSim`; the API macro is `CLEARANCESIM_API`.
+Simulation headers follow a consistent include pattern, with each header including the relevant Unreal base type it derives from. The plugin module is `ClearanceSim`; the API macro is `CLEARANCESIM_API`.
 
 | Line | Meaning | Purpose |
 |---|---|---|
@@ -317,11 +322,11 @@ What one radar site currently believes about one aircraft. Distinct from the tru
 
 ### FEmissionSignature, FRadarEmissionSnapshot
 
-DIS Emission PDU inputs. `FEmissionSignature` carries emitter name, function, frequency band, ERP, PRF, pulse width, beam azimuth (fields map directly to IEEE 1278.1 §7.6.2 Fundamental Parameter Data). `FRadarEmissionSnapshot` bundles the signature with the currently painted entities into a Track/Jam list.
+DIS Emission PDU inputs. `FEmissionSignature` carries emitter name, function, frequency band, ERP, PRF, pulse width, and beam azimuth; fields map to the DIS Fundamental Parameter Data carried by the Emission PDU. `FRadarEmissionSnapshot` bundles the signature with the currently painted entities into a Track/Jam list.
 
 ### FWeaponsFireEvent, FWeaponsDetonationEvent
 
-DIS Fire and Detonation PDU inputs. Used for engagement and intercept event modelling (viper firing on a bandit, GCI missile detonation).
+DIS Fire and Detonation PDU inputs. Used for engagement and intercept event modelling, such as simulated fire and intercept-resolution events during GCI scenarios.
 
 ### FVoiceCommsEvent, FRadioTransmitter
 
@@ -361,7 +366,7 @@ Metadata for a saved checkpoint (name, session time, aircraft count, score at sa
 
 ## Delegates
 
-Defined at the bottom of `Public/Core/CLEARANCETypes.h`. Every delegate is `DYNAMIC_MULTICAST` so both C++ and Blueprint can subscribe.
+Defined at the bottom of `Public/Core/CLEARANCETypes.h`. Delegates are declared as dynamic multicast where Blueprint-facing subscription is needed; they act as the event map between systems, with the Simulation Controller binding every listener at session start.
 
 | Delegate | Broadcast by | Meaning |
 |---|---|---|
@@ -392,7 +397,7 @@ Defined at the bottom of `Public/Core/CLEARANCETypes.h`. Every delegate is `DYNA
 | `AClearanceAircraftSpawner` | AActor | Introduce aircraft into the sector | Spawn config, difficulty | New aircraft registrations | Controls entry only, not behaviour |
 | `AClearanceSimulationController` | AActor | Orchestrate the tick pipeline and own UObject lifecycles | References to every system | Full session orchestration, replicated arrays, RPCs | Coordinates dependency order |
 | `UClearanceScenarioRunner` | UObject | Execute JSON scenarios | Scenario file, session time | Spawn actions, voice injects, weather changes | Suspends the free-play spawner |
-| `AClearanceRadar`, `AClearanceRadarSite` | AActor | Paint tracks against airspace state | Snapshot, EW state | `FRadarTrack` map per site | Analytic or Simulink DSP path |
+| `AClearanceRadarSite` (+ owned `UClearanceRadar`) | AActor + UObject | Paint tracks against airspace state | Snapshot, EW state | `FRadarTrack` map per site | Analytic or Simulink DSP path |
 | `UClearanceSessionRecorder` | UObject | Capture snapshots and events per tick | Airspace snapshots, scoring events | `FRecordedSnapshot` and `FRecordedEvent` arrays | Ring-buffered, seekable |
 | `UClearanceInstructorPanel` | UUserWidget | Presentation for the instructor station | BlueprintCallable getters | Slate paint, RPC dispatch | Never mutates sim state |
 
@@ -415,7 +420,7 @@ Defined at the bottom of `Public/Core/CLEARANCETypes.h`. Every delegate is `DYNA
 | Public functions | `Initialise`, `UpdateMovement`, `QueueInstruction`, `HasActiveInstruction`, `ClearInstructions`, `ExecuteGoAround`, `SetAutopilotEngaged`, `IsAutopilotEngaged` |
 | Motion internals | `ApplyInstruction`, `StepHeading`, `StepAltitude`, `StepSpeed`, `StepPosition`, `StepWithAutopilot`, `RunApproachGuidance`, `IsEstablishedOnApproach`, `HasMissedApproach` |
 | Tuning values | `HeadingToleranceDeg`, `AltitudeToleranceFt`, `SpeedToleranceKnots`, `GoAroundClimbFt` |
-| Private data | `Pending` (instruction queue), `bGoingAround`, `bExpediting`, `ActiveTurnDirection`, `bDisGoAround` |
+| Private data | `Pending` (instruction queue), `bGoingAround`, `bExpediting`, `bApproachCaptured`, `bAutopilotEngaged`, `ActiveTurnDirection` |
 | Physics helpers | `TurnRateDegPerSec`, `DensityAdjustedClimbRate`, `ISADensityRatio` |
 | Autopilot bridge | `AutopilotWrapper` (Simulink instance), captured-state gate, elevator and aileron deadband |
 
@@ -481,7 +486,9 @@ Defined at the bottom of `Public/Core/CLEARANCETypes.h`. Every delegate is `DYNA
 
 Loads a JSON scenario file, evaluates timed actions each tick, applies them via the same Simulation Controller RPCs the instructor uses. Actions: `spawnAircraft`, `setHeading`, `setAltitude`, `setSpeed`, `declareHostile`, `declareFriendly`, `declareUnknown`, `activateJammer`, `dropChaff`, `injectEmergency`, `broadcastFacility`, `scrambleFighters`, `changeWind`, `forceRunway`, `forceConflict`, `forceIncident`.
 
-### AClearanceRadarSite, UClearanceRadar
+### AClearanceRadarSite and UClearanceRadar
+
+`AClearanceRadarSite` is the placed world actor: it carries the antenna position, orientation, range, and per-site enable flag. It owns a `UClearanceRadar` UObject that runs the detection logic and stores the resulting tracks. When the Simulink DSP path is engaged, that UObject also owns an `FRadarWrapper` around the generated model.
 
 | Section | Contents |
 |---|---|
@@ -510,7 +517,7 @@ Defined in `Public/Core/ClearanceConstants.h`. All numeric thresholds live here 
 |---|---|---|
 | `AdvisoryHorizontalNm` | 8.0 | Conflict alert Advisory threshold |
 | `WarningHorizontalNm` | 5.0 | Conflict alert Warning threshold |
-| `CriticalHorizontalNm` | 3.0 | Conflict alert Critical threshold; TCAS RA fires below this |
+| `CriticalHorizontalNm` | 3.0 | Critical threshold; a simulated TCAS-style RA fires at Critical when vertical separation is also below the RVSM minimum |
 | `VerticalMinimumFt` | 1000.0 | RVSM vertical separation minimum |
 | `WakeLightBehindHeavyNm` | 6.0 | Wake matrix, Light following Heavy |
 | `WakeMediumBehindHeavyNm` | 5.0 | Wake matrix |
@@ -543,10 +550,10 @@ Two Simulink models integrate into the sim through separate plugin modules along
 
 ### ClearanceAutopilotMBD
 
-Wraps the generated C from a cascade PID autopilot Simulink model. Interface:
+Wraps the generated C from a cascade PID autopilot Simulink model. The Unreal wrapper accepts operational targets (target heading, altitude, airspeed) alongside current aircraft state, computes the outer-loop bank, pitch, and speed commands in C++, and then feeds the generated Simulink inner-loop model. Interface:
 
 - `FClearanceAutopilotInputs` bundles target heading, altitude, and airspeed plus current heading, altitude, airspeed, bank, pitch approximation, and vertical speed.
-- `FClearanceAutopilotOutputs` returns aileron and elevator (radians) and throttle (0..1).
+- `FClearanceAutopilotOutputs` returns aileron and elevator (radians) and throttle (0..1) from the inner loop.
 - `FAutopilotWrapper::Step(inputs)` runs one `autopilot_step` call against the model's per-instance runtime state.
 
 `UClearanceAircraftBehaviour::StepWithAutopilot` builds the inputs, calls `Step`, and integrates aileron and elevator as rate commands.

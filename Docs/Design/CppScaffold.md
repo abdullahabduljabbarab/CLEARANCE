@@ -32,14 +32,14 @@ This document is not a tutorial and not a full API reference. It is a class-leve
 
 Simulation headers follow a consistent include pattern, with each header including the relevant Unreal base type it derives from. The plugin module is `ClearanceSim`; the API macro is `CLEARANCESIM_API`.
 
-| Line | Meaning | Purpose |
+| Include / header line | Meaning | Purpose |
 |---|---|---|
 | `#pragma once` | Include this header only once | Prevents duplicate-definition issues in compilation |
 | `#include "CoreMinimal.h"` | Load Unreal's core types and macros | Needed for `FName`, `FVector`, and the reflection macros |
 | `#include "GameFramework/Actor.h"` | Load `AActor` | Required for the `AClearance*` actor classes |
 | `#include "UObject/NoExportTypes.h"` | Load `UObject` | Required for `UClearance*` UObject classes (behaviour, validator, comms router, scoring, conflict detector) |
 | `#include "Core/CLEARANCETypes.h"` | Load the shared enums, structs, and delegates | Every other simulation header depends on this |
-| `#include "<HeaderName>.generated.h"` | Unreal-generated reflection code | Required for `UCLASS`, `USTRUCT`, `UENUM`, `UPROPERTY`, and `UFUNCTION` |
+| `#include "<HeaderName>.generated.h"` | Unreal-generated reflection code | Required when the header declares reflected Unreal types (`UCLASS`, `USTRUCT`, `UENUM`, `UPROPERTY`, `UFUNCTION`) |
 
 The shared types live under `Plugins/ClearanceSim/Source/ClearanceSim/Public/Core/`. Simulation systems live under `Public/Airspace/`, `Public/Aircraft/`, `Public/Comms/`, `Public/Safety/`, `Public/Scoring/`, `Public/Simulation/`, `Public/Scenario/`, and `Public/UI/`.
 
@@ -84,7 +84,7 @@ Severity of a conflict or safety event.
 | `None` | No safety issue | `FConflictEvent`, per-aircraft alert stamping |
 | `Advisory` | Early warning, monitor | Conflict Detector at 8 nm horizontal |
 | `Warning` | Higher-risk separation issue | Conflict Detector at 5 nm horizontal |
-| `Critical` | Immediate danger, TCAS RA fires | Conflict Detector at 3 nm horizontal |
+| `Critical` | Immediate danger; simulated TCAS-style RA may fire | Conflict Detector at 3 nm horizontal |
 
 ### EThreatClass
 
@@ -123,7 +123,7 @@ Category of logged incident driving the scoring policy. These are the code-facin
 | `GoAroundTriggered` | Landing aborted | Penalty |
 | `LateInstruction` | Operator reacted after threshold | Penalty |
 | `WakeEncounter` | Follower flew into wake corridor | Penalty |
-| `TCASResolutionAdvisory` | RA fired | Logged, no score change (TCAS resolved it) |
+| `TCASResolutionAdvisory` | RA fired | Logged, no score change |
 | `SuccessfulLanding` | Aircraft landed cleanly | Reward |
 | `SuccessfulHandoff` | Aircraft handed off cleanly | Reward |
 | `SuccessfulResolution` | Conflict cleared by operator instruction | Reward |

@@ -1,8 +1,8 @@
 # CLEARANCE Verification and Validation Plan
 
-The strategy document: how requirements are verified. Companion to [`REQUIREMENTS.md`](REQUIREMENTS.md) (what the requirements are) and the [`Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
+The strategy document: how requirements are verified. Companion to [`Requirements.md`](Requirements.md) (what the requirements are) and the [`Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
 
-If `REQUIREMENTS.md` answers "what is CLEARANCE supposed to do?", this doc answers "how do we prove it does?".
+If `Requirements.md` answers "what is CLEARANCE supposed to do?", this doc answers "how do we prove it does?".
 
 ## 1. Purpose and scope
 
@@ -10,7 +10,7 @@ Verification and validation on a portfolio project is a proportionality exercise
 
 ### In scope
 
-- Every requirement in `REQUIREMENTS.md` (all 69 REQ-IDs across DIS, FED, COMMS, SAFETY, SCORE, SIM, and RADAR domains).
+- Every requirement in `Requirements.md` (all 69 REQ-IDs across DIS, FED, COMMS, SAFETY, SCORE, SIM, and RADAR domains).
 - Every automation test under `Tests/` and its REQ tag.
 - Manual verification procedures for the subsystems that require an actor, a running federate, or a third-party tool (HLA join, RTI Admin Console, Wireshark, subscriber round-trip).
 
@@ -31,7 +31,7 @@ Three tiers, each with a different cost and confidence profile. The right test f
 - **Cost.** Very low. Sub-second execution, no environment prep.
 - **Where they live.** `Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/*Tests.cpp`. One file per subsystem or requirement group.
 - **When to use.** Any pure-logic requirement: algorithm correctness, data mapping, table lookups, wire-format serialisation. Every `REQ-DIS-*`, `REQ-FED-*`, `REQ-COMMS-*`, `REQ-SAFETY-*`, `REQ-SCORE-*`, `REQ-SIM-*`, and `REQ-RADAR-*` in CLEARANCE lives here.
-- **Coverage.** 52 tests today across the seven domain files. See `REQUIREMENTS.md` coverage table for the per-domain breakdown.
+- **Coverage.** 52 tests today across the seven domain files. See `Requirements.md` coverage table for the per-domain breakdown.
 
 ### Tier 2: integration (automated, but heavy)
 
@@ -72,11 +72,11 @@ The tests themselves ARE the traceability record. Every test file has a leading 
 //   REQ-SCORE-002  LogIncident shall append one FIncidentRecord...
 ```
 
-`REQUIREMENTS.md` collects these into a table. That table is the traceability matrix.
+`Requirements.md` collects these into a table. That table is the traceability matrix.
 
 ### Generating the matrix from source
 
-The matrix in `REQUIREMENTS.md` is currently hand-maintained. A CI job could regenerate it from the source with a one-liner grep and awk:
+The matrix in `Requirements.md` is currently hand-maintained. A CI job could regenerate it from the source with a one-liner grep and awk:
 
 ```bash
 # scripts/gen_traceability.sh
@@ -98,7 +98,7 @@ Output shape:
 ...
 ```
 
-Committing this script into `Scripts/gen_traceability.sh` and running it as a pre-commit hook would keep the `REQUIREMENTS.md` table automatically in sync with the source. For now the table is hand-updated when a REQ tag is added. Deliberately lightweight to suit portfolio-project cadence.
+Committing this script into `Scripts/gen_traceability.sh` and running it as a pre-commit hook would keep the `Requirements.md` table automatically in sync with the source. For now the table is hand-updated when a REQ tag is added. Deliberately lightweight to suit portfolio-project cadence.
 
 ### Auditing drift
 
@@ -294,9 +294,9 @@ Evidence captures live under `Docs/verification_evidence/<procedure>/<YYYY-MM-DD
 
 This V&V plan lives with the code. Changes to the strategy are committed alongside the code changes that motivate them, not as standalone process updates.
 
-- **New REQ-ID.** Update `REQUIREMENTS.md`. Add the test. That's enough.
+- **New REQ-ID.** Update `Requirements.md`. Add the test. That's enough.
 - **New manual procedure.** Add a new `MP-NN` section here. Update the "when to run what" matrix.
-- **Removing a REQ-ID.** Mark it `[DEPRECATED]` in `REQUIREMENTS.md`, don't reuse the number. Update the tests that referenced it.
+- **Removing a REQ-ID.** Mark it `[DEPRECATED]` in `Requirements.md`, don't reuse the number. Update the tests that referenced it.
 - **Changing a manual procedure.** Increment the procedure's version in the section header when the change is material enough that old evidence captures no longer prove the current implementation.
 
 ## 8. What this document doesn't do

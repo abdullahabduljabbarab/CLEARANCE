@@ -1,4 +1,4 @@
-# Gameplay Systems Design
+# Systems Design
 
 **Project:** CLEARANCE
 **Author:** Abdullah Ameed Abduljabbar
@@ -960,7 +960,7 @@ The DIS emitter subscribes to `OnAircraftStateUpdated`. Every state commit becom
 
 ### Success criteria
 
-Verified by 22 REQ-DIS automation tests and 6 REQ-FED tests. See `REQUIREMENTS.md` for the full list. Manual verification via Wireshark, RTI Admin Console, and the standalone DDS and HLA subscriber processes. See `V_AND_V_PLAN.md` MP-01 through MP-04.
+Verified by 22 REQ-DIS automation tests and 6 REQ-FED tests. See [`Docs/Verification/Requirements.md`](../Verification/Requirements.md) for the full list. Manual verification via Wireshark, RTI Admin Console, and the standalone DDS and HLA subscriber processes. See [`Docs/Verification/V_AND_V_PLAN.md`](../Verification/V_AND_V_PLAN.md) MP-01 through MP-04.
 
 ## Simulation controller tick pipeline
 

@@ -1,4 +1,4 @@
-# Runtime Technical Architecture
+# Technical Architecture
 
 **Project:** CLEARANCE
 **Author:** Abdullah Ameed Abduljabbar

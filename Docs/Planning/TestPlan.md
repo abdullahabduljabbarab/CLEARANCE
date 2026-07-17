@@ -38,8 +38,8 @@ Testing is proportional to risk. CLEARANCE is not a Category A avionics box; it 
 | Traceability | Every requirement traces to at least one test (automation or manual). Every test tags the requirement it covers. |
 | Proportionality | Depth of testing scales with risk. Wake matrix and DIS wire format get exhaustive automation; visual polish gets playtest. |
 | Automation-first | Anything expressible as pure logic gets a unit test. Automation runs every commit; manual runs before every release. |
-| Evidence capture | Manual procedures produce dated evidence artefacts stored under `Docs/verification_evidence/` on each run. |
-| Fail visibly | Silent failures are unacceptable. A failing test breaks the CI red; a missing manual capture blocks the release gate. |
+| Evidence capture | Manual procedures produce dated evidence artefacts stored under `Docs/Verification/Evidence/` on each run. |
+| Fail visibly | Silent failures are unacceptable. A failing automation run blocks the release gate; a missing manual capture blocks the manual release checklist. |
 
 ## Test levels
 
@@ -47,7 +47,7 @@ Three tiers, each with a defined cost, framework, and confidence profile.
 
 | Tier | Definition | Framework | Cost | When run |
 |---|---|---|---|---|
-| Unit (T1) | Tests a single class, free function, or static helper in isolation. No world, no actor spawn, no network. Runs sub-second. | UE `IMPLEMENT_SIMPLE_AUTOMATION_TEST` under `EAutomationTestFlags::EditorContext \| EngineFilter` | Very low | Every commit |
+| Unit (T1) | Tests pure helpers, static functions, `UObject`-based systems, or data-only logic without a live game map. Actor-owned behaviour that requires a spawned world is tested at T2. Runs sub-second. | UE `IMPLEMENT_SIMPLE_AUTOMATION_TEST` under `EAutomationTestFlags::EditorContext \| EngineFilter` | Very low | Every commit |
 | Integration (T2) | Tests interactions between multiple subsystems using a spawned `UWorld` and a minimal actor harness. | UE `IMPLEMENT_COMPLEX_AUTOMATION_TEST` with map load and latent commands | Medium | Before every release |
 | Manual (T3) | Requirements that need external tooling (Wireshark, RTI Admin Console) or a running runtime (`rtinode.exe`, a second CLEARANCE instance). Operator follows a written procedure and captures evidence. | Written procedure with pass criteria and evidence-capture format | High | Before every release; after touching the relevant subsystem |
 
@@ -67,17 +67,19 @@ Each of the five MVP systems gets its own test plan. Tests are named against the
 
 ### Airspace Management System
 
+Because `AClearanceAirspaceManager` is an `AActor`, its tests require a spawned world and default to T2.
+
 | Test | Tier | What it exercises |
 |---|---|---|
-| Aircraft registration returns success | T1 | `RegisterAircraft` accepts a valid `FAircraftSpawnData` and returns true |
-| Duplicate registration rejected | T1 | Second registration of the same callsign returns false |
-| State update through valid path accepted | T1 | `RequestStateUpdate` on a registered callsign commits and returns true |
-| State update on unregistered callsign rejected | T1 | Same call on an unknown callsign returns false; state map unchanged |
-| Get on unknown callsign returns invalid state | T1 | `GetAircraftState` returns `bIsValid = false` for unknown callsign |
-| Concurrent read stability | T1 | Multiple reads during an update return the last committed state; no partial reads exposed |
-| Wind change triggers runway recalculation | T1 | `UpdateWindConditions` above the crosswind threshold flips `ActiveRunwayHeading` |
-| Runway change broadcast fires exactly once per flip | T1 | `OnRunwayChanged` fires once on flip, does not fire on identical wind ticks |
-| Deregistration removes state and broadcasts | T1 | `DeregisterAircraft` clears the map entry and fires `OnAircraftDeregistered` |
+| Aircraft registration returns success | T2 | `RegisterAircraft` accepts a valid `FAircraftSpawnData` and returns true |
+| Duplicate registration rejected | T2 | Second registration of the same callsign returns false |
+| State update through valid path accepted | T2 | `RequestStateUpdate` on a registered callsign commits and returns true |
+| State update on unregistered callsign rejected | T2 | Same call on an unknown callsign returns false; state map unchanged |
+| Get on unknown callsign returns invalid state | T2 | `GetAircraftState` returns `bIsValid = false` for unknown callsign |
+| Same-frame read stability | T2 | Multiple reads during the same simulation frame return the last committed state; no partial state is exposed. |
+| Wind change triggers runway recalculation | T2 | `UpdateWindConditions` above the crosswind threshold flips `ActiveRunwayHeading` |
+| Runway change broadcast fires exactly once per flip | T2 | `OnRunwayChanged` fires once on flip, does not fire on identical wind ticks |
+| Deregistration removes state and broadcasts | T2 | `DeregisterAircraft` clears the map entry and fires `OnAircraftDeregistered` |
 | Multi-aircraft state persistence across ticks | T2 | Ten aircraft registered, state committed each tick, all still readable at tick N+50 |
 
 ### Aircraft Behaviour System
@@ -143,12 +145,12 @@ Full-session tests exercise the systems together. Each scenario is a scripted se
 
 | ID | Scenario | Tier | Setup | Player actions | Expected outcome |
 |---|---|---|---|---|---|
-| E1 | Baseline free-play | Manual playtest | Sector empty; free-play spawner on at default rate | Play for 3 minutes issuing routine instructions | At least one landing scored, no invalid state, no crash. Score positive. |
-| E2 | Single conflict resolution | Manual playtest | Two aircraft on converging tracks at same altitude | Vector one aircraft off course | Advisory fires as expected. Player resolves before Critical. `SuccessfulResolution` incident logged. |
-| E3 | Wake separation compliance | Manual playtest | Light aircraft behind Heavy on approach | Player leaves in trail | Wake advisory fires at correct distance. Player either accepts penalty or vectors following aircraft off. |
-| E4 | Invalid instruction rejection | Manual playtest | Any aircraft | Player issues altitude above ceiling, speed below stall, and a NaN via console injection | All three rejected with reasons spoken to the operator. No aircraft state modified. |
-| E5 | Session reset | Manual playtest | Any session with active traffic and score | Player invokes reset | Log, score, counters, and traffic all cleared. New session starts cleanly. |
-| E6 | Sustained load | Manual playtest | Free-play with high difficulty | Play for 10 minutes without pausing | Performance remains within budget. No state drift. No stale replicated arrays. |
+| E1 | Baseline free-play | T3 | Manual playtest. Sector empty; free-play spawner on at default rate | Play for 3 minutes issuing routine instructions | At least one landing scored, no invalid state, no crash. Score positive. |
+| E2 | Single conflict resolution | T3 | Manual playtest. Two aircraft on converging tracks at same altitude | Vector one aircraft off course | Advisory fires as expected. Player resolves before Critical. `SuccessfulResolution` incident logged. |
+| E3 | Wake separation compliance | T3 | Manual playtest. Light aircraft behind Heavy on approach | Player leaves in trail | Wake advisory fires at correct distance. Player either accepts penalty or vectors following aircraft off. |
+| E4 | Invalid instruction rejection | T3 | Manual playtest. Any aircraft | Player issues altitude above ceiling, speed below stall, and a NaN via console injection | All three rejected with reasons spoken to the operator. No aircraft state modified. |
+| E5 | Session reset | T3 | Manual playtest. Any session with active traffic and score | Player invokes reset | Log, score, counters, and traffic all cleared. New session starts cleanly. |
+| E6 | Sustained load | T3 | Manual playtest. Free-play with high difficulty | Play for 10 minutes without pausing | Performance remains within budget. No state drift. No stale replicated arrays. |
 
 ## Coverage matrix
 
@@ -183,7 +185,7 @@ Testing is considered complete for MVP when every row below is satisfied.
 
 | Gate | Condition |
 |---|---|
-| Automation coverage | Every requirement in the five MVP systems has at least one T1 test that passes |
+| Requirement coverage | Every requirement in the five MVP systems has at least one appropriate covering test: T1 where pure logic is sufficient, T2 where actor or world interaction is required, or T3 where manual runtime evidence is required. |
 | Integration coverage | Every multi-system interaction listed in the T2 rows above passes on a clean map |
 | End-to-end coverage | Every scenario E1 through E6 has been played through at least once with a passing outcome |
 | Manual capture | Where a manual procedure exists, at least one dated evidence artefact is captured for it |

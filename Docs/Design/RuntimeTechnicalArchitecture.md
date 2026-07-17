@@ -1,4 +1,4 @@
-# Technical Implementation Scaffold
+# Runtime Technical Architecture
 
 **Project:** CLEARANCE
 **Author:** Abdullah Ameed Abduljabbar
@@ -88,7 +88,7 @@ Stateless validation logic.
 - **Reads:** current aircraft state, proposed instruction, ICAO constants.
 - **Returns:** `EInstructionResult` (accepted or rejection reason).
 
-Reused across every instruction that enters the sim. Because it is stateless, it can be called safely from any thread the controller runs on.
+Reused across every instruction that enters the sim. Because it is stateless, it is safe to call repeatedly from the controller's simulation flow. If moved off-thread later, callers must pass immutable snapshots and avoid direct `UObject` or world access.
 
 ### UClearanceCommsRouter (UObject)
 
@@ -114,7 +114,7 @@ Free-play traffic generator.
 - **Reads:** current spawn interval from Scoring, suspension flag from the controller when a scenario is running.
 - **Writes:** new `FAircraftSpawnData` payloads into `AClearanceAirspaceManager::RegisterAircraft`.
 
-Implemented as an `AActor` because it needs world position for sector entry points and its own tick to drive the spawn cadence.
+Implemented as an `AActor` because it needs world and sector context for entry-point sampling. Spawn cadence is controlled through `TickSpawning`, called by the Simulation Controller during the authoritative tick pipeline, rather than through independent simulation authority.
 
 ### AClearanceSimulationController (AActor)
 
@@ -141,14 +141,14 @@ This section defines what ticks and in what order.
 
 ### Actor tick participants
 
-Only three classes tick as actors:
+Direct actor tick participants are:
 
 - `AClearanceSimulationController`
 - `AClearanceAirspaceManager`
 - `AClearanceAircraftSpawner`
-- Radar sites (`AClearanceRadarSite`) tick to schedule their scan interval; painting itself is called by the controller.
+- `AClearanceRadarSite` for scan-interval scheduling only; radar painting itself is still called by the controller during the tick pipeline.
 
-These are the only direct actor Tick participants in the simulation layer.
+These are the only actor `Tick` participants in the simulation layer.
 
 ### Controller-called systems
 
@@ -237,7 +237,7 @@ Radar sites read the fresh airspace snapshot, produce `FRadarTrack` maps, and ne
 
 ### Federation flow
 
-The federation emitters subscribe to `OnAircraftStateUpdated` (and similar events) and publish outward as DIS PDUs, DDS samples, RTI samples, or HLA updates. Inbound packets flow through the same `RegisterAircraft` path as a local spawn, marked `bIsExternal = true`.
+The federation emitters subscribe to `OnAircraftStateUpdated` (and similar events) and publish outward as DIS PDUs, DDS samples, RTI samples, or HLA updates. Incoming packets either register new external aircraft through the normal registration path or update existing external aircraft through the controlled state-update path, marked `bIsExternal = true` so ownership is preserved.
 
 ### No-bypass rule
 
@@ -305,7 +305,7 @@ If the entire UMG layer were deleted, the simulation would still run correctly w
 
 ## Delegate map
 
-Systems communicate through delegates. Not through direct calls. The Simulation Controller binds every listener at session start.
+Cross-system events communicate through delegates. State reads, controlled mutations, and controller-driven sequencing use explicit function calls. The Simulation Controller binds every delegate listener at session start.
 
 ### Airspace Manager delegates
 
@@ -516,11 +516,11 @@ The federation emitters subscribe to `OnAircraftStateUpdated` and related delega
 - RTI Connext emitter publishes on RTI DataWriters.
 - HLA broker updates HLA object attributes through OpenRTI.
 
-Incoming packets from a peer federate flow through the same `RegisterAircraft` path as a local spawn, marked `bIsExternal = true` so ownership is preserved.
+Incoming packets either register new external aircraft through the normal registration path or update existing external aircraft through the controlled state-update path, marked `bIsExternal = true` so ownership is preserved.
 
 ## Definition of readiness
 
-The technical architecture is considered ready to build against when the following are stable:
+The runtime architecture is considered stable when the following are settled:
 
 - Class ownership boundaries.
 - Actor Tick participation list.

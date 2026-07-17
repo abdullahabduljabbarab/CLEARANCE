@@ -30,7 +30,7 @@ Verification and validation on a portfolio project is a proportionality exercise
 |---|---|
 | Every requirement in `Requirements.md` | 69 REQ-IDs across DIS, FED, COMMS, SAFETY, SCORE, SIM, and RADAR domains |
 | Every automation test under `Tests/` | Each test tags the REQ-ID it covers in a leading comment block |
-| Manual verification procedures | Subsystems that require an actor, a running federate, or a third-party tool (HLA join, RTI Admin Console, Wireshark, subscriber round-trip) |
+| Manual verification procedures | Subsystems that require an actor-backed runtime path, a running federate, or a third-party tool (runtime ATC safety path, HLA join, RTI Admin Console, Wireshark, subscriber round-trip) |
 
 ### Out of scope
 
@@ -141,7 +141,7 @@ Every domain in the register is currently 100% covered by automation.
 
 Each procedure covers a Tier 3 requirement that Tier 1 or 2 can't reach. Follow the steps, capture the evidence, note the result.
 
-Evidence captures live under `Docs/Verification/Evidence/<procedure>/<YYYY-MM-DD>/` as screenshots, log excerpts, or `.pcapng` captures. That folder is optional and gitignored. The important thing is that the procedure has been run.
+Evidence captures live under `Docs/Verification/Evidence/<procedure>/<YYYY-MM-DD>/` as screenshots, log excerpts, or `.pcapng` captures. That folder may be gitignored; the capture itself is still required for a release or portfolio evidence pass.
 
 ### MP-01: Wireshark verifies DIS wire compliance
 

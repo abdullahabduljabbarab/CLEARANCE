@@ -3,7 +3,7 @@
 **Project:** CLEARANCE
 **Author:** Abdullah Ameed Abduljabbar
 **Role:** Systems Designer
-**Status:** Pre-production planning. Superseded in part by shipped verification evidence under `Docs/` and by the Test Plan.
+**Status:** Pre-production planning. Superseded in part by shipped design and verification evidence under `Docs/Design/` and `Docs/Verification/`.
 
 ## Table of contents
 

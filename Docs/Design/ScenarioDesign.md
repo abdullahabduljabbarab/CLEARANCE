@@ -9,6 +9,8 @@
 - [Purpose](#purpose)
 - [How to read this document](#how-to-read-this-document)
 - [Scenario progression](#scenario-progression)
+- [Scenario overview](#scenario-overview)
+- [Scenario design constraints](#scenario-design-constraints)
 - [Scenario template](#scenario-template)
 - [Baltic Intercept](#baltic-intercept)
 - [Hijack Response](#hijack-response)
@@ -19,6 +21,10 @@
 - [Mixed Ops](#mixed-ops)
 - [Instructor variants (shared)](#instructor-variants-shared)
 - [Assessment matrix](#assessment-matrix)
+- [Scenario authoring shape](#scenario-authoring-shape)
+- [Difficulty controls](#difficulty-controls)
+- [Instructor grading rubric](#instructor-grading-rubric)
+- [Scenario validation](#scenario-validation)
 - [References](#references)
 
 ## Purpose
@@ -48,6 +54,22 @@ The scenarios are ordered here in the order they were authored during production
 7. **Mixed Ops.** Restricted-airspace planning, spatial awareness under sustained load.
 
 Roughly, the progression climbs through single-thread emergencies, into multi-aircraft prioritisation, into decision-making with imperfect information, ending on the sustained cognitive-load exercises.
+
+## Scenario overview
+
+| Scenario | Primary skill | Pressure type | Main failure risk |
+|---|---|---|---|
+| Baltic Intercept | Identification and intercept | Time-to-contact | Misidentification or late intercept |
+| Hijack Response | 7500 handling | Protected-zone pressure | Treating hijack as hostile |
+| Mass Divert | Tempo and prioritisation | Fuel cascade | Too many fuel emergencies |
+| Mayday Engine Fire | Emergency corridor clearing | Countdown timer | Crash or separation loss |
+| NORDO Inbound | Predictive separation | Uncontrollable aircraft | Trying to control NORDO traffic |
+| Cold War Probe | Threat classification | Ambiguous intent | Scrambling too early |
+| Mixed Ops | Spatial awareness | Sustained workload | Restricted airspace busts |
+
+## Scenario design constraints
+
+The scenarios are designed for cognitive-fidelity demonstration, not certified ATC training. They prioritise decision pressure, workload management, sequencing, identification, and debriefable outcomes over exact operational procedure. Where real-world doctrine is simplified, the simplification is made explicit in the scenario's ROE or expected operator actions.
 
 ## Scenario template
 
@@ -94,10 +116,11 @@ Voice-only. AWACS calls at T+25 s and again on the 25 nm alert. No EW, no emerge
 
 1. Hear AWACS call; look east on scope for the unknown.
 2. Interrogate UNKNOWN01 (`clearance.iff UNKNOWN01`). IFF returns "no response" because the transponder is off.
-3. Classify UNKNOWN01 as Hostile after the intercept posture is confirmed (`clearance.classify UNKNOWN01 hostile`).
-4. Scramble alert fighters (`clearance.scramble UNKNOWN01`).
-5. Vector the alert flight onto an intercept course before UNKNOWN01 closes inside 5 nm of SK238.
-6. Complete the intercept; UNKNOWN01 breaks off westbound.
+3. Keep UNKNOWN01 as Unknown until hostile intent is confirmed by the scenario conditions (pursuit posture, closure rate, refusal to respond to interrogation).
+4. Scramble alert fighters to establish visual identification and an intercept posture (`clearance.scramble UNKNOWN01`).
+5. Classify UNKNOWN01 as Hostile only once the intercept posture and scenario-confirmed intent are established (`clearance.classify UNKNOWN01 hostile`).
+6. Vector the alert flight onto an intercept course before UNKNOWN01 closes inside 5 nm of SK238.
+7. Complete the intercept; UNKNOWN01 breaks off westbound.
 
 ### Failure conditions
 
@@ -149,7 +172,7 @@ Voice-only 7500 squawk change. No AWACS calls. Operator has to notice the squawk
 ### Expected operator actions
 
 1. Notice the 7500 squawk change on the hijacked aircraft's data block.
-2. Do NOT attempt to raise the hijacked aircraft on the radio; hijack doctrine keeps operator silent.
+2. Do not treat the aircraft as normally controllable once the 7500 condition is active. In this scenario the aircraft behaves as radio-silent and under duress, so repeated control instructions waste time and do not resolve the event.
 3. Scramble a SHADOW escort (`clearance.scramble <callsign>` with military ROE).
 4. Vector the other four civilians clear of the hijacked aircraft's projected path.
 5. Watch for the hijacked aircraft's deviation and predict which protected zone it is heading for.
@@ -296,7 +319,7 @@ Manage separation around aircraft the operator cannot control. Two aircraft go c
 
 ### Location and ROE
 
-Main Sector. ICAO 7600 doctrine. NORDO traffic has right of way during lost-comms recovery. The operator can talk to and vector the four non-NORDO aircraft; the two NORDOs ignore every command. Three separation events ends the scenario as a controller failure.
+Main Sector. ICAO 7600 doctrine. NORDO traffic is treated as priority traffic because it cannot be controlled directly; the operator must manoeuvre controllable aircraft around its predicted path. The two NORDOs ignore every command. Three separation events ends the scenario as a controller failure.
 
 ### Initial conditions
 
@@ -384,6 +407,8 @@ GCI voice calls announcing each new unknown contact. AWACS calls confirming the 
 - Operator scrambles on a probe. `MisidentifiedCivilian` if the operator declared it hostile; otherwise a wasted asset penalty.
 - Operator declares the civilian transit hostile. `MisidentifiedCivilian` catastrophic.
 
+Where the enum name `MisidentifiedCivilian` is civilian-specific, the AAR display label may present this more generally as "Misidentification".
+
 ### Scoring hooks
 
 | Event | `EIncidentType` |
@@ -408,7 +433,7 @@ Controller spatial awareness under sustained load. Eight civilians transiting a 
 
 ### Location and ROE
 
-Continental Sector with placed restricted zones. Civilians have active IFF. Any civilian entering a restricted area is an airspace bust (`RestrictedAirspaceBust`, -150 points). The vector verb is `vector <callsign> <heading>`.
+Continental Sector with placed restricted zones. Civilians have active IFF. Any civilian entering a restricted area is logged as `RestrictedAirspaceBust`. The vector verb is `vector <callsign> <heading>`.
 
 ### Initial conditions
 
@@ -435,7 +460,7 @@ None. This scenario is pure operator planning under sustained load, no scripted 
 
 ### Failure conditions
 
-- Multiple restricted zone busts. Each is a `RestrictedAirspaceBust` (-150). Cumulative penalty degrades the score.
+- Multiple restricted zone busts. Each is a `RestrictedAirspaceBust`; cumulative penalty degrades the score.
 - Separation loss during heavy vectoring. `SeparationLoss`.
 - Missed handoffs (aircraft exiting sector without handoff). `UnresolvedExit`.
 
@@ -463,10 +488,11 @@ Every scenario can be modified at inject time through the standard instructor RP
 - **Time scale (`Server_InjectSetTimeScale`).** 0.25x to 4x. Used to review a critical moment slowly or skip through a dead stretch. Left at 1x for assessment.
 - **Emergency timer overrides (`Server_InjectEmergency` with `timerMinutes`).** Dial a 30-second panic or a 15-minute gentle exercise per emergency.
 - **Wind and runway (`Server_InjectSetWind`).** Force a runway swap at any time, overriding the automatic wind-driven selection.
-- **Aircraft injects (`Server_InjectSpawnAircraft`, `Server_InjectClearTraffic`).** Add unscripted contacts or clear the sector to reset live.
-- **Classification injects (`Server_InjectClassifyAircraft`).** Force a truth-side reclassification of a contact without touching the operator's view. Useful for reproducing edge cases mid-run.
-- **Federation start-stop (`Server_InjectStartDIS`, `Server_InjectStartDDS`, `Server_InjectHLAJoin`).** Toggle federated peers during a scenario to demonstrate cross-simulator behaviour.
-- **Checkpoint save and load (`Server_InjectSaveCheckpoint`, `Server_InjectLoadCheckpoint`).** Snapshot before a critical moment; let trainees attempt in turn; load to reset.
+- **Aircraft injects (`Server_InjectSpawn`, `Server_InjectClearTraffic`).** Add unscripted contacts or clear the sector to reset live.
+- **Classification injects (`Server_InjectClassify`).** Force a truth-side reclassification of a contact without touching the operator's view. Useful for reproducing edge cases mid-run.
+- **Electronic warfare injects (`Server_InjectJamming`, `Server_InjectChaff`).** Force jamming or chaff drops mid-run for degraded-picture drills.
+- **Federation start-stop RPCs for DIS, DDS, RTI Connext, and HLA.** Emit and receive start-stop pairs exist for each transport; toggle federated peers during a scenario to demonstrate cross-simulator behaviour.
+- **Checkpoint save and load (`Server_InjectSaveCheckpoint`, `Server_InjectLoadCheckpoint`, `Server_InjectDeleteCheckpoint`).** Snapshot before a critical moment; let trainees attempt in turn; load to reset.
 
 Every inject is captured in the transcript and included in the AAR, so the debrief reflects both what the trainee did and what the instructor perturbed.
 
@@ -485,6 +511,54 @@ Every scenario has a set of `EIncidentType` values that are the "must-not-happen
 | Mixed Ops | Multiple `RestrictedAirspaceBust`, sustained `SeparationLoss` |
 
 Positive scoring is not scenario-specific. Every scenario rewards `SuccessfulHandoff`, `SuccessfulLanding`, `SuccessfulResolution`, `SuccessfulIntercept`, and `SuccessfulEmergencyHandling` where they apply. Difficulty progression comes from the raw number of positives an operator can accumulate against the increasing incident volume.
+
+## Scenario authoring shape
+
+Scenarios are authored as JSON using timed events and condition-based triggers. A simplified timed-event shape:
+
+```json
+{
+  "atSec": 45.0,
+  "action": {
+    "type": "injectEmergency",
+    "params": {
+      "callsign": "BAW394",
+      "kind": "GeneralMayday",
+      "timerMinutes": 7.0
+    }
+  }
+}
+```
+
+Condition-based triggers are used for events such as protected-zone breaches, closure distance thresholds, aircraft count reaching zero, or fuel emergencies becoming active. Every trigger carries an `once` flag so it fires exactly once during a scenario run, plus a `when` clause and a `then` action.
+
+## Difficulty controls
+
+Scenario difficulty is adjusted through traffic count, timing windows, emergency countdowns, wind changes, injected aircraft, and time scale. The intent is not to make scenarios unfair, but to expose the operator's decision ceiling: the point where scan pattern, prioritisation, or procedural discipline begins to break down.
+
+## Instructor grading rubric
+
+Instructors review each scenario across five dimensions:
+
+| Dimension | What the instructor looks for |
+|---|---|
+| Recognition | Did the operator notice the key event early? |
+| Prioritisation | Did they handle the highest-risk aircraft first? |
+| Control economy | Did they solve the problem with minimal unnecessary vectors? |
+| Safety discipline | Did separation, wake, and restricted-zone awareness hold under pressure? |
+| Debrief quality | Can the operator explain what happened and what they would change? |
+
+## Scenario validation
+
+Each scenario is considered ready when:
+
+- It can run from start to completion without manual developer intervention.
+- All timed events fire at the intended simulation time.
+- All trigger-based events fire once and only once.
+- Voice injects appear in the transcript and AAR.
+- Positive and negative scoring hooks map to the intended `EIncidentType`.
+- The scenario can be reset through checkpoint save and load without stale state leaking into the next attempt.
+- At least one clean pass and one intentional failure path have been tested.
 
 ## References
 

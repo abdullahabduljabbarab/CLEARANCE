@@ -29,7 +29,7 @@ Numbers ascend inside a domain and are never re-used. Deprecated REQ-IDs stay in
 
 ## REQ-DIS: IEEE 1278.1 wire-format compliance
 
-Verified by the tests under `Tests/ClearanceDIS*Tests.cpp`. Every requirement traces to a specific section of the IEEE 1278.1-2012 standard.
+Verified by the tests under `Tests/ClearanceDIS*Tests.cpp`. Most DIS requirements trace to a specific section of IEEE 1278.1-2012; CLEARANCE-specific conventions are marked separately.
 
 | ID | Requirement | Verified by | Source |
 |---|---|---|---|

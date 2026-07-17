@@ -93,7 +93,7 @@ Identify, classify, and vector-intercept an unknown contact closing on a civilia
 
 ### Location and ROE
 
-Baltic Sea, Latvia FIR. Type 1 unknown intercept. Visual identification (VID) required before declaring hostile. Mis-identification is the single largest failure state.
+Baltic Sea, Latvia FIR. Type 1 unknown intercept. Intent confirmation required before hostile classification (a pursuit posture, refusal to respond to interrogation, and continued closure count as intent). Mis-identification is the single largest failure state.
 
 ### Initial conditions
 
@@ -117,7 +117,7 @@ Voice-only. AWACS calls at T+25 s and again on the 25 nm alert. No EW, no emerge
 1. Hear AWACS call; look east on scope for the unknown.
 2. Interrogate UNKNOWN01 (`clearance.iff UNKNOWN01`). IFF returns "no response" because the transponder is off.
 3. Keep UNKNOWN01 as Unknown until hostile intent is confirmed by the scenario conditions (pursuit posture, closure rate, refusal to respond to interrogation).
-4. Scramble alert fighters to establish visual identification and an intercept posture (`clearance.scramble UNKNOWN01`).
+4. Scramble alert fighters to establish an intercept posture and force a response (`clearance.scramble UNKNOWN01`).
 5. Classify UNKNOWN01 as Hostile only once the intercept posture and scenario-confirmed intent are established (`clearance.classify UNKNOWN01 hostile`).
 6. Vector the alert flight onto an intercept course before UNKNOWN01 closes inside 5 nm of SK238.
 7. Complete the intercept; UNKNOWN01 breaks off westbound.
@@ -563,7 +563,5 @@ Each scenario is considered ready when:
 ## References
 
 ICAO (2016) *Procedures for Air Navigation Services: Air Traffic Management*, Doc 4444, 16th ed. International Civil Aviation Organization.
-
-NATO (2019) *Standardization Agreement 4193: Interoperability of Airborne Identification Friend or Foe (IFF) Systems*. NATO Standardization Office.
 
 FAA (2022) *Aeronautical Information Manual*, Chapter 6 (Emergency Procedures). Federal Aviation Administration.

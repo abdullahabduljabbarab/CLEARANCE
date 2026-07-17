@@ -27,7 +27,7 @@ CLEARANCE is a portfolio demonstrator and training-simulation prototype. The pla
 
 ## Document status
 
-This is a **planning** document. Language is aspirational ("shall", "will") because at the time of writing the tests, evidence artefacts, and CI pipeline referenced do not yet exist. Where reality has since diverged, the shipped Verification set (`Docs/Verification/Requirements.md`, `Docs/Verification/V_AND_V_PLAN.md`) supersedes.
+This is a **planning** document. Language is aspirational ("shall", "will") because at the time of writing the tests, evidence artefacts, and release gates referenced do not yet exist. Where reality has since diverged, the shipped Verification set (`Docs/Verification/Requirements.md`, `Docs/Verification/V_AND_V_PLAN.md`) supersedes.
 
 ## Test strategy
 
@@ -158,7 +158,7 @@ Requirements are grouped by system. This matrix is filled in as tests are writte
 
 | System | Requirement count (planned) | Covered by | Verified by |
 |---|---|---|---|
-| Airspace Management | ~12 | Airspace T1 + T2 above | Automation, end-to-end E1 |
+| Airspace Management | ~12 | Airspace T2 above | Automation, end-to-end E1 |
 | Aircraft Behaviour | ~10 | Behaviour T1 + T2 above | Automation, end-to-end E1, E2, E6 |
 | Communication | ~10 | Comms T1 above | Automation, end-to-end E4 |
 | Conflict Detection | ~10 | Conflict T1 + T2 above | Automation, end-to-end E2, E3 |
@@ -207,7 +207,7 @@ Testing scope explicitly deferred beyond MVP. These are documented so the intent
 | Localisation and accessibility testing | Not the portfolio narrative |
 | Security testing | Not applicable for a single-player demonstrator at MVP scope |
 
-Each of these was later scoped into the shipped test set once the corresponding system was built. Their inclusion in the shipped verification evidence does not retroactively expand the MVP testing boundary drawn here.
+Many of these were later scoped into the shipped verification set once the corresponding systems were built. Their inclusion in later verification evidence does not retroactively expand the MVP testing boundary drawn here.
 
 ## References
 

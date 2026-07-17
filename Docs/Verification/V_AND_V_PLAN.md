@@ -1,68 +1,69 @@
 # CLEARANCE Verification and Validation Plan
 
-The strategy document: how requirements are verified. Companion to [`Requirements.md`](Requirements.md) (what the requirements are) and the [`Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
+**Project:** CLEARANCE
+**Author:** Abdullah Ameed Abduljabbar
+**Role:** Systems Designer
+**Status:** Shipped verification strategy document.
+
+## Table of contents
+
+- [Purpose and scope](#purpose-and-scope)
+- [Test tiers](#test-tiers)
+- [Traceability](#traceability)
+- [Coverage targets](#coverage-targets)
+- [Manual verification procedures](#manual-verification-procedures)
+- [When to run what](#when-to-run-what)
+- [Change control](#change-control)
+- [What this document doesn't cover](#what-this-document-doesnt-cover)
+
+The strategy document: how requirements are verified. Companion to [`Requirements.md`](Requirements.md) (what the requirements are) and the [`Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../../Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
 
 If `Requirements.md` answers "what is CLEARANCE supposed to do?", this doc answers "how do we prove it does?".
 
-## 1. Purpose and scope
+## Purpose and scope
 
 Verification and validation on a portfolio project is a proportionality exercise. CLEARANCE isn't going into a Category A avionics box, so it doesn't need DO-178C level rigour. It is a defence M&S portfolio piece, so it does need to demonstrate the discipline a Category A programme would exhibit: traceability, structured test tiers, and an honest accounting of what's automated versus manual.
 
 ### In scope
 
-- Every requirement in `Requirements.md` (all 69 REQ-IDs across DIS, FED, COMMS, SAFETY, SCORE, SIM, and RADAR domains).
-- Every automation test under `Tests/` and its REQ tag.
-- Manual verification procedures for the subsystems that require an actor, a running federate, or a third-party tool (HLA join, RTI Admin Console, Wireshark, subscriber round-trip).
+| Item | Notes |
+|---|---|
+| Every requirement in `Requirements.md` | 69 REQ-IDs across DIS, FED, COMMS, SAFETY, SCORE, SIM, and RADAR domains |
+| Every automation test under `Tests/` | Each test tags the REQ-ID it covers in a leading comment block |
+| Manual verification procedures | Subsystems that require an actor, a running federate, or a third-party tool (HLA join, RTI Admin Console, Wireshark, subscriber round-trip) |
 
 ### Out of scope
 
-- Formal safety case and DO-178C artefacts (design assurance level, MC/DC coverage, tool qualification). CLEARANCE is a demonstrator, not a certifiable product.
-- Performance and load testing (frame rate under N aircraft, network saturation). Measured informally during scenario runs; not V&V.
-- Localisation, accessibility, security testing. Not the portfolio narrative.
+| Item | Reason |
+|---|---|
+| Formal safety case and DO-178C artefacts (DAL, MC/DC coverage, tool qualification) | CLEARANCE is a demonstrator, not a certifiable product |
+| Performance and load testing (frame rate under N aircraft, network saturation) | Measured informally during scenario runs; not V&V |
+| Localisation, accessibility, security testing | Not the portfolio narrative |
 
-## 2. Test tiers
+## Test tiers
 
 Three tiers, each with a different cost and confidence profile. The right test for a given requirement lives in the tier that gives the highest confidence at the lowest cost.
 
-### Tier 1: unit (automated)
+| Aspect | T1 Unit (automated) | T2 Integration (automated) | T3 Manual (evidence-captured) |
+|---|---|---|---|
+| **Definition** | Tests pure helpers, static functions, `UObject`-based systems, or data-only logic without a live game map. Runs sub-second. | Tests interactions between multiple subsystems using a spawned `UWorld` and a minimal actor harness (typically an Airspace Manager and a Simulation Controller). | Requirements that can only be exercised against external tooling (Wireshark, RTI Admin Console) or a running runtime (`rtinode.exe`, a second CLEARANCE instance). Verified by an operator following a written procedure and capturing evidence. |
+| **Framework** | UE `IMPLEMENT_SIMPLE_AUTOMATION_TEST` under `EAutomationTestFlags::EditorContext \| EngineFilter` | UE `IMPLEMENT_COMPLEX_AUTOMATION_TEST` with `FAutomationEditorCommonUtils::CreateNewMap()` setup, or latent-command idioms for tests that need multiple ticks | Written procedure with pass criteria and evidence-capture format |
+| **Cost** | Very low. Sub-second execution, no environment prep. | Medium. Seconds per test, requires map load. Fragile against UE-side changes to actor lifecycle. | High. Requires bench setup, roughly 5 to 10 minutes per procedure. |
+| **Where they live** | `Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/*Tests.cpp`. One file per subsystem or requirement group. | `Tests/Integration/*Tests.cpp` in a separate folder so unit tests stay fast and integration tests can act as a gate step. | Section on manual verification procedures below. |
+| **When to use** | Any pure-logic requirement: algorithm correctness, data mapping, table lookups, wire-format serialisation. Every REQ-DIS-*, REQ-FED-*, REQ-COMMS-*, REQ-SAFETY-*, REQ-SCORE-*, REQ-SIM-*, and REQ-RADAR-* in CLEARANCE lives here. | Actor-owned lifecycle, cross-subsystem event flow, multi-tick interactions | Requirements that need external tooling or a running runtime |
+| **Status** | 52 tests today across the seven domain files | Not implemented in this pass. Subsystems that would need this tier (full conflict detector lifecycle, TCAS RA runtime path, wake detection, chaff, phraseology `Interpret`, scenario runner triggering, checkpoint save and load) are documented in the T3 procedures below. Candidates for future integration-test conversion if a specific incident warrants the fixture cost. | 5 procedures covering the runtime-dependent gaps in Tiers 1 and 2 |
 
-- **Definition.** Tests a single class, free function, or static helper in isolation, using `NewObject<>` in the transient package. No world, no actor spawn, no network, no filesystem. Runs sub-second.
-- **Framework.** UE `IMPLEMENT_SIMPLE_AUTOMATION_TEST` under `EAutomationTestFlags::EditorContext | EngineFilter`.
-- **Cost.** Very low. Sub-second execution, no environment prep.
-- **Where they live.** `Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/*Tests.cpp`. One file per subsystem or requirement group.
-- **When to use.** Any pure-logic requirement: algorithm correctness, data mapping, table lookups, wire-format serialisation. Every `REQ-DIS-*`, `REQ-FED-*`, `REQ-COMMS-*`, `REQ-SAFETY-*`, `REQ-SCORE-*`, `REQ-SIM-*`, and `REQ-RADAR-*` in CLEARANCE lives here.
-- **Coverage.** 52 tests today across the seven domain files. See `Requirements.md` coverage table for the per-domain breakdown.
+### Selection rule for a new requirement
 
-### Tier 2: integration (automated, but heavy)
+| Requirement type | Tier |
+|---|---|
+| Pure logic (algorithm, constant, table lookup, wire serialisation) | T1 |
+| Requires an actor or a world | T2, unless external tooling is also required |
+| Requires external tooling, a running federate, or a peer runtime | T3 |
 
-- **Definition.** Tests interactions between multiple subsystems using a spawned `UWorld` and a minimal actor harness (typically an `AClearanceAirspaceManager` and an `AClearanceSimulationController`).
-- **Framework.** UE `IMPLEMENT_COMPLEX_AUTOMATION_TEST` with a `FAutomationEditorCommonUtils::CreateNewMap()` style setup, or the `FUnrealAutomationTestFramework::EnqueueLatentCommand` idiom for tests that need multiple ticks.
-- **Cost.** Medium. Seconds per test, requires a map load. Fragile against UE-side changes to actor lifecycle.
-- **Where they would live.** `Tests/Integration/*Tests.cpp` in a separate folder so unit tests stay fast and integration tests can act as a gate step.
-- **Status in CLEARANCE.** **Not implemented in this pass.** The subsystems that would need this tier (conflict detector, TCAS RA, wake turbulence detection, chaff cloud lifecycle, phraseology `Interpret`, scenario runner event triggering, checkpoint save/load) are documented in the Tier 3 manual verification list below. They are candidates for future integration-test conversion if a specific incident (a peer federate seeing wrong data, a scenario firing at the wrong time) warrants the fixture cost.
+Default to the lowest tier that can cover the requirement. Only escalate when the lower tier genuinely cannot reach.
 
-### Tier 3: manual (procedural, evidence-captured)
-
-- **Definition.** Requirements that can only be exercised against external tooling (Wireshark, RTI Admin Console) or a running runtime (`rtinode.exe`, a second CLEARANCE instance). Verified by an operator following a written procedure and capturing evidence (screenshot, Output Log excerpt, wire capture).
-- **Cost.** High. Requires bench setup, roughly 5-10 minutes per procedure. Can't run every commit; run pre-release and after touching the relevant subsystem.
-- **Where they live.** Section 5 of this document. Each has a procedure, a pass criterion, and a suggested evidence-capture format.
-- **Coverage.** 5 procedures covering the runtime-dependent gaps in Tiers 1 and 2.
-
-### Which tier for a new requirement?
-
-```
-Pure-logic function?
-  YES -> Tier 1 (unit test, ships with the code)
-  NO  -> Requires an actor / world?
-           YES -> Requires external tooling too?
-                    YES -> Tier 3 (manual procedure)
-                    NO  -> Tier 2 (integration test) OR Tier 3 if too costly
-           NO  -> External tooling -> Tier 3
-```
-
-Default to the lowest-cost tier that works. Only escalate when the lower tier genuinely can't cover it.
-
-## 3. Traceability
+## Traceability
 
 The tests themselves ARE the traceability record. Every test file has a leading comment block with the REQ-IDs it covers:
 
@@ -76,7 +77,7 @@ The tests themselves ARE the traceability record. Every test file has a leading 
 
 ### Generating the matrix from source
 
-The matrix in `Requirements.md` is currently hand-maintained. A CI job could regenerate it from the source with a one-liner grep and awk:
+The matrix in `Requirements.md` is currently hand-maintained. A helper script could regenerate it from the source with a one-liner grep and awk:
 
 ```bash
 # scripts/gen_traceability.sh
@@ -104,56 +105,43 @@ Committing this script into `Scripts/gen_traceability.sh` and running it as a pr
 
 Two failure modes the traceability discipline guards against:
 
-1. **REQ in the doc with no test.** Grep the REQ-ID across `Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`. Zero hits means broken traceability. This should be a CI check.
-2. **Test with a REQ tag that isn't in the doc.** The reverse of the above. Also a CI check.
+| Failure mode | How it is caught |
+|---|---|
+| REQ in the doc with no test | Grep the REQ-ID across the tests directory. Zero hits means broken traceability. Currently a manual release-gate check; one-liner shell script away from becoming an automated gate. |
+| Test with a REQ tag that isn't in the doc | Reverse of the above. Same detection method. Same automation opportunity. |
 
-Neither is currently automated. Both are one-liner shell scripts away from being CI gates and are on the roadmap for the CI/CD phase of the V&V build-out.
+Neither is currently automated. Both are on the roadmap for when a release-gate pipeline is added.
 
-## 4. Coverage targets
+## Coverage targets
 
 CLEARANCE is a portfolio project, not a certifiable product, so these targets are self-imposed discipline goals rather than regulatory obligations.
 
-### Target 1: REQ-ID automation coverage
+| # | Target | Rule | Current status |
+|---|---|---|---|
+| 1 | REQ-ID automation coverage | Every requirement in a verifiable domain shall have at least one automated test. | 69 of 69 requirements have at least one covering test. **Target met.** |
+| 2 | Manual verification coverage | Every subsystem that can't reasonably be automated shall have a documented manual procedure with a pass criterion and evidence capture. | 5 of 5 procedures documented. **Target met.** |
+| 3 | Test cadence | Tier 1 runs on every commit. Tier 3 procedures re-run before every release, video, or portfolio update. Touching a subsystem re-runs its own Tier 1 tests plus any Tier 3 procedure that involves it. | Followed as a manual discipline. Would move to an automated pipeline when one is added. |
+| 4 | Regression policy | If a test previously green is now red, the fix goes in before any new feature work. No new REQ-IDs added while an existing one is failing. Applies to Tier 3 procedures too. | Enforced by convention; no automated gate yet. |
 
-**Every requirement in a "verifiable" domain shall have at least one automated test.**
+### Verifiable domains
 
-Verifiable domains:
+Every domain in the register is currently 100% covered by automation.
 
-- REQ-DIS: 100% automated (wire format is pure C++)
-- REQ-FED: 100% automated (mapping is pure C++)
-- REQ-COMMS: 100% automated (validator is stateless)
-- REQ-SAFETY: 100% automated (constants + envelope)
-- REQ-SCORE: 100% automated (`UClearanceScoring` standalone)
-- REQ-SIM: 100% automated (`UClearanceSessionRecorder` standalone)
-- REQ-RADAR: 100% automated (range equation is pure C++)
+| Domain | Coverage | Why the whole domain is automatable |
+|---|---|---|
+| REQ-DIS | 100% | Wire format is pure C++ |
+| REQ-FED | 100% | Mapping is pure C++ |
+| REQ-COMMS | 100% | Validator is stateless |
+| REQ-SAFETY | 100% | Constants and envelope checks |
+| REQ-SCORE | 100% | `UClearanceScoring` standalone |
+| REQ-SIM | 100% | `UClearanceSessionRecorder` standalone |
+| REQ-RADAR | 100% | Range equation is pure C++ |
 
-**Current status.** 69 of 69 requirements in verifiable domains have at least one covering test. **Target met.**
-
-### Target 2: manual verification coverage
-
-**Every subsystem that can't reasonably be automated shall have a documented manual procedure with a pass criterion and evidence capture.**
-
-Subsystems in this bucket: HLA federation join, RTI Connext live publisher, Fast DDS live publisher and subscriber, Wireshark wire inspection, two-federate federation. All documented in Section 5.
-
-**Current status.** 5 of 5 procedures documented. **Target met.**
-
-### Target 3: test cadence
-
-- **Every commit:** Tier 1 tests run automatically (currently local; the CI/CD roadmap phase will move this to GitHub Actions).
-- **Before every release, video, or portfolio update:** all Tier 1 tests and all Tier 3 manual procedures re-run and evidence re-captured.
-- **When a subsystem is touched:** its own Tier 1 tests plus any Tier 3 procedure that involves it re-run before commit.
-
-### Target 4: regression policy
-
-If a test that was previously green is now red, the fix goes in before any new feature work. No new REQ-IDs get added while an existing one is failing.
-
-Applies equally to Tier 3 manual procedures. If a procedure that used to produce clean evidence now produces a warning in Wireshark or a red status in RTI Admin Console, the subsystem is considered regressed until the cause is understood.
-
-## 5. Manual verification procedures
+## Manual verification procedures
 
 Each procedure covers a Tier 3 requirement that Tier 1 or 2 can't reach. Follow the steps, capture the evidence, note the result.
 
-Evidence captures live under `Docs/verification_evidence/<procedure>/<YYYY-MM-DD>/` as screenshots, log excerpts, or `.pcapng` captures. That folder is optional and gitignored. The important thing is that the procedure has been run.
+Evidence captures live under `Docs/Verification/Evidence/<procedure>/<YYYY-MM-DD>/` as screenshots, log excerpts, or `.pcapng` captures. That folder is optional and gitignored. The important thing is that the procedure has been run.
 
 ### MP-01: Wireshark verifies DIS wire compliance
 
@@ -171,7 +159,7 @@ Evidence captures live under `Docs/verification_evidence/<procedure>/<YYYY-MM-DD
 2. In CLEARANCE console: `clearance.dis.start`.
 3. Wait 10 seconds. Confirm packet count is greater than 0 in Wireshark.
 4. For each PDU type (1, 2, 3, 23, 25, 26): click a packet of that type, expand the DIS section in the dissector pane, and confirm every field is decoded (no "Malformed Packet" or grey-out).
-5. Save the capture as `Docs/verification_evidence/mp-01/<YYYY-MM-DD>/dis-loopback.pcapng`.
+5. Save the capture as `Docs/Verification/Evidence/mp-01/<YYYY-MM-DD>/dis-loopback.pcapng`.
 
 **Pass criteria.**
 
@@ -198,7 +186,7 @@ Evidence captures live under `Docs/verification_evidence/<procedure>/<YYYY-MM-DD
 3. Refresh Admin Console. Confirm the CLEARANCE participant appears on domain 1 within 5 seconds.
 4. Expand the participant. Confirm all 6 topics (`clearance/aircraft/state`, `clearance/weapons/fire`, `clearance/weapons/detonation`, `clearance/radar/emission`, `clearance/radio/transmitter`, `clearance/radio/signal`) appear.
 5. Confirm the vendor ID column shows `Real-Time Innovations, Inc. (RTI) - Connext DDS (0x0101)`.
-6. Screenshot the Admin Console showing all 6 topics and the vendor stamp. Save under `Docs/verification_evidence/mp-02/<YYYY-MM-DD>/`.
+6. Screenshot the Admin Console showing all 6 topics and the vendor stamp. Save under `Docs/Verification/Evidence/mp-02/<YYYY-MM-DD>/`.
 
 **Pass criteria.**
 
@@ -277,7 +265,7 @@ Evidence captures live under `Docs/verification_evidence/<procedure>/<YYYY-MM-DD
 
 **Covers.** Regression coverage across all seven REQ domains.
 
-## 6. When to run what
+## When to run what
 
 | Trigger | MP-01 | MP-02 | MP-03 | MP-04 | MP-05 | Tier 1 |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -290,22 +278,26 @@ Evidence captures live under `Docs/verification_evidence/<procedure>/<YYYY-MM-DD
 | Before recording or re-recording the demo video | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Before applying to a job with this on the CV |  |  |  |  | ✅ | ✅ |
 
-## 7. Change control
+## Change control
 
 This V&V plan lives with the code. Changes to the strategy are committed alongside the code changes that motivate them, not as standalone process updates.
 
-- **New REQ-ID.** Update `Requirements.md`. Add the test. That's enough.
-- **New manual procedure.** Add a new `MP-NN` section here. Update the "when to run what" matrix.
-- **Removing a REQ-ID.** Mark it `[DEPRECATED]` in `Requirements.md`, don't reuse the number. Update the tests that referenced it.
-- **Changing a manual procedure.** Increment the procedure's version in the section header when the change is material enough that old evidence captures no longer prove the current implementation.
+| Scenario | Action |
+|---|---|
+| New REQ-ID | Update `Requirements.md`. Add the test. That's enough. |
+| New manual procedure | Add a new `MP-NN` section. Update the "when to run what" matrix. |
+| Removing a REQ-ID | Mark `[DEPRECATED]` in `Requirements.md`, don't reuse the number. Update the tests that referenced it. |
+| Changing a manual procedure | Increment the procedure's version in the section header when the change is material enough that old evidence captures no longer prove the current implementation. |
 
-## 8. What this document doesn't do
+## What this document doesn't cover
 
 Deliberately doesn't cover:
 
-- **Formal safety analysis (FMEA, FTA, HAZOP).** Not portfolio-scale.
-- **Software integrity level assignment.** Not applicable.
-- **Independent verification by a separate team.** Solo project. The closest thing is third-party tooling (Wireshark, RTI Admin Console) doing the independent dissection.
-- **Configuration management beyond Git.** Git commit hashes are the configuration identifier for the code and docs; no separate CM tool.
+| Scope | Reason |
+|---|---|
+| Formal safety analysis (FMEA, FTA, HAZOP) | Not portfolio-scale |
+| Software integrity level assignment | Not applicable for a demonstrator |
+| Independent verification by a separate team | Solo project. Closest thing is third-party tooling (Wireshark, RTI Admin Console) doing the independent dissection. |
+| Configuration management beyond Git | Git commit hashes are the configuration identifier for the code and docs; no separate CM tool. |
 
-If CLEARANCE were shipping into an actual defence programme, every bullet above would need to be addressed. The point of documenting what's not done is to demonstrate that the omissions are conscious scope decisions, not oversights.
+If CLEARANCE were shipping into an actual defence programme, every row above would need to be addressed. The point of documenting what's not done is to demonstrate that the omissions are conscious scope decisions, not oversights.

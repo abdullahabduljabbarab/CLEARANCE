@@ -25,7 +25,7 @@
 
 Architectural companion to the Systems Design and C++ Scaffold documents. Where the Systems Design describes what each system does and the C++ Scaffold documents the class-level API, this document describes how the sim is put together at runtime: who owns what, what ticks in what order, how data flows between systems, where the C++ and Blueprint boundaries sit, how objects are created and torn down, and how the network layer plugs in.
 
-CLEARANCE is a portfolio demonstrator and training-simulation prototype. This scaffold documents the runtime architecture that carries the sim, not the certification artefacts an operational programme would require.
+CLEARANCE is a portfolio demonstrator and training-simulation prototype. This document describes the runtime architecture that carries the sim, not the certification artefacts an operational programme would require.
 
 ## How to read this document
 

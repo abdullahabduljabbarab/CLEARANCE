@@ -117,7 +117,7 @@ The following are explicitly deferred beyond the MVP boundary. They may be added
 | Model-based subsystems | Simulink radar signal processor | Requires the sensor layer above to be meaningful |
 | Model-based subsystems | Embedded Coder integration | As above |
 
-These are documented in the Post-MVP outlook and were later added to the shipped scope as the project matured beyond MVP.
+These are documented in the Post-MVP outlook. Many were later added to the shipped scope as the project matured beyond MVP.
 
 ## Success criteria
 

@@ -22,7 +22,7 @@ If `Requirements.md` answers "what is CLEARANCE supposed to do?", this doc answe
 
 ## Purpose and scope
 
-Verification and validation on a portfolio project is a proportionality exercise. CLEARANCE isn't going into a Category A avionics box, so it doesn't need DO-178C level rigour. It is a defence M&S portfolio piece, so it does need to demonstrate the discipline a Category A programme would exhibit: traceability, structured test tiers, and an honest accounting of what's automated versus manual.
+Verification and validation on a portfolio project is a proportionality exercise. CLEARANCE isn't going into a Category A avionics box, so it doesn't need DO-178C level rigour. It is a defence M&S portfolio piece, so it should demonstrate relevant engineering discipline: traceability, structured test tiers, and an honest accounting of what is automated versus manual.
 
 ### In scope
 
@@ -51,7 +51,7 @@ Three tiers, each with a different cost and confidence profile. The right test f
 | **Cost** | Very low. Sub-second execution, no environment prep. | Medium. Seconds per test, requires map load. Fragile against UE-side changes to actor lifecycle. | High. Requires bench setup, roughly 5 to 10 minutes per procedure. |
 | **Where they live** | `Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/*Tests.cpp`. One file per subsystem or requirement group. | `Tests/Integration/*Tests.cpp` in a separate folder so unit tests stay fast and integration tests can act as a gate step. | Section on manual verification procedures below. |
 | **When to use** | Any pure-logic requirement: algorithm correctness, data mapping, table lookups, wire-format serialisation. Every REQ-DIS-*, REQ-FED-*, REQ-COMMS-*, REQ-SAFETY-*, REQ-SCORE-*, REQ-SIM-*, and REQ-RADAR-* in CLEARANCE lives here. | Actor-owned lifecycle, cross-subsystem event flow, multi-tick interactions | Requirements that need external tooling or a running runtime |
-| **Status** | 52 tests today across the seven domain files | Not implemented in this pass. Subsystems that would need this tier (full conflict detector lifecycle, TCAS RA runtime path, wake detection, chaff, phraseology `Interpret`, scenario runner triggering, checkpoint save and load) are documented in the T3 procedures below. Candidates for future integration-test conversion if a specific incident warrants the fixture cost. | 5 procedures covering the runtime-dependent gaps in Tiers 1 and 2 |
+| **Status** | 52 tests today across the seven domain files | Not implemented in this pass. Subsystems that would need this tier (full conflict detector lifecycle, TCAS RA runtime path, wake detection, chaff, phraseology `Interpret`, scenario runner triggering, checkpoint save and load) are documented in the T3 procedures below. Candidates for future integration-test conversion if a specific incident warrants the fixture cost. | 6 procedures covering the runtime-dependent gaps in Tiers 1 and 2 |
 
 ### Selection rule for a new requirement
 
@@ -119,7 +119,7 @@ CLEARANCE is a portfolio project, not a certifiable product, so these targets ar
 | # | Target | Rule | Current status |
 |---|---|---|---|
 | 1 | REQ-ID automation coverage | Every requirement in a verifiable domain shall have at least one automated test. | 69 of 69 requirements have at least one covering test. **Target met.** |
-| 2 | Manual verification coverage | Every subsystem that can't reasonably be automated shall have a documented manual procedure with a pass criterion and evidence capture. | 5 of 5 procedures documented. **Target met.** |
+| 2 | Manual verification coverage | Every subsystem that can't reasonably be automated shall have a documented manual procedure with a pass criterion and evidence capture. | 6 of 6 procedures documented. **Target met.** |
 | 3 | Test cadence | Tier 1 runs on every commit. Tier 3 procedures re-run before every release, video, or portfolio update. Touching a subsystem re-runs its own Tier 1 tests plus any Tier 3 procedure that involves it. | Followed as a manual discipline. Would move to an automated pipeline when one is added. |
 | 4 | Regression policy | If a test previously green is now red, the fix goes in before any new feature work. No new REQ-IDs added while an existing one is failing. Applies to Tier 3 procedures too. | Enforced by convention; no automated gate yet. |
 
@@ -226,7 +226,7 @@ Evidence captures live under `Docs/Verification/Evidence/<procedure>/<YYYY-MM-DD
 - Subscriber counter increments continuously.
 - Values in the subscriber output match aircraft state in the CLEARANCE scope (callsign, squawk, flight phase).
 
-**Covers.** REQ-FED interop claims for both DDS runtimes and HLA via independent second-process federate ingestion.
+**Covers.** REQ-FED interop claims for Fast DDS and HLA via independent second-process federate ingestion. RTI Connext discovery is covered by MP-02.
 
 ### MP-04: two-federate live federation
 
@@ -265,18 +265,45 @@ Evidence captures live under `Docs/Verification/Evidence/<procedure>/<YYYY-MM-DD
 
 **Covers.** Regression coverage across all seven REQ domains.
 
+### MP-06: runtime ATC safety path verification
+
+**Purpose.** Confirms that actor-backed runtime paths not covered by Tier 1 automation behave correctly in a running scenario: conflict detector lifecycle, TCAS-style RA trigger path, wake detection, chaff and degraded-picture behaviour, and phraseology interpretation through the Simulation Controller.
+
+**Procedure.**
+
+1. Load a controlled scenario with at least two aircraft at the same altitude.
+2. Vector the aircraft into Advisory, Warning, and Critical separation thresholds.
+3. Confirm the instructor and operator scope displays the expected alert escalation.
+4. Confirm the TCAS-style RA path fires once when the pair reaches Critical and does not repeatedly fire every tick.
+5. Place a Light aircraft behind a Heavy on approach and confirm wake alerting appears at the expected runtime distance.
+6. Trigger chaff or a degraded-picture inject from the instructor panel and confirm the scope and AAR record the event.
+7. Use `clearance.say` with a supported phraseology command and confirm it is interpreted, validated, dispatched, and logged.
+8. Save a checkpoint, alter the scenario, reload it, and confirm aircraft state, score, transcript, and active alerts restore without stale state.
+
+**Pass criteria.**
+
+- Alert escalation appears in the expected order.
+- TCAS-style RA fires once per active critical pair.
+- Wake alerting appears for the intended aircraft pair.
+- Phraseology command reaches the same validation path as typed input.
+- Checkpoint restore does not leak stale aircraft, score, alert, or transcript state.
+- AAR and transcript record the relevant operator and instructor events.
+
+**Covers.** Runtime execution paths for `UClearanceConflictDetector`, `UClearanceScenarioRunner`, phraseology `Interpret`, chaff and degraded-picture flows, and checkpoint restore that are not reachable from Tier 1 pure-logic tests.
+
 ## When to run what
 
-| Trigger | MP-01 | MP-02 | MP-03 | MP-04 | MP-05 | Tier 1 |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| Every source-file commit |  |  |  |  |  | ✅ |
-| Touching a DIS PDU serialiser | ✅ |  |  |  |  | ✅ |
-| Touching a DDS or RTI runtime adapter |  | ✅ | ✅ |  |  | ✅ |
-| Touching the HLA federate implementation |  |  | ✅ |  |  | ✅ |
-| Touching federation ownership or ATC state code |  |  |  | ✅ |  | ✅ |
-| UE version upgrade | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Before recording or re-recording the demo video | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Before applying to a job with this on the CV |  |  |  |  | ✅ | ✅ |
+| Trigger | MP-01 | MP-02 | MP-03 | MP-04 | MP-05 | MP-06 | Tier 1 |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Every source-file commit |  |  |  |  |  |  | ✅ |
+| Touching a DIS PDU serialiser | ✅ |  |  |  |  |  | ✅ |
+| Touching a DDS or RTI runtime adapter |  | ✅ | ✅ |  |  |  | ✅ |
+| Touching the HLA federate implementation |  |  | ✅ |  |  |  | ✅ |
+| Touching federation ownership or ATC state code |  |  |  | ✅ |  |  | ✅ |
+| Touching the conflict detector, scenario runner, phraseology parser, or checkpoint code |  |  |  |  |  | ✅ | ✅ |
+| UE version upgrade | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Before recording or re-recording the demo video | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Before portfolio release or CV submission |  |  |  |  | ✅ | ✅ | ✅ |
 
 ## Change control
 

@@ -44,143 +44,139 @@ The MVP does **not** commit to networked play, federation, multi-scenario librar
 
 ## In scope for MVP
 
-The MVP shall include the following:
+The MVP shall include the following.
 
 ### Systems
 
-- **Airspace Management System.** Single source of truth for every aircraft's callsign, position, altitude, speed, heading, phase, and wake category. Owns sector environmental state (wind, active runway). Broadcasts registration, deregistration, and state-update events.
-- **Aircraft Behaviour System.** Per-aircraft object executing gradual motion under simplified performance-constrained flight dynamics. Only class permitted to mutate aircraft state.
-- **Communication System.** Player instruction entry, per-instruction validation against current aircraft state, dispatch to the correct behaviour object. Feedback to the player on accept or reject.
-- **Conflict Detection System.** Read-only monitor of every aircraft pair each tick. Fires alerts at Advisory, Warning, and Critical severity levels. Wake turbulence separation included at MVP level.
-- **Scoring System.** Session-scope incident log, running score, difficulty scaling on the aircraft spawn rate.
+| System | Purpose |
+|---|---|
+| Airspace Management System | Single source of truth for every aircraft's callsign, position, altitude, speed, heading, phase, and wake category. Owns sector environmental state (wind, active runway). Broadcasts registration, deregistration, and state-update events. |
+| Aircraft Behaviour System | Per-aircraft object executing gradual motion under simplified performance-constrained flight dynamics. Only class permitted to mutate aircraft state. |
+| Communication System | Player instruction entry, per-instruction validation against current aircraft state, dispatch to the correct behaviour object. Feedback to the player on accept or reject. |
+| Conflict Detection System | Read-only monitor of every aircraft pair each tick. Fires alerts at Advisory, Warning, and Critical severity levels. Wake turbulence separation included at MVP level. |
+| Scoring System | Session-scope incident log, running score, difficulty scaling on the aircraft spawn rate. |
 
 ### Gameplay features
 
-- Free-play traffic generation (aircraft entering the sector at a controllable spawn rate).
-- Player-issued heading, altitude, and speed instructions.
-- Approach clearance and simulated landing sequence.
-- Go-around triggered by conflict detection on approach.
-- Graded conflict alerts on the radar HUD.
-- Session score with a summary at session end.
+| Feature | Description |
+|---|---|
+| Free-play traffic | Aircraft entering the sector at a controllable spawn rate. |
+| Player instructions | Heading, altitude, and speed change commands issued by the player. |
+| Approach and landing | Approach clearance and a simulated landing sequence to touchdown. |
+| Go-around | Automatic go-around when conflict detection fires on an approach pair. |
+| Graded conflict alerts | Advisory, Warning, and Critical alerts surfaced on the radar HUD. |
+| Session score | Running score during the session and a summary at session end. |
 
 ### Presentation
 
-- Radar-style scope with aircraft symbols, data blocks, and range indicators.
-- Score display and current alert-level readout on the HUD.
-- Text or basic voice input for player instructions.
-- Scenario-free session start, session pause, session reset.
+| Element | Description |
+|---|---|
+| Radar scope | Aircraft symbols, data blocks, range indicators, sector boundary. |
+| HUD | Score display and current alert-level readout. |
+| Instruction entry | Text input at minimum; simple voice input as an optional MVP path. |
+| Session control | Session start, pause, and reset without stale state leakage. |
 
 ### Content
 
-- One playable sector (either abstract or geospatial; not required to be a real-world airport for MVP).
-- Configurable wind and active runway.
-- Traffic mix drawn from the four wake categories.
+| Item | Description |
+|---|---|
+| Sector | One playable sector, either abstract or geospatial. Real-world airport reconstruction is not required for MVP. |
+| Weather | Configurable wind direction and speed. Active runway derived from wind. |
+| Traffic mix | Aircraft drawn from the four ICAO wake categories (Light, Medium, Heavy, Super). |
 
 ## Out of scope for MVP
 
 The following are explicitly deferred beyond the MVP boundary. They may be added later, but the MVP release does not commit to them.
 
-### Networking
-
-- Networked instructor station.
-- Server-authoritative replication across multiple peers.
-- Federated play with peer simulators.
-- DIS, DDS, RTI, HLA, or any other interoperability stack.
-
-### Sensor modelling
-
-- Placed radar sites with individual detection models.
-- Radar range equation modelling.
-- Coverage overlays or sensor confidence rendering.
-- Model-based DSP integration (Simulink or otherwise).
-
-### Electronic warfare
-
-- Jamming.
-- Chaff clouds and ghost tracks.
-- EW-aware scoring.
-
-### Scenario authoring
-
-- JSON-driven scenario library.
-- Scripted voice injects.
-- Trigger-based events.
-- Multi-attempt training scenarios with distinct rules of engagement.
-
-### Advanced training features
-
-- Session recorder and replay.
-- Checkpoint save and load.
-- After-Action Report generation.
-- Instructor inject controls.
-- Multi-user grading and debrief workflow.
-
-### Environmental modelling
-
-- Geospatial reconstruction of real airfields (Cesium tiles).
-- VR operator station.
-- Photogrammetric terrain.
-
-### Model-based subsystems
-
-- Simulink cascade autopilot.
-- Simulink radar signal processor.
-- Embedded Coder integration.
+| Category | Deferred item | Reason for deferral |
+|---|---|---|
+| Networking | Networked instructor station | MVP is single-player; multi-peer replication is a large surface area unrelated to core loop |
+| Networking | Server-authoritative replication across multiple peers | As above |
+| Networking | Federated play with peer simulators | As above |
+| Networking | DIS, DDS, RTI, HLA, or any other interoperability stack | As above |
+| Sensor modelling | Placed radar sites with individual detection models | MVP uses a single omniscient scope; sensor separation is post-MVP |
+| Sensor modelling | Radar range equation modelling | As above |
+| Sensor modelling | Coverage overlays or sensor confidence rendering | As above |
+| Sensor modelling | Model-based DSP integration (Simulink or otherwise) | As above |
+| Electronic warfare | Jamming | Requires the sensor layer above to be meaningful |
+| Electronic warfare | Chaff clouds and ghost tracks | As above |
+| Electronic warfare | EW-aware scoring | As above |
+| Scenario authoring | JSON-driven scenario library | MVP is free-play only; scripted scenarios are a training-tool layer above MVP |
+| Scenario authoring | Scripted voice injects | As above |
+| Scenario authoring | Trigger-based events | As above |
+| Scenario authoring | Multi-attempt training scenarios with distinct ROE | As above |
+| Advanced training | Session recorder and replay | Instructor workflow, not part of MVP core loop |
+| Advanced training | Checkpoint save and load | As above |
+| Advanced training | After-Action Report generation | As above |
+| Advanced training | Instructor inject controls | As above |
+| Advanced training | Multi-user grading and debrief workflow | As above |
+| Environmental modelling | Geospatial reconstruction of real airfields (Cesium tiles) | MVP allows an abstract sector; real-world reconstruction is presentation polish |
+| Environmental modelling | VR operator station | MVP targets a flat-screen radar HUD |
+| Environmental modelling | Photogrammetric terrain | As above |
+| Model-based subsystems | Simulink cascade autopilot | Independent research thread; core behaviour system already covers movement |
+| Model-based subsystems | Simulink radar signal processor | Requires the sensor layer above to be meaningful |
+| Model-based subsystems | Embedded Coder integration | As above |
 
 These are documented in the Post-MVP outlook and were later added to the shipped scope as the project matured beyond MVP.
 
 ## Success criteria
 
-The MVP release shall satisfy the following at a minimum:
+The MVP release shall satisfy the following at a minimum. Each criterion maps to an entry in the accompanying Test Plan document.
 
-1. A player can start a session, spawn traffic, issue instructions, resolve at least one conflict, land at least one aircraft, and receive a session score.
-2. Aircraft respond to instructions on realistic timescales with no teleportation or instantaneous state changes.
-3. Conflict alerts fire at the correct thresholds (nominally 8, 5, 3 nautical miles for civil separation) and escalate in order without skipping a level.
-4. Wake turbulence separation is enforced for at least the ICAO Doc 4444 wake matrix categories the MVP includes.
-5. Aircraft state is consistent across the radar display, the conflict detector, and the instruction validator at all times.
-6. No aircraft enters a physically impossible state (below terrain, below stall, above service ceiling, or outside sector bounds) under any player action.
-7. Session score updates in real time in response to scored events (landings, handoffs, separation losses, go-arounds).
-8. The session can be reset without stale state from the previous run leaking into the next.
-
-Each criterion above corresponds to a test-plan entry in the accompanying Test Plan document.
+| # | Criterion | What "pass" looks like |
+|---|---|---|
+| 1 | End-to-end playable loop | Player can start a session, spawn traffic, issue instructions, resolve at least one conflict, land at least one aircraft, and receive a session score. |
+| 2 | Gradual motion | Aircraft respond to instructions on realistic timescales with no teleportation or instantaneous state changes. |
+| 3 | Alert ladder | Conflict alerts fire at the correct thresholds (nominally 8, 5, 3 nautical miles for civil separation) and escalate in order without skipping a level. |
+| 4 | Wake separation | Wake turbulence separation is enforced against the ICAO Doc 4444 wake matrix categories the MVP includes. |
+| 5 | Single source of truth | Aircraft state is consistent across the radar display, the conflict detector, and the instruction validator at all times. |
+| 6 | Envelope safety | No aircraft enters a physically impossible state (below terrain, below stall, above service ceiling, or outside sector bounds) under any player action. |
+| 7 | Live scoring | Session score updates in real time in response to scored events (landings, handoffs, separation losses, go-arounds). |
+| 8 | Clean reset | Session can be reset without stale state from the previous run leaking into the next. |
 
 ## Build priority order
 
 The systems shall be built in the following order. Each system depends on the previous one being at least in a testable state before the next is started.
 
-1. **Core types.** Enums, structs, delegates, and constants shared across every system. Written first because every subsequent system depends on this header set.
-2. **Airspace Management System.** Owns aircraft state. Nothing meaningful can be built without a place to store aircraft state.
-3. **Aircraft Behaviour System.** Executes movement. Depends on Airspace Management being able to accept state updates.
-4. **Instruction Validator.** Stateless validation logic. Depends on Airspace Management being queryable for current aircraft state.
-5. **Communication System (Comms Router).** Dispatch layer for player instructions. Depends on the validator and the behaviour system being callable.
-6. **Conflict Detection System.** Read-only monitor. Depends on Airspace Management providing snapshots and on aircraft actually moving to produce meaningful conflict situations.
-7. **Scoring System.** Session-scope logging and difficulty scaling. Depends on conflict, phase, and instruction events being fired.
-8. **Aircraft Spawner.** Free-play traffic generator. Depends on Airspace Management accepting registrations and on Scoring providing the current difficulty.
-9. **Simulation Controller.** Orchestrates the tick pipeline, binds delegates, owns UObject lifecycles for the UObject systems above. Formally comes last because it wires everything together.
-10. **Minimal radar HUD and instruction UI.** Presentation layer. Only meaningful once the systems below it produce state worth rendering.
+| # | System | Depends on | Why this order |
+|---|---|---|---|
+| 1 | Core types (enums, structs, delegates, constants) | Nothing | Every subsequent system includes this header set |
+| 2 | Airspace Management System | Core types | Owns aircraft state; nothing meaningful exists without it |
+| 3 | Aircraft Behaviour System | Airspace Management | Executes movement; needs a place to commit state |
+| 4 | Instruction Validator | Airspace Management | Stateless; needs current state to validate against |
+| 5 | Communication System (Comms Router) | Validator, Behaviour | Dispatch layer that composes validator + behaviour |
+| 6 | Conflict Detection System | Airspace Management, Behaviour | Reads committed snapshots; needs aircraft to actually move to produce conflicts |
+| 7 | Scoring System | Conflict, Comms, Airspace | Consumes events fired by the systems above |
+| 8 | Aircraft Spawner | Airspace, Scoring | Registers new aircraft; asks Scoring for current difficulty |
+| 9 | Simulation Controller | All systems above | Wires the tick pipeline, binds delegates, owns UObject lifecycles |
+| 10 | Minimal radar HUD and instruction UI | All systems above | Presentation layer; only meaningful once systems produce state |
 
 The order is deliberate. Building presentation before simulation state exists is a common failure mode; this project explicitly rejects it.
 
 ## Definition of done
 
-The MVP is considered complete when:
+The MVP is considered complete when every row below is satisfied.
 
-- All ten build-priority items above compile, run, and produce their expected behaviour under free-play traffic.
-- Every success criterion in Section 5 passes at least one exercise pass.
-- Each test-plan entry corresponding to a success criterion passes.
-- The player can complete a full session (start, sustained free-play, session-end score summary) without any hard failure that requires a restart.
-- Documentation covers the shipped scope: at minimum a Systems Design document, a C++ scaffold, and a test plan reflect the delivered code.
+| Gate | Condition |
+|---|---|
+| Build | All ten build-priority items compile and run under free-play traffic. |
+| Behaviour | Every success criterion above passes at least one exercise pass. |
+| Test coverage | Each test-plan entry corresponding to a success criterion passes. |
+| Full loop | Player can complete a full session (start, sustained free-play, session-end score summary) without a hard failure that requires a restart. |
+| Documentation | Systems Design, C++ scaffold, and Test Plan documents reflect the delivered code at minimum. |
 
 Definition of done deliberately excludes performance benchmarks, packaging, and distribution. Those are considered part of a release preparation phase that follows MVP acceptance.
 
 ## Risks to MVP delivery
 
-Risks identified during pre-production are tracked in `Docs/Planning/RiskRegister.md`. The subset that would most directly threaten MVP delivery:
+Risks identified during pre-production are tracked in `Docs/Planning/RiskRegister.md`. The subset that would most directly threaten MVP delivery is summarised below.
 
-- **R1: Ownership boundary drift.** If any system starts holding its own copy of aircraft state during implementation, the single-source-of-truth principle breaks and conflict detection becomes unreliable.
-- **R2: Instruction validation gaps.** If the validator misses a class of physically impossible instructions, the behaviour system produces invalid states and the sim loses cognitive fidelity.
-- **R3: Delegate binding brittleness.** If the controller misses a binding at session start, systems appear to work in isolation but events silently drop.
-- **R4: Scope creep before core is stable.** Adding radar or federation or scenarios before the five core systems are proven risks producing a large surface area that never reaches a testable state.
+| ID | Risk | Impact if it materialises |
+|---|---|---|
+| R1 | Ownership boundary drift | Any system holding its own copy of aircraft state breaks the single-source-of-truth principle and makes conflict detection unreliable. |
+| R2 | Instruction validation gaps | Missed classes of physically impossible instructions produce invalid states in the behaviour system and the sim loses cognitive fidelity. |
+| R3 | Delegate binding brittleness | A missed binding at session start makes systems appear to work in isolation while events silently drop between them. |
+| R4 | Scope creep before core is stable | Adding radar, federation, or scenarios before the five core systems are proven produces a large surface area that never reaches a testable state. |
 
 Each risk carries a mitigation strategy in the Risk Register document.
 
@@ -188,15 +184,17 @@ Each risk carries a mitigation strategy in the Risk Register document.
 
 The following are considered natural next steps once MVP is stable. This section is deliberately short: it is the scope this document explicitly does not commit to, but it should be understood as the direction the project is expected to take.
 
-- Networked instructor station with server-authoritative replication.
-- Federation across DIS, DDS, RTI Connext, and HLA for interoperability with peer simulators.
-- Placed radar sites with individual detection models and a coverage overlay.
-- Electronic warfare (jamming, chaff, ghost tracks) integrated with the sensor layer.
-- JSON-driven scenario library.
-- Session recorder, replay, checkpoint, and After-Action Report.
-- Simulink cascade autopilot and radar signal processor via Embedded Coder.
-- Geospatial reconstruction of a real airfield on Cesium tiles.
-- VR operator station.
+| Post-MVP direction | Purpose |
+|---|---|
+| Networked instructor station with server-authoritative replication | Adds a second operator role and multi-peer training workflow |
+| Federation across DIS, DDS, RTI Connext, and HLA | Interoperability with peer simulators |
+| Placed radar sites with individual detection models and a coverage overlay | Sensor layer separation between what the operator sees and what the god view knows |
+| Electronic warfare (jamming, chaff, ghost tracks) | Degraded-picture decision-making drills |
+| JSON-driven scenario library | Scripted training exercises with fixed rules of engagement |
+| Session recorder, replay, checkpoint, After-Action Report | Instructor and trainee review workflow |
+| Simulink cascade autopilot and radar signal processor via Embedded Coder | Model-based-design integration research |
+| Geospatial reconstruction of a real airfield on Cesium tiles | Photogrammetric environment for immersion |
+| VR operator station | First-person diegetic operator experience |
 
 All of the above were subsequently added to the shipped codebase and are documented in `Docs/Design/`. Their inclusion in the shipped scope does not retroactively expand the MVP boundary drawn here; the MVP was proven stable before any of them were started.
 

@@ -87,6 +87,8 @@ Every scenario writeup below follows the same nine-section template so scenarios
 
 ## Baltic Intercept
 
+![Baltic Intercept moments after UNKNOWN01 appears in trail of SK238](../Images/ScenarioDesign/baltic-intercept.png)
+
 ### Training objective
 
 Identify, classify, and vector-intercept an unknown contact closing on a civilian airliner. The scenario tests the operator's ability to run distributed sensor fusion, apply GCI doctrine correctly, and avoid mis-identifying a hostile as neutral or a neutral as hostile.
@@ -146,6 +148,8 @@ Voice-only. AWACS calls at T+25 s and again on the 25 nm alert. No EW, no emerge
 
 ## Hijack Response
 
+![Hijack Response the instant the 7500 squawk flips on the hijacked aircraft](../Images/ScenarioDesign/hijack-response.png)
+
 ### Training objective
 
 Recognise a mid-flight 7500 squawk change, call a SHADOW escort without hostile declaration, and prevent the hijacked aircraft from reaching a protected zone while managing four other unrelated civilians in the sector.
@@ -201,6 +205,8 @@ Voice-only 7500 squawk change. No AWACS calls. Operator has to notice the squawk
 - How would this play differently under the two-federate variant, with the hijack owned by the peer federate?
 
 ## Mass Divert
+
+![Mass Divert just after the runway closes, six aircraft on scope needing rerouting](../Images/ScenarioDesign/mass-divert.png)
 
 ### Training objective
 
@@ -259,6 +265,8 @@ MET voice call before runway closure. TOWER voice call announcing the divert. Fu
 
 ## Mayday Engine Fire
 
+![Mayday Engine Fire the instant BAW394 declares, 7-minute countdown starting](../Images/ScenarioDesign/mayday-engine-fire.png)
+
 ### Training objective
 
 Single-aircraft emergency priority handling under traffic pressure. The operator has to clear a corridor for the emergency aircraft to reach the runway while keeping six other aircraft out of the way without disrupting their flight paths more than necessary.
@@ -312,6 +320,8 @@ Voiced Mayday declaration from BAW394. Escalating radio urgency as the countdown
 - How would the operator handle two simultaneous Maydays in the same sector?
 
 ## NORDO Inbound
+
+![NORDO Inbound the instant both aircraft flip to 7600 and the operator loses radio contact with both](../Images/ScenarioDesign/nordo-inbound.png)
 
 ### Training objective
 
@@ -367,6 +377,8 @@ Voice-silent. The NORDOs never speak. The operator has to notice the squawk chan
 - What is the largest number of controllable aircraft the operator can juggle around NORDO traffic?
 
 ## Cold War Probe
+
+![Cold War Probe with three unknowns from three bearings and one civilian transit in the middle](../Images/ScenarioDesign/cold-war-probe.png)
 
 ### Training objective
 
@@ -426,6 +438,8 @@ Where the enum name `MisidentifiedCivilian` is civilian-specific, the AAR displa
 - How does the operator's decision cycle change under time pressure vs standing GCI doctrine?
 
 ## Mixed Ops
+
+![Mixed Ops with eight civilians on scope and the restricted zones highlighted](../Images/ScenarioDesign/mixed-ops.png)
 
 ### Training objective
 

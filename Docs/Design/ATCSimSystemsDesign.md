@@ -38,6 +38,8 @@ The design goal is cognitive fidelity, not aerodynamic realism. Aircraft respond
 
 CLEARANCE is a portfolio demonstrator and training-simulation prototype, not an operationally validated ATC or military training product. The project demonstrates architecture, integration, cognitive-fidelity design, verification discipline, and instructor workflow rather than certified training effectiveness.
 
+![Instructor panel wide view showing the scope, sidebar, tabs, and controls](../Images/SystemsDesign/instructor-panel-wide.png)
+
 The scope splits into five interlocking systems, each with a single defined responsibility, plus a set of supporting systems that were added during production once the core loop was stable. Everything communicates through delegates. State has one owner. Movement has one executor. Safety analysis is read-only. Instructions are validated before they can move anything.
 
 ### The design emphasises
@@ -443,6 +445,8 @@ Facility voice injects (TOWER, ACC, AWACS, GCI, ATIS, MET) use distinct voices s
 
 Every transmission (Pilot, Operator, System, Instructor, and the six facility roles) is appended to `Transcript` on the Simulation Controller, replicated to all clients, and displayed in the Performance tab. The transcript is capped at 500 entries, filterable by role via the dropdown, and included verbatim in the After-Action Report.
 
+![Transcript view showing the ten distinct role colours in one log](../Images/SystemsDesign/transcript-roles.png)
+
 **Flowchart 7: Instruction validation flow** (architecture sketch)
 
 ```
@@ -763,6 +767,12 @@ Console commands `clearance.radar.mbd.enable/disable <site>` toggle at runtime f
 
 The instructor panel's coverage heatmap toggle renders each placed site's range disc as a soft green radial gradient. Overlapping sites blend additively. Gaps read as absence. Rendered through Slate's custom vertex API (48-segment triangle fans per disc, per-vertex alpha). Purpose is diagnostic: the instructor can see at a glance where the operator's picture has degraded coverage.
 
+![Radar coverage heatmap overlay across the sector](../Images/SystemsDesign/coverage-heatmap.png)
+
+Aircraft symbols on top of the coverage layer follow MIL-STD-2525C tactical symbology: friend, hostile, unknown, and neutral each get their own frame shape and colour so affiliation reads at a glance.
+
+![MIL-STD-2525C affiliation glyphs on scope: friend, hostile, unknown, neutral](../Images/SystemsDesign/mil-std-2525c-symbology.png)
+
 ### Success criteria
 
 1. Every enabled site paints tracks each scoring tick.
@@ -793,6 +803,12 @@ Under the Simulink DSP path, chaff generates the same five extra I/Q contributio
 
 The Baltic Intercept and Cold War Probe scenarios both trigger EW at specific timestamps. Hostile aircraft on scenario scripts drop chaff when a friendly fighter closes inside a defined lead-pursuit distance. Operator scoring rewards resolving an intercept through the EW clutter and penalises misidentifying a chaff ghost as a real target.
 
+The instructor sees both pictures. Truth scope reads directly off the Airspace Manager (every aircraft's real state, no sensor noise, no EW effects). Operator scope reads through the fused radar picture.
+
+![Truth scope showing the full unfiltered aircraft picture](../Images/SystemsDesign/truth-vs-operator-truth-scope.png)
+
+![Operator scope for the same moment: jammed aircraft dim, primary-only markers where secondary data has been lost](../Images/SystemsDesign/truth-vs-operator-operator-scope.png)
+
 ### Success criteria
 
 1. Jamming degrades only the jamming aircraft's own return.
@@ -820,6 +836,8 @@ Emergencies fire through `Server_InjectEmergency` on the operator player control
 `EmergencyTimerMinutes` on the aircraft's `FInstructorAircraftRow` is populated only when the active emergency has a countdown (FuelLow or GeneralMayday). Timer counts down in real seconds, replicates to clients, and drives the emergency panel widget's colour: red under 1 minute, amber under 3 minutes.
 
 The instructor can override the timer at inject time (`Server_InjectEmergency(callsign, kind, timerMinutes = -1.f)`) to dial 30-second panic scenarios or 15-minute gentle-training exercises. Default -1 preserves the 5-minute fuel or 7-minute mayday values.
+
+![Emergency panel with an active fuel countdown](../Images/SystemsDesign/emergency-panel-countdown.png)
 
 ### Success criteria
 
@@ -884,6 +902,8 @@ One button. Server-authoritative. Writes a full session report to `<ProjectSaved
 
 Path is resolved via `FPaths::ConvertRelativePathToFull` so the on-screen announcement shows a clickable absolute path.
 
+![AAR Markdown report open in VS Code showing the header, summary, and timeline sections](../Images/SystemsDesign/AAR-markdown-vs-code.png)
+
 ### Success criteria
 
 1. Report writes without errors after any session length.
@@ -897,6 +917,10 @@ Path is resolved via `FPaths::ConvertRelativePathToFull` so the on-screen announ
 ### Description
 
 CLEARANCE runs server-authoritative. The player is the operator and owns the running sim on their machine. An instructor can join as a second peer over LAN or via EOS. The instructor gets a distinct widget (the instructor station) which reads the same replicated data everyone else does, plus a set of Server RPCs for injecting events into the sim.
+
+The instructor also drives a picture-in-picture 3D camera feed alongside the scope. Five modes: Tower, Chase, Approach, Overview, and Operator POV. Chase in particular auto-follows the selected aircraft with per-mesh offsets so the feed stays framed as the aircraft manoeuvres.
+
+![PIP camera in Chase mode following a selected aircraft with the tactical overlay drawn on top](../Images/SystemsDesign/pip-camera-chase-view.png)
 
 ### Inject RPCs
 
@@ -931,6 +955,8 @@ Federation supports two-federate live sessions with distinct Site IDs. Local air
 ### Integration point
 
 The DIS emitter subscribes to `OnAircraftStateUpdated`. Every state commit becomes a wire packet. Every incoming PDU flows in through the same registration path as a local spawn (`RegisterAircraft` with `bIsExternal = true`). DDS, RTI, and HLA follow the same pattern on their respective buses. All four are toggleable live from the instructor panel with host, port, start, stop, and packet-rate indicators.
+
+![Federation panel with DIS, DDS, RTI, and HLA start-stop controls and live packet-rate counters](../Images/SystemsDesign/federation-panel.png)
 
 ### Success criteria
 

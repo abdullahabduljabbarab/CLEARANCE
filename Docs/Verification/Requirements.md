@@ -1,6 +1,11 @@
 # CLEARANCE Requirements
 
-Flat list of every requirement covered by the automation test suite, grouped by domain and traced to its verifying tests. Each REQ-ID is tagged in a leading code comment on the tests that verify it, so the truth lives in the source and this document just tabulates.
+**Project:** CLEARANCE
+**Author:** Abdullah Ameed Abduljabbar
+**Role:** Systems Designer
+**Status:** Shipped verification traceability document.
+
+Traceability table for the requirements currently covered by automation tests, grouped by domain and traced to their verifying tests. Deferred integration and manual coverage is called out separately at the end. Each REQ-ID is tagged in a leading code comment on the tests that verify it, so the truth lives in the source and this document just tabulates.
 
 Companion to [`V_AND_V_PLAN.md`](V_AND_V_PLAN.md) (the strategy and process) and the [`Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
 
@@ -53,7 +58,7 @@ Verified by the tests under `Tests/ClearanceDIS*Tests.cpp`. Every requirement tr
 
 ## REQ-FED: Federation affiliation mapping
 
-DIS ForceId values are inherited by SISO RPR-FOM 2.0 for HLA, so any drift in these mappings breaks federation with a conforming third-party sim (KDIS, MAK VR-Forces, VBS4, Portico test federates, commercial RTIs).
+DIS ForceId values are used by the federation mapping layer. Drift in these mappings would break consistent affiliation handling across DIS and HLA/RPR-FOM style integrations.
 
 | ID | Requirement | Verified by | Source |
 |---|---|---|---|
@@ -74,12 +79,12 @@ Requirements from the phraseology and instruction validator layers. The validato
 | REQ-COMMS-002 | An instruction on an aircraft with `bIsValid=false` shall return `Rejected_InvalidCallsign`. | `Clearance.Comms.Validator.RejectInvalidCallsign` | CLEARANCE design |
 | REQ-COMMS-003 | A system-issued go-around (`bIsGoAround=true`) shall bypass envelope checks and always return Accepted. | `Clearance.Comms.Validator.GoAroundBypasses` | ICAO safety-override doctrine |
 | REQ-COMMS-004 | An instruction to an aircraft in the `Exiting` flight phase shall return `Rejected_AircraftExited`. | `Clearance.Comms.Validator.RejectExiting` | CLEARANCE design |
-| REQ-COMMS-005 | An AltitudeChange above the aircraft category's service ceiling shall return `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectAltitudeAboveCeiling` | Aircraft type certification data |
+| REQ-COMMS-005 | An AltitudeChange above the aircraft category's service ceiling shall return `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectAltitudeAboveCeiling` | Representative published aircraft performance data |
 | REQ-COMMS-006 | An AltitudeChange below zero ft shall return `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectAltitudeNegative` | CLEARANCE design |
-| REQ-COMMS-007 | A SpeedChange below the aircraft category's minimum operating speed shall return `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectSpeedBelowMin` | Aircraft type certification data |
-| REQ-COMMS-008 | A SpeedChange above the aircraft category's max operating speed shall return `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectSpeedAboveMax` | Aircraft type certification data |
+| REQ-COMMS-007 | A SpeedChange below the aircraft category's minimum operating speed shall return `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectSpeedBelowMin` | Representative published aircraft performance data |
+| REQ-COMMS-008 | A SpeedChange above the aircraft category's max operating speed shall return `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectSpeedAboveMax` | Representative published aircraft performance data |
 | REQ-COMMS-009 | NaN and non-finite (Inf) target values shall be rejected as `Rejected_PhysicallyImpossible`. | `Clearance.Comms.Validator.RejectNonFinite` | IEEE 754 float handling |
-| REQ-COMMS-010 | Military airframes (`bIsMilitary=true`) shall use the fighter envelope (Vmax ~1050 kts, ceiling 50000 ft) instead of the civil wake-category envelope. | `Clearance.Comms.Validator.MilitaryEnvelope` | CLEARANCE design (F-35-ish) |
+| REQ-COMMS-010 | Military airframes (`bIsMilitary=true`) shall use the fighter envelope (Vmax ~1050 kts, ceiling 50000 ft) instead of the civil wake-category envelope. | `Clearance.Comms.Validator.MilitaryEnvelope` | CLEARANCE design; representative fighter performance envelope |
 
 ## REQ-SAFETY: separation and envelope doctrine
 
@@ -93,8 +98,8 @@ Tuning constants pinned to ICAO doctrine. Monotonic ordering invariants guard ag
 | REQ-SAFETY-004 | Vertical minimum shall be 1000 ft (RVSM airspace). | `Clearance.Safety.VerticalMinimum` | ICAO RVSM (Annex 2 App 4) |
 | REQ-SAFETY-005 | Wake separation matrix shall match ICAO Doc 4444 §5.8: Light-behind-Heavy 6 nm, Medium-behind-Heavy 5 nm, Light-behind-Medium 5 nm, Heavy-behind-Heavy 4 nm, standard minimum 3 nm. | `Clearance.Safety.WakeSeparationMatrix` | ICAO Doc 4444 §5.8 |
 | REQ-SAFETY-006 | Alert level thresholds shall be strictly monotonic: Advisory > Warning > Critical (nm). | `Clearance.Safety.HorizontalSeparation` | Ordering invariant |
-| REQ-SAFETY-007 | Every wake category's max operating speed shall exceed its min operating speed and lie within 50..500 kts. | `Clearance.Safety.CategoryPerformance` | Aircraft type certification data |
-| REQ-SAFETY-008 | Military fighter envelope shall strictly exceed the Heavy civil category on max operating speed and service ceiling. | `Clearance.Safety.CategoryPerformance` | F-35 published performance |
+| REQ-SAFETY-007 | Every wake category's max operating speed shall exceed its min operating speed and lie within 50..500 kts. | `Clearance.Safety.CategoryPerformance` | Representative published aircraft performance data |
+| REQ-SAFETY-008 | Military fighter envelope shall strictly exceed the Heavy civil category on max operating speed and service ceiling. | `Clearance.Safety.CategoryPerformance` | Representative fighter performance envelope |
 | REQ-SAFETY-009 | `GetEffectivePerformance(cat, bIsMilitary)` shall route to the fighter envelope when `bIsMilitary=true` and to the wake-category envelope otherwise. | `Clearance.Safety.EffectivePerformanceRouting` | CLEARANCE design |
 
 ## REQ-SCORE: scoring and difficulty
@@ -153,12 +158,12 @@ Verified by `Tests/ClearanceRadarEquationTests.cpp`. Traces to Skolnik, *Introdu
 | RADAR | 8 | 8 | 1.00 : 1 |
 | **Total** | **69** | **52** | **1.33 : 1** |
 
-A ratio greater than 1 means individual tests cover multiple related requirements (for example, one recorder test verifies the semantics of both `FindSnapshotAt` and `FRecordedSnapshot::States` roundtrip). That's expected. A test that only ever covered one requirement would be an over-testing smell, not an under-testing one.
+A ratio greater than 1 means some tests cover multiple related requirements. This is expected where one test verifies a grouped invariant, such as recorder pose-back semantics or DIS PDU round-trip behaviour. A 1:1 ratio is also acceptable where the requirement is narrow.
 
 Uncovered subsystems (deferred to integration-test or manual pass):
 
-- **Conflict detector.** Requires an `AClearanceAirspaceManager` actor spawned in a `UWorld`. Manual verification via the instructor scope during scenario runs.
-- **TCAS RA.** As above.
+- **Full actor-backed conflict detector lifecycle.** Requires an `AClearanceAirspaceManager` actor spawned in a `UWorld`. Pure logic covered under REQ-SAFETY; the full runtime path is manual verification via the instructor scope during scenario runs.
+- **Full TCAS RA execution path through the Simulation Controller.** As above.
 - **Chaff and wake turbulence detection.** As above.
 - **Phraseology `Interpret`.** Requires an `AClearanceSimulationController`. Manual verification via the `clearance.say` console command against a running scenario.
 - **HLA federation join lifecycle.** Requires a running `rtinode.exe`. Documented in `DIS_INTEROPERABILITY.md` §4b as a manual test.

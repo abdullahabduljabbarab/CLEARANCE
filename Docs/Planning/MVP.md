@@ -127,10 +127,10 @@ The MVP release shall satisfy the following at a minimum. Each criterion maps to
 |---|---|---|
 | 1 | End-to-end playable loop | Player can start a session, spawn traffic, issue instructions, resolve at least one conflict, land at least one aircraft, and receive a session score. |
 | 2 | Gradual motion | Aircraft respond to instructions on realistic timescales with no teleportation or instantaneous state changes. |
-| 3 | Alert ladder | Conflict alerts fire at the correct thresholds (nominally 8, 5, 3 nautical miles for civil separation) and escalate in order without skipping a level. |
-| 4 | Wake separation | Wake turbulence separation is enforced against the ICAO Doc 4444 wake matrix categories the MVP includes. |
+| 3 | Alert ladder | Conflict alerts fire at the configured horizontal thresholds (nominally 8, 5, 3 nautical miles for civil separation) and account for the vertical separation minimum where relevant. Escalation proceeds in order without skipping a level. |
+| 4 | Wake separation | Wake turbulence separation is enforced using the wake-category rules defined for CLEARANCE, informed by ICAO Doc 4444 separation concepts. |
 | 5 | Single source of truth | Aircraft state is consistent across the radar display, the conflict detector, and the instruction validator at all times. |
-| 6 | Envelope safety | No aircraft enters a physically impossible state (below terrain, below stall, above service ceiling, or outside sector bounds) under any player action. |
+| 6 | Envelope safety | No aircraft enters a physically impossible or uncontrolled state under player action; planned exits and handoffs are handled through the intended sector-exit flow. |
 | 7 | Live scoring | Session score updates in real time in response to scored events (landings, handoffs, separation losses, go-arounds). |
 | 8 | Clean reset | Session can be reset without stale state from the previous run leaking into the next. |
 
@@ -196,7 +196,7 @@ The following are considered natural next steps once MVP is stable. This section
 | Geospatial reconstruction of a real airfield on Cesium tiles | Photogrammetric environment for immersion |
 | VR operator station | First-person diegetic operator experience |
 
-All of the above were subsequently added to the shipped codebase and are documented in `Docs/Design/`. Their inclusion in the shipped scope does not retroactively expand the MVP boundary drawn here; the MVP was proven stable before any of them were started.
+Many of the above were subsequently added to the shipped codebase and are documented in `Docs/Design/`. Their inclusion in the later shipped scope does not retroactively expand the MVP boundary drawn here; the MVP represented the original stable core before post-MVP expansion.
 
 ## References
 

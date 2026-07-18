@@ -40,6 +40,8 @@ CLEARANCE is a portfolio demonstrator and training-simulation prototype, not an 
 
 ![Instructor panel wide view showing the scope, sidebar, tabs, and controls](../Images/SystemsDesign/instructor-panel-wide.png)
 
+*Figure 1: Instructor station view showing the live scope, scenario controls, system tabs, and operator-management panels used to supervise a CLEARANCE session.*
+
 The scope splits into five interlocking systems, each with a single defined responsibility, plus a set of supporting systems that were added during production once the core loop was stable. Everything communicates through delegates. State has one owner. Movement has one executor. Safety analysis is read-only. Instructions are validated before they can move anything.
 
 ### The design emphasises
@@ -64,7 +66,7 @@ The loop can also be driven by a scripted scenario in place of the free-play spa
 
 ![Core gameplay loop](../Images/SystemsDesign/Flow1.png)
 
-*Figure 1: Core gameplay loop showing aircraft entry, operator instruction, validation, movement, conflict monitoring, scoring, and loop continuation.*
+*Figure 2: Core gameplay loop showing aircraft entry, operator instruction, validation, movement, conflict monitoring, scoring, and loop continuation.*
 
 ### Design principles
 

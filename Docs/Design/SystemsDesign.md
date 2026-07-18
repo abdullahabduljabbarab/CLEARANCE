@@ -38,9 +38,13 @@ The design goal is cognitive fidelity, not aerodynamic realism. Aircraft respond
 
 CLEARANCE is a portfolio demonstrator and training-simulation prototype, not an operationally validated ATC or military training product. The project demonstrates architecture, integration, cognitive-fidelity design, verification discipline, and instructor workflow rather than certified training effectiveness.
 
-![Instructor panel wide view showing the scope, sidebar, tabs, and controls](../Images/SystemsDesign/instructor-panel-wide.png)
+<p align="center">
+  <img src="../Images/SystemsDesign/instructor-panel-wide.png" alt="Instructor panel wide view showing the scope, sidebar, tabs, and controls" width="900">
+</p>
 
-*Figure 1: Instructor station view showing the live scope, scenario controls, system tabs, and operator-management panels used to supervise a CLEARANCE session.*
+<p align="center">
+  <em>Figure 1: Instructor station view showing the live scope, scenario controls, system tabs, and operator-management panels used to supervise a CLEARANCE session.</em>
+</p>
 
 The scope splits into five interlocking systems, each with a single defined responsibility, plus a set of supporting systems that were added during production once the core loop was stable. Everything communicates through delegates. State has one owner. Movement has one executor. Safety analysis is read-only. Instructions are validated before they can move anything.
 
@@ -64,9 +68,13 @@ The scope splits into five interlocking systems, each with a single defined resp
 
 The loop can also be driven by a scripted scenario in place of the free-play spawner. Seven scenarios ship: Baltic Intercept, Hijack Response, Mass Divert, Mayday Engine Fire, NORDO Inbound, Cold War Probe, and Mixed Ops. Each authors traffic, weather, emergencies, and voice injects on a timeline.
 
-![Core gameplay loop](../Images/SystemsDesign/Flow1.png)
+<p align="center">
+  <img src="../Images/SystemsDesign/Flow1.png" alt="Core gameplay loop" width="900">
+</p>
 
-*Figure 2: Core gameplay loop showing aircraft entry, operator instruction, validation, movement, conflict monitoring, scoring, and loop continuation.*
+<p align="center">
+  <em>Figure 2: Core gameplay loop showing aircraft entry, operator instruction, validation, movement, conflict monitoring, scoring, and loop continuation.</em>
+</p>
 
 ### Design principles
 

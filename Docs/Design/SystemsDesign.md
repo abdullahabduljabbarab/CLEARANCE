@@ -167,26 +167,13 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 | Any system | Iterating all aircraft | `GetAllAircraftStates` | none | Array of `FAircraftState` | Consumer sees the whole sector |
 | Wind change | Crosswind exceeds threshold on current active runway | `RecalculateActiveRunway` | none (internal) | New active heading | Runway swaps, `OnRunwayChanged` broadcast to camera overlay, approach picker, aircraft on approach |
 
-**Flowchart 2: Aircraft registration flow** (architecture sketch)
+<p align="center">
+  <img src="../Images/SystemsDesign/Flow2.png" alt="Aircraft registration flow" width="800">
+</p>
 
-```
-   Spawner or Scenario Runner
-             |
-             v
-       RegisterAircraft
-             |
-             v
-       stored in TMap
-             |
-             v
-     OnAircraftRegistered
-             |
-             v
-   controller creates behaviour
-             |
-             v
-     Initialise() sets targets
-```
+<p align="center">
+  <em>Figure 2: Aircraft registration flow showing how spawner and scenario requests become authoritative aircraft state, behaviour objects, and active simulation participants.</em>
+</p>
 
 **Flowchart 3: State update flow, per tick** (architecture sketch)
 

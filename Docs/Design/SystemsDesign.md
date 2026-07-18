@@ -172,7 +172,7 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 </p>
 
 <p align="center">
-  <em>Figure 2: Aircraft registration flow showing how spawner and scenario requests become authoritative aircraft state, behaviour objects, and active simulation participants.</em>
+  <em>Figure 3: Aircraft registration flow showing how spawner and scenario requests become authoritative aircraft state, behaviour objects, and active simulation participants.</em>
 </p>
 
 **Flowchart 3: State update flow, per tick** (architecture sketch)

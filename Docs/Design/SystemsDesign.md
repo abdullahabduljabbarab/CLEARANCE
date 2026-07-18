@@ -176,25 +176,13 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 </p>
 
 **Flowchart 3: State update flow, per tick** (architecture sketch)
+<p align="center">
+  <img src="../Images/SystemsDesign/Flow3.png" alt="State update flow per tick" width="700">
+</p>
 
-```
-   Simulation Controller tick
-             |
-             v
-   Behaviour reads current state
-             |
-             v
-     Applies pending target
-             |
-             v
-     Integrates one frame
-             |
-             v
-       RequestStateUpdate
-             |
-             v
-     stored + broadcast to subscribers
-```
+<p align="center">
+  <em>Figure 4: State update flow showing how aircraft behaviour integrates movement each tick, requests an authoritative state update, and broadcasts the committed state to dependent systems.</em>
+</p>
 
 **Flowchart 4: Aircraft deregistration flow** (architecture sketch)
 

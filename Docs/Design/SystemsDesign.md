@@ -62,34 +62,9 @@ The scope splits into five interlocking systems, each with a single defined resp
 
 The loop can also be driven by a scripted scenario in place of the free-play spawner. Seven scenarios ship: Baltic Intercept, Hijack Response, Mass Divert, Mayday Engine Fire, NORDO Inbound, Cold War Probe, and Mixed Ops. Each authors traffic, weather, emergencies, and voice injects on a timeline.
 
-**Flowchart 1: Core gameplay loop** (architecture sketch, to be redrawn in draw.io)
+![Core gameplay loop](../Images/SystemDesign/flow1.png)
 
-```
-   Aircraft enters sector
-             |
-             v
-   Player reads data block
-             |
-             v
-   Player issues instruction
-             |
-             v
-     +---- validated? ----+
-     |                    |
-   reject               accept
-     |                    |
-     v                    v
-   refusal          aircraft moves
-   spoken                 |
-                          v
-              conflict detection watches
-                          |
-                          v
-              lands / handoff / exit
-                          |
-                          v
-                  scored, loop back
-```
+*Figure 1: Core gameplay loop showing aircraft entry, operator instruction, validation, movement, conflict monitoring, scoring, and loop continuation.*
 
 ### Design principles
 

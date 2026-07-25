@@ -38,7 +38,13 @@ The design goal is cognitive fidelity, not aerodynamic realism. Aircraft respond
 
 CLEARANCE is a portfolio demonstrator and training-simulation prototype, not an operationally validated ATC or military training product. The project demonstrates architecture, integration, cognitive-fidelity design, verification discipline, and instructor workflow rather than certified training effectiveness.
 
-![Instructor panel wide view showing the scope, sidebar, tabs, and controls](../Images/SystemsDesign/instructor-panel-wide.png)
+<p align="center">
+  <img src="../Images/SystemsDesign/instructor-panel-wide.png" alt="Instructor panel wide view showing the scope, sidebar, tabs, and controls" width="900">
+</p>
+
+<p align="center">
+  <em>Figure 1: Instructor station view showing the live scope, scenario controls, system tabs, and operator-management panels used to supervise a CLEARANCE session.</em>
+</p>
 
 The scope splits into five interlocking systems, each with a single defined responsibility, plus a set of supporting systems that were added during production once the core loop was stable. Everything communicates through delegates. State has one owner. Movement has one executor. Safety analysis is read-only. Instructions are validated before they can move anything.
 
@@ -62,34 +68,13 @@ The scope splits into five interlocking systems, each with a single defined resp
 
 The loop can also be driven by a scripted scenario in place of the free-play spawner. Seven scenarios ship: Baltic Intercept, Hijack Response, Mass Divert, Mayday Engine Fire, NORDO Inbound, Cold War Probe, and Mixed Ops. Each authors traffic, weather, emergencies, and voice injects on a timeline.
 
-**Flowchart 1: Core gameplay loop** (architecture sketch, to be redrawn in draw.io)
+<p align="center">
+  <img src="../Images/SystemsDesign/Flow1.png" alt="Core gameplay loop" width="900">
+</p>
 
-```
-   Aircraft enters sector
-             |
-             v
-   Player reads data block
-             |
-             v
-   Player issues instruction
-             |
-             v
-     +---- validated? ----+
-     |                    |
-   reject               accept
-     |                    |
-     v                    v
-   refusal          aircraft moves
-   spoken                 |
-                          v
-              conflict detection watches
-                          |
-                          v
-              lands / handoff / exit
-                          |
-                          v
-                  scored, loop back
-```
+<p align="center">
+  <em>Figure 2: Core gameplay loop showing aircraft entry, operator instruction, validation, movement, conflict monitoring, scoring, and loop continuation.</em>
+</p>
 
 ### Design principles
 
@@ -182,47 +167,22 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 | Any system | Iterating all aircraft | `GetAllAircraftStates` | none | Array of `FAircraftState` | Consumer sees the whole sector |
 | Wind change | Crosswind exceeds threshold on current active runway | `RecalculateActiveRunway` | none (internal) | New active heading | Runway swaps, `OnRunwayChanged` broadcast to camera overlay, approach picker, aircraft on approach |
 
-**Flowchart 2: Aircraft registration flow** (architecture sketch)
+<p align="center">
+  <img src="../Images/SystemsDesign/Flow2.png" alt="Aircraft registration flow" width="800">
+</p>
 
-```
-   Spawner or Scenario Runner
-             |
-             v
-       RegisterAircraft
-             |
-             v
-       stored in TMap
-             |
-             v
-     OnAircraftRegistered
-             |
-             v
-   controller creates behaviour
-             |
-             v
-     Initialise() sets targets
-```
+<p align="center">
+  <em>Figure 3: Aircraft registration flow showing how spawner and scenario requests become authoritative aircraft state, behaviour objects, and active simulation participants.</em>
+</p>
 
-**Flowchart 3: State update flow, per tick** (architecture sketch)
 
-```
-   Simulation Controller tick
-             |
-             v
-   Behaviour reads current state
-             |
-             v
-     Applies pending target
-             |
-             v
-     Integrates one frame
-             |
-             v
-       RequestStateUpdate
-             |
-             v
-     stored + broadcast to subscribers
-```
+<p align="center">
+  <img src="../Images/SystemsDesign/Flow3.png" alt="State update flow per tick" width="700">
+</p>
+
+<p align="center">
+  <em>Figure 4: State update flow showing how aircraft behaviour integrates movement each tick, requests an authoritative state update, and broadcasts the committed state to dependent systems.</em>
+</p>
 
 **Flowchart 4: Aircraft deregistration flow** (architecture sketch)
 

@@ -1,7 +1,7 @@
 // RPR-FOM / DIS <-> HLA affiliation mapping tests. Verifies that the numeric
 // ForceId constants CLEARANCE uses in its DIS emitter, DDS emitter, RTI
 // emitter, and HLA federate match the values defined in IEEE 1278.1
-// §7.3.4.6 (DIS Enumerations) and mirrored by SISO RPR-FOM 2.0 for HLA
+// §7.3.2.6 (DIS Enumerations) and mirrored by SISO RPR-FOM 2.0 for HLA
 // federations.
 //
 // The value table is:
@@ -18,16 +18,16 @@
 // Test method: build a POD FEntityState via the ClearanceDIS module,
 // serialise it, and inspect the ForceId byte at its IEEE 1278.1 spec
 // offset (byte 18 of the Entity State PDU) to verify the wire encoding
-// matches §7.3.4.6. Wire-byte inspection instead of parse-back because
+// matches §7.3.2.6. Wire-byte inspection instead of parse-back because
 // the public ClearanceDIS API doesn't currently expose an Entity State
 // parser (only Fire / Detonation / Emission / Signal / Transmitter).
 // - TripleA
 //
 // Covers requirements:
-//   REQ-FED-001  ForceId 0 shall represent Other/Unknown per §7.3.4.6.
-//   REQ-FED-002  ForceId 1 shall represent Friendly per §7.3.4.6.
-//   REQ-FED-003  ForceId 2 shall represent Opposing (Hostile) per §7.3.4.6.
-//   REQ-FED-004  ForceId 3 shall represent Neutral per §7.3.4.6.
+//   REQ-FED-001  ForceId 0 shall represent Other/Unknown per §7.3.2.6.
+//   REQ-FED-002  ForceId 1 shall represent Friendly per §7.3.2.6.
+//   REQ-FED-003  ForceId 2 shall represent Opposing (Hostile) per §7.3.2.6.
+//   REQ-FED-004  ForceId 3 shall represent Neutral per §7.3.2.6.
 //   REQ-FED-005  Entity State PDU wire encoding shall write ForceId byte-
 //                exactly at spec offset 18 for every defined value.
 
@@ -39,7 +39,7 @@
 namespace
 {
 	// Build a minimal but valid FEntityState with a given ForceId and read
-	// back the ForceId byte at its IEEE 1278.1 spec offset (§7.3.4, byte 18
+	// back the ForceId byte at its IEEE 1278.1 spec offset (§7.3.2, byte 18
 	// of the Entity State PDU - immediately after the 12-byte header + 6-byte
 	// Entity ID). Verifies wire-format compliance without needing a public
 	// parser. - TripleA
@@ -52,7 +52,7 @@ namespace
 		S.ForceId            = InForceId;
 		S.EntityKind         = 1;   // Platform
 		S.EntityDomain       = 2;   // Air
-		S.EntityCountry      = 225; // UK
+		S.EntityCountry      = 224; // UK
 		S.EntityCategory     = 1;
 		S.EntitySubcategory  = 0;
 		S.EntitySpecific     = 0;
@@ -79,7 +79,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceRPRFOMForceIdOtherTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("Other/Unknown ForceId is 0 per §7.3.4.6"),
+	TestEqual(TEXT("Other/Unknown ForceId is 0 per §7.3.2.6"),
 		int32(WireForceIdByte(0)), 0);
 	return true;
 }
@@ -92,7 +92,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceRPRFOMForceIdFriendlyTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("Friendly ForceId is 1 per §7.3.4.6"),
+	TestEqual(TEXT("Friendly ForceId is 1 per §7.3.2.6"),
 		int32(WireForceIdByte(1)), 1);
 	return true;
 }
@@ -105,7 +105,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceRPRFOMForceIdHostileTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("Opposing/Hostile ForceId is 2 per §7.3.4.6"),
+	TestEqual(TEXT("Opposing/Hostile ForceId is 2 per §7.3.2.6"),
 		int32(WireForceIdByte(2)), 2);
 	return true;
 }
@@ -118,14 +118,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FClearanceRPRFOMForceIdNeutralTest::RunTest(const FString& Parameters)
 {
-	TestEqual(TEXT("Neutral ForceId is 3 per §7.3.4.6"),
+	TestEqual(TEXT("Neutral ForceId is 3 per §7.3.2.6"),
 		int32(WireForceIdByte(3)), 3);
 	return true;
 }
 
 // Covers: encode-side robustness - a non-standard ForceId value (99)
 // should be written to the wire as-is rather than being silently clamped
-// to a §7.3.4.6 legal value. Matches DIS interop convention: forward
+// to a §7.3.2.6 legal value. Matches DIS interop convention: forward
 // what you don't understand, let receivers decide. - TripleA
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FClearanceRPRFOMForceIdUnknownPreservedTest,

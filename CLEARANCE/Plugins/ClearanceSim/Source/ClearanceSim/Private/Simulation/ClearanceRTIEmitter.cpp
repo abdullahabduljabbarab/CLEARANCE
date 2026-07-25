@@ -147,7 +147,7 @@ void UClearanceRTIEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		M.ForceId           = ClearanceRTIEmitterHelpers::ForceIdFor(S.ThreatClass);
 		M.EntityKind        = 1;
 		M.EntityDomain      = 2;
-		M.EntityCountry     = 225;
+		M.EntityCountry     = 224;
 		M.EntityCategory    = 1;
 		M.EntitySubcategory = 0;
 		M.EntitySpecific    = 0;

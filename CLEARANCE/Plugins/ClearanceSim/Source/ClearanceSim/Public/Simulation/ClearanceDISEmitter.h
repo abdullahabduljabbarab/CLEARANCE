@@ -46,11 +46,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "DIS")
 	void EmitEmissions(const TArray<FRadarEmissionSnapshot>& Radars, float SimTimeSeconds);
 
-	// One Fire PDU (Type 2) per weapons launch event. §7.3.3.
+	// One Fire PDU (Type 2) per weapons launch event. §7.4.3.
 	UFUNCTION(BlueprintCallable, Category = "DIS")
 	void EmitFireEvents(const TArray<FWeaponsFireEvent>& Events, float SimTimeSeconds);
 
-	// One Detonation PDU (Type 3) per weapons event resolution. §7.3.4.
+	// One Detonation PDU (Type 3) per weapons event resolution. §7.4.4.
 	UFUNCTION(BlueprintCallable, Category = "DIS")
 	void EmitDetonationEvents(const TArray<FWeaponsDetonationEvent>& Events, float SimTimeSeconds);
 

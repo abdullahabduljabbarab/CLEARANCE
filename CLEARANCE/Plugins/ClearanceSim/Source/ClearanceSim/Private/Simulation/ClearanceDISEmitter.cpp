@@ -60,7 +60,7 @@ namespace ClearanceDISEmitterHelpers
 		}
 	}
 
-	// Map CLEARANCE's ThreatClass onto the DIS Force ID field per §7.3.4.6.
+	// Map CLEARANCE's ThreatClass onto the DIS Force ID field per §7.3.2.6.
 	uint8 ForceIdFor(EThreatClass T)
 	{
 		switch (T)

@@ -39,7 +39,7 @@ bool FClearanceDISFirePDURoundtripTest::RunTest(const FString& Parameters)
 	P.ExerciseId = 1; P.SiteId = 42; P.ApplicationId = 7; P.SimTimeSeconds = 128.5;
 	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildFirePDU(E, P);
 
-	TestEqual(TEXT("Fire PDU length matches §7.3.3 fixed 96 bytes"), int32(Wire.size()), 96);
+	TestEqual(TEXT("Fire PDU length matches §7.4.3 fixed 96 bytes"), int32(Wire.size()), 96);
 	TestEqual(TEXT("PDU type is 2 (Fire)"), int32(Wire[2]), 2);
 	TestEqual(TEXT("Proto family is 2 (Warfare)"), int32(Wire[3]), 2);
 
@@ -120,7 +120,7 @@ bool FClearanceDISDetonationPDURoundtripTest::RunTest(const FString& Parameters)
 	P.ExerciseId = 1; P.SiteId = 42; P.ApplicationId = 7; P.SimTimeSeconds = 200.0;
 	const std::vector<std::uint8_t> Wire = ClearanceDIS::BuildDetonationPDU(E, P);
 
-	TestEqual(TEXT("Detonation PDU length matches §7.3.4 fixed 104 bytes"),
+	TestEqual(TEXT("Detonation PDU length matches §7.4.4 fixed 104 bytes"),
 		int32(Wire.size()), 104);
 	TestEqual(TEXT("PDU type is 3 (Detonation)"), int32(Wire[2]), 3);
 	TestEqual(TEXT("Proto family is 2 (Warfare)"), int32(Wire[3]), 2);

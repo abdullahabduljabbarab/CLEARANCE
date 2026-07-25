@@ -614,7 +614,7 @@ struct CLEARANCESIM_API FRadarTrack
  * see for this radar. Everything here maps directly to Emission PDU (Type 23)
  * Fundamental Parameter Data fields. Real-world catalogues:
  *   Emitter Name (Annex A tab. 8): 3110 AN/APG-63, 3151 AN/APG-73,
- *     4830 ASR-9 (civil airport surveillance), 28810 generic surveillance
+ *     8790 ASR-9 (civil airport surveillance), 8791 ASR-9000, 8785 ASR-8
  *   Emitter Function (tab. 9): 3 Early-Warning/Surveillance, 5 Fire Control,
  *     6 Acquisition/Detection, 7 Tracker
  *   Beam Function (tab. 10): 2 Search, 3 Height Finder, 5 Tracking,
@@ -642,13 +642,13 @@ struct CLEARANCESIM_API FEmissionSignature
 	float EffectiveRadiatedPowerDbm = 80.f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission")
-	int32 EmitterName = 4830;   // ASR-9 civil airport surveillance
+	int32 EmitterName = 8790;   // ASR-9 civil airport surveillance (SISO-REF-010 UID 75)
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission", meta = (ClampMin = "0", ClampMax = "255"))
-	int32 EmitterFunction = 3;  // Early Warning / Surveillance
+	int32 EmitterFunction = 22; // Air Traffic Control (SISO-REF-010 UID 76)
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Emission", meta = (ClampMin = "0", ClampMax = "255"))
-	int32 BeamFunction = 2;     // Search
+	int32 BeamFunction = 1;     // Search (SISO-REF-010 UID 78)
 };
 
 /** Per-tick snapshot handed to the DIS emitter for building an Emission PDU.
@@ -687,7 +687,7 @@ struct CLEARANCESIM_API FWeaponsFireEvent
 	UPROPERTY(BlueprintReadOnly) float VelocityZKts = 0.f;
 
 	// IEEE 1278.1 Munition Entity Type (Annex A):
-	//   Kind 2 = Munition, Domain 2 = Air, Country 225 = US,
+	//   Kind 2 = Munition, Domain 2 = Air, Country 224 = UK,
 	//   Category 1 = Guided (missile), 2 = Ballistic, 3 = Fixed
 	// Combined with sensible defaults into a single lookup key for now.
 	UPROPERTY(BlueprintReadOnly) uint8 MunitionKind = 1;       // 1 = missile, 2 = gun round, 3 = bomb

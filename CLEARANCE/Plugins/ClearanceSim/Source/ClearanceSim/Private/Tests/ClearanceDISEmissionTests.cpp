@@ -17,15 +17,15 @@ bool FClearanceDISEmissionPDURoundtripTest::RunTest(const FString& Parameters)
 {
 	ClearanceDIS::FEmissionSnapshot S;
 	S.EmittingEntity = 42;
-	S.EmitterName    = 4830;
-	S.EmitterFunction = 3;
+	S.EmitterName    = 8790;    // ASR-9 (SISO-REF-010 UID 75)
+	S.EmitterFunction = 22;   // Air Traffic Control (SISO-REF-010 UID 76)
 	S.FrequencyLowHz  = 9.4e9f;
 	S.FrequencyHighHz = 9.6e9f;
 	S.EffectiveRadiatedPowerDbm = 88.0f;
 	S.PulseRepetitionFreqHz = 1000.f;
 	S.PulseWidthMicrosec    = 1.0f;
 	S.BeamAzimuthRad        = 1.5708f;         // ~90 deg
-	S.BeamFunction          = 2;
+	S.BeamFunction          = 1;     // Search (SISO-REF-010 UID 78)
 	S.PaintedEntityNumbers  = { 100, 200, 300, 400 };
 
 	ClearanceDIS::FWireParams P;

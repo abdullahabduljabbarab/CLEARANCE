@@ -39,7 +39,7 @@ CLEARANCE is a portfolio demonstrator and training-simulation prototype. This do
 
 Two audiences. An engineering reviewer can read this to see how the training layer sits on top of the systems architecture and how the incident-type enum maps to scenario-specific pass and fail states. A training-design reviewer can read this to see how each scenario is intentionally built to force a particular decision under time pressure, with predictable failure modes.
 
-For the runtime architecture behind the Scenario Runner see the Technical Architecture document. For the systems the scenarios drive see the Systems Design document.
+For the runtime architecture behind the Scenario Runner, see the [Technical Architecture document](/Docs/Design/TechnicalArchitecture.md). For the systems the scenarios drive, see the [Systems Design document](/Docs/Design/SystemsDesign.md).
 
 ## Scenario progression
 

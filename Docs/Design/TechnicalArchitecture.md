@@ -23,7 +23,7 @@
 
 ## Purpose
 
-Architectural companion to the [Systems Design document](/Docs/Design/SystemsDesign.md) and [C++ Scaffold document](/Docs/Design/CppScaffold.md). Where the Systems Design describes what each system does and the C++ Scaffold documents the class-level API, this document describes how the sim is put together at runtime: who owns what, what ticks in what order, how data flows between systems, where the C++ and Blueprint boundaries sit, how objects are created and torn down, and how the network layer plugs in.
+Architectural companion to the [Systems Design document](/Docs/Design/SystemsDesign.md) and [C++ Scaffold document](/Docs/Design/CppScaffold.md). Where the [Systems Design document](/Docs/Design/SystemsDesign.md) describes what each system does and the [C++ Scaffold document](/Docs/Design/CppScaffold.md) documents the class-level API, this document describes how the sim is put together at runtime: who owns what, what ticks in what order, how data flows between systems, where the C++ and Blueprint boundaries sit, how objects are created and torn down, and how the network layer plugs in.
 
 CLEARANCE is a portfolio demonstrator and training-simulation prototype. This document describes the runtime architecture that carries the sim, not the certification artefacts an operational programme would require.
 
@@ -31,7 +31,7 @@ CLEARANCE is a portfolio demonstrator and training-simulation prototype. This do
 
 This is an architecture note, not a build guide. It is aimed at another engineer stepping into the codebase for the first time and wanting to understand the wiring in one pass. Class ownership, tick order, data direction, delegate map, lifecycle, and networking are the sections that matter most. Everything else is context.
 
-For system behaviour see the Systems Design document. For enums, structs, and per-class API surfaces see the C++ Scaffold.
+For system behaviour, see the [Systems Design document](/Docs/Design/SystemsDesign.md). For enums, structs, and per-class API surfaces, see the [C++ Scaffold document](/Docs/Design/CppScaffold.md).
 
 ## Architectural principles
 

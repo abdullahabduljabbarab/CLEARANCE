@@ -1,6 +1,8 @@
 #include "Simulation/ClearanceVROperatorPawn.h"
 
 #include "Camera/CameraComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/WidgetInteractionComponent.h"
 #include "EnhancedInputComponent.h"
@@ -9,6 +11,7 @@
 #include "InputMappingContext.h"
 #include "GameFramework/PlayerController.h"
 #include "MotionControllerComponent.h"
+#include "Simulation/ClearanceOperatorButton.h"
 #include "Simulation/ClearanceOperatorPC.h"
 #include "UI/ClearanceInstructorPanel.h"
 #include "Blueprint/UserWidget.h"
@@ -70,6 +73,48 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	RightPointer->SetupAttachment(RightController);
 	RightPointer->InteractionDistance = 500.f;
 	RightPointer->bShowDebug = false;
+
+	// Optional hand meshes. Cosmetic only. Meta XR Interaction SDK ships
+	// SK_OpenXRHand_Left / _Right + ABP_ControllerDrivenHand_Left / _Right;
+	// wire both in the BP subclass Details panel. No collision so the
+	// visual hands don't accidentally trip button overlaps (fingertip
+	// spheres below do that job). - TripleA
+	LeftHand = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("LeftHand"));
+	LeftHand->SetupAttachment(LeftController);
+	LeftHand->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	RightHand = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RightHand"));
+	RightHand->SetupAttachment(RightController);
+	RightHand->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	// Fingertip collision spheres. Parented to the controller (not to the
+	// hand mesh) so interaction works whether or not the hand mesh is
+	// assigned. Overlap-only so the sphere passes through the button hit
+	// volume without physical resistance. - TripleA
+	LeftFingertip = CreateDefaultSubobject<USphereComponent>(TEXT("LeftFingertip"));
+	LeftFingertip->SetupAttachment(LeftController);
+	LeftFingertip->SetSphereRadius(FingertipRadius);
+	LeftFingertip->SetRelativeLocation(FingertipOffset);
+	LeftFingertip->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	LeftFingertip->SetCollisionObjectType(ECC_Pawn);
+	LeftFingertip->SetCollisionResponseToAllChannels(ECR_Ignore);
+	LeftFingertip->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Overlap);
+	LeftFingertip->SetGenerateOverlapEvents(true);
+
+	RightFingertip = CreateDefaultSubobject<USphereComponent>(TEXT("RightFingertip"));
+	RightFingertip->SetupAttachment(RightController);
+	RightFingertip->SetSphereRadius(FingertipRadius);
+	RightFingertip->SetRelativeLocation(FingertipOffset);
+	RightFingertip->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	RightFingertip->SetCollisionObjectType(ECC_Pawn);
+	RightFingertip->SetCollisionResponseToAllChannels(ECR_Ignore);
+	RightFingertip->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Overlap);
+	RightFingertip->SetGenerateOverlapEvents(true);
+
+	LeftFingertip->OnComponentBeginOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnLeftFingertipBeginOverlap);
+	LeftFingertip->OnComponentEndOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnLeftFingertipEndOverlap);
+	RightFingertip->OnComponentBeginOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnRightFingertipBeginOverlap);
+	RightFingertip->OnComponentEndOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnRightFingertipEndOverlap);
 }
 
 void AClearanceVROperatorPawn::BeginPlay()
@@ -155,6 +200,25 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 		{
 			EIC->BindAction(SnapTurnAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleSnapTurn);
 		}
+
+		// Trigger axis with Started (press edge) + Completed (release edge)
+		// events. Press dispatches to whichever console button is currently
+		// under the fingertip; release dispatches to the button that WAS
+		// pressed (which may no longer be under the finger if the operator
+		// slid off - press-and-hold semantics rely on the release edge
+		// firing regardless). - TripleA
+		if (TriggerLeftAction)
+		{
+			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Started,   this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
+			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
+			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
+		}
+		if (TriggerRightAction)
+		{
+			EIC->BindAction(TriggerRightAction, ETriggerEvent::Started,   this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
+			EIC->BindAction(TriggerRightAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
+			EIC->BindAction(TriggerRightAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
+		}
 	}
 }
 
@@ -231,4 +295,69 @@ void AClearanceVROperatorPawn::HandleSnapTurn(const FInputActionValue& Value)
 	AddActorWorldOffset(Correction);
 
 	bSnapTurnReady = false;
+}
+
+// --- Operator console button interaction -----------------------------------
+//
+// Fingertip sphere overlap events update per-hand HoveredButton. Trigger
+// press dispatches to that hovered button. Release fires on the previously
+// pressed button regardless of current overlap (press-and-hold PTT needs
+// the release edge even if the operator has since slid off). - TripleA
+
+void AClearanceVROperatorPawn::OnLeftFingertipBeginOverlap(UPrimitiveComponent*, AActor* OtherActor,
+	UPrimitiveComponent*, int32, bool, const FHitResult&)
+{
+	if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
+	{
+		LeftHoveredButton = Btn;
+	}
+}
+
+void AClearanceVROperatorPawn::OnLeftFingertipEndOverlap(UPrimitiveComponent*, AActor* OtherActor,
+	UPrimitiveComponent*, int32)
+{
+	if (LeftHoveredButton == OtherActor) { LeftHoveredButton = nullptr; }
+}
+
+void AClearanceVROperatorPawn::OnRightFingertipBeginOverlap(UPrimitiveComponent*, AActor* OtherActor,
+	UPrimitiveComponent*, int32, bool, const FHitResult&)
+{
+	if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
+	{
+		RightHoveredButton = Btn;
+	}
+}
+
+void AClearanceVROperatorPawn::OnRightFingertipEndOverlap(UPrimitiveComponent*, AActor* OtherActor,
+	UPrimitiveComponent*, int32)
+{
+	if (RightHoveredButton == OtherActor) { RightHoveredButton = nullptr; }
+}
+
+void AClearanceVROperatorPawn::HandleTriggerLeftPressed(const FInputActionValue&)
+{
+	if (!LeftHoveredButton) { return; }
+	LeftPressedButton = LeftHoveredButton;
+	LeftPressedButton->HandlePress(this);
+}
+
+void AClearanceVROperatorPawn::HandleTriggerLeftReleased(const FInputActionValue&)
+{
+	if (!LeftPressedButton) { return; }
+	LeftPressedButton->HandleRelease(this);
+	LeftPressedButton = nullptr;
+}
+
+void AClearanceVROperatorPawn::HandleTriggerRightPressed(const FInputActionValue&)
+{
+	if (!RightHoveredButton) { return; }
+	RightPressedButton = RightHoveredButton;
+	RightPressedButton->HandlePress(this);
+}
+
+void AClearanceVROperatorPawn::HandleTriggerRightReleased(const FInputActionValue&)
+{
+	if (!RightPressedButton) { return; }
+	RightPressedButton->HandleRelease(this);
+	RightPressedButton = nullptr;
 }

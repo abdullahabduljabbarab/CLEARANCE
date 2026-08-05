@@ -190,6 +190,43 @@ public:
 	UFUNCTION(Server, Unreliable, WithValidation)
 	void Server_PushOperatorView(FRotator NewRot, FVector NewLoc);
 
+	// --- Operator console button dispatch ---------------------------------
+	//
+	// Fired from AClearanceOperatorButton actors placed over the physical
+	// buttons on the tower mesh. All are client-local: selection state
+	// lives on the local instructor-panel widget, and PTT gates the local
+	// microphone. Server round-trips happen naturally when a resulting
+	// voice-parsed instruction reaches the sim. - TripleA
+
+	// Cycle the panel's SelectedCallsign forward through the current
+	// aircraft list (wraps at end). Used by NEXT-callsign button.
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console")
+	void SelectNextAircraft();
+
+	// Reverse of SelectNextAircraft (wraps at start).
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console")
+	void SelectPreviousAircraft();
+
+	// Clear the current selection (SelectedCallsign = NAME_None). Used by
+	// UNSELECT button and after successful handoff.
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console")
+	void ClearAircraftSelection();
+
+	// Push-to-talk press: start mic capture on the local AClearanceVoiceInput.
+	// Whisper transcribes on release; transcript flows through the existing
+	// phraseology parser + PlayerIssueInstruction path. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console")
+	void StartPTT();
+
+	// PTT release: stop mic capture, triggers whisper transcription.
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console")
+	void StopPTT();
+
 private:
 	float ViewPushAccumSec = 0.f;
+
+	// Cached this-client's voice-input actor. Resolved on first StartPTT
+	// via TActorIterator; nulls out if the actor is destroyed. - TripleA
+	UPROPERTY(Transient)
+	TObjectPtr<class AClearanceVoiceInput> CachedVoiceInput;
 };

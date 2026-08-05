@@ -1,5 +1,6 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Simulation/ClearanceSimulationController.h"
+#include "Comms/ClearanceVoiceInput.h"
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Simulation/ClearanceDDSEmitter.h"
@@ -661,4 +662,81 @@ bool AClearanceOperatorPC::Server_InjectDeleteCheckpoint_Validate(FName Name) { 
 void AClearanceOperatorPC::Server_InjectDeleteCheckpoint_Implementation(FName Name)
 {
 	if (AClearanceSimulationController* C = FindSimController(GetWorld())) { C->DeleteCheckpoint(Name); }
+}
+
+// --- Operator console button helpers ---------------------------------------
+//
+// Called from AClearanceOperatorButton::HandlePress / HandleRelease when a
+// motion-controller fingertip fires the trigger over one of the physical
+// buttons on the tower mesh. All client-local: selection state lives on
+// the local instructor-panel widget, PTT gates the local mic. - TripleA
+
+void AClearanceOperatorPC::SelectNextAircraft()
+{
+	if (!InstructorPanel) { return; }
+	const TArray<FInstructorAircraftRow> Rows = InstructorPanel->GetAircraftRows();
+	if (Rows.Num() == 0)
+	{
+		InstructorPanel->SetSelectedCallsign(NAME_None);
+		return;
+	}
+
+	const FName Current = InstructorPanel->GetSelectedCallsign();
+	int32 Next = 0;
+	if (Current != NAME_None)
+	{
+		for (int32 i = 0; i < Rows.Num(); ++i)
+		{
+			if (Rows[i].Callsign == Current) { Next = (i + 1) % Rows.Num(); break; }
+		}
+	}
+	InstructorPanel->SetSelectedCallsign(Rows[Next].Callsign);
+}
+
+void AClearanceOperatorPC::SelectPreviousAircraft()
+{
+	if (!InstructorPanel) { return; }
+	const TArray<FInstructorAircraftRow> Rows = InstructorPanel->GetAircraftRows();
+	if (Rows.Num() == 0)
+	{
+		InstructorPanel->SetSelectedCallsign(NAME_None);
+		return;
+	}
+
+	const FName Current = InstructorPanel->GetSelectedCallsign();
+	int32 Prev = Rows.Num() - 1;
+	if (Current != NAME_None)
+	{
+		for (int32 i = 0; i < Rows.Num(); ++i)
+		{
+			if (Rows[i].Callsign == Current) { Prev = (i - 1 + Rows.Num()) % Rows.Num(); break; }
+		}
+	}
+	InstructorPanel->SetSelectedCallsign(Rows[Prev].Callsign);
+}
+
+void AClearanceOperatorPC::ClearAircraftSelection()
+{
+	if (InstructorPanel) { InstructorPanel->SetSelectedCallsign(NAME_None); }
+}
+
+void AClearanceOperatorPC::StartPTT()
+{
+	if (!CachedVoiceInput)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			for (TActorIterator<AClearanceVoiceInput> It(World); It; ++It)
+			{
+				CachedVoiceInput = *It;
+				break;
+			}
+		}
+	}
+	if (CachedVoiceInput) { CachedVoiceInput->StartListening(); }
+}
+
+void AClearanceOperatorPC::StopPTT()
+{
+	if (CachedVoiceInput) { CachedVoiceInput->StopListening(); }
 }

@@ -9,8 +9,12 @@ class UCameraComponent;
 class UMotionControllerComponent;
 class UWidgetInteractionComponent;
 class UStaticMeshComponent;
+class USkeletalMeshComponent;
+class USphereComponent;
 class UInputAction;
 class UInputMappingContext;
+class AClearanceOperatorButton;
+class UPrimitiveComponent;
 
 // Seated VR pawn for the operator role. HMD drives the camera, motion
 // controllers drive left/right hand transforms, widget-interaction
@@ -99,13 +103,88 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
 	TObjectPtr<UWidgetInteractionComponent> RightPointer;
 
+	// Hand mesh slots. Assign the Meta XR Interaction SDK skeletal meshes
+	// (SK_OpenXRHand_Left / _Right) + the matching ABP_ControllerDrivenHand
+	// animation blueprints in the BP subclass. Purely cosmetic: the
+	// operator-console interaction runs off the fingertip spheres below,
+	// not off the mesh, so a null hand still leaves interaction working
+	// (with an invisible finger). - TripleA
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
+	TObjectPtr<USkeletalMeshComponent> LeftHand;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR")
+	TObjectPtr<USkeletalMeshComponent> RightHand;
+
+	// Fingertip collision volumes. Sized to feel like an index-fingertip
+	// touching a button on the console. Placed as children of the motion
+	// controllers rather than sockets on the hand mesh so interaction
+	// works regardless of which hand mesh (or none) is assigned. If Neo
+	// wants finger-perfect precision later, reparent these to a hand
+	// socket in the BP subclass. - TripleA
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR|Interaction")
+	TObjectPtr<USphereComponent> LeftFingertip;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR|Interaction")
+	TObjectPtr<USphereComponent> RightFingertip;
+
+	// Forward offset of the fingertip from the motion-controller origin.
+	// Default (5, 0, -3) puts it just beyond the front of a Meta Quest
+	// Touch controller in the natural "index finger extended" pose. Tune
+	// per Details panel if the hand mesh's index-tip position differs. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Interaction")
+	FVector FingertipOffset = FVector(5.f, 0.f, -3.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Interaction")
+	float FingertipRadius = 1.5f;
+
+	// Trigger input for firing the currently-hovered console button.
+	// Distinct from any grip / thumbstick input; these two actions are
+	// dedicated to console-button dispatch. Wire in the BP subclass to
+	// the motion-controller Trigger axes. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Input")
+	TObjectPtr<UInputAction> TriggerLeftAction;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Input")
+	TObjectPtr<UInputAction> TriggerRightAction;
+
 protected:
 	// EnhancedInput handlers
 	void HandleMove(const FInputActionValue& Value);
 	void HandleSnapTurn(const FInputActionValue& Value);
+	void HandleTriggerLeftPressed(const FInputActionValue& Value);
+	void HandleTriggerLeftReleased(const FInputActionValue& Value);
+	void HandleTriggerRightPressed(const FInputActionValue& Value);
+	void HandleTriggerRightReleased(const FInputActionValue& Value);
+
+	UFUNCTION()
+	void OnLeftFingertipBeginOverlap(UPrimitiveComponent* Self, AActor* OtherActor,
+		UPrimitiveComponent* Other, int32 BodyIndex, bool bFromSweep, const FHitResult& Sweep);
+
+	UFUNCTION()
+	void OnLeftFingertipEndOverlap(UPrimitiveComponent* Self, AActor* OtherActor,
+		UPrimitiveComponent* Other, int32 BodyIndex);
+
+	UFUNCTION()
+	void OnRightFingertipBeginOverlap(UPrimitiveComponent* Self, AActor* OtherActor,
+		UPrimitiveComponent* Other, int32 BodyIndex, bool bFromSweep, const FHitResult& Sweep);
+
+	UFUNCTION()
+	void OnRightFingertipEndOverlap(UPrimitiveComponent* Self, AActor* OtherActor,
+		UPrimitiveComponent* Other, int32 BodyIndex);
 
 private:
 	// True when the snap-turn stick has returned to centre and the next
 	// deflection is allowed to fire. Prevents holding the stick to spin. - TripleA
 	bool bSnapTurnReady = true;
+
+	// Currently-touched console button per controller. Updated by the
+	// begin/end overlap callbacks. On trigger press, whichever button is
+	// hovered by that hand gets HandlePress; on release, same button gets
+	// HandleRelease (regardless of whether the finger has since moved away
+	// - press-and-hold semantics need the release edge even if the operator
+	// slid their finger off). - TripleA
+	UPROPERTY(Transient) TObjectPtr<AClearanceOperatorButton> LeftHoveredButton;
+	UPROPERTY(Transient) TObjectPtr<AClearanceOperatorButton> RightHoveredButton;
+	UPROPERTY(Transient) TObjectPtr<AClearanceOperatorButton> LeftPressedButton;
+	UPROPERTY(Transient) TObjectPtr<AClearanceOperatorButton> RightPressedButton;
 };

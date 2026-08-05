@@ -612,12 +612,13 @@ struct CLEARANCESIM_API FRadarTrack
 	// Operator's classification of this track, populated server-side in
 	// RefreshOperatorTracks from the truth aircraft's ThreatClass (NOT
 	// TrueAffiliation - operator scope shows what the trainee believes,
-	// not god view). Default Unknown so ghost tracks + failed lookups
-	// read as amber "no IFF resolved" instead of green Neutral or the
-	// enum's zero-value Friendly. Consumed by the operator paint chain
+	// not god view). Default Neutral: ATC doctrine treats an unclassified
+	// radar contact as unclassified-not-threatening rather than actively
+	// suspicious, so ghost tracks + failed lookups read green rather than
+	// amber "unknown affiliation." Consumed by the operator paint chain
 	// to tint the affiliation symbol. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
-	EThreatClass ThreatClass = EThreatClass::Unknown;
+	EThreatClass ThreatClass = EThreatClass::Neutral;
 };
 
 /** Radar emission signature - the IEEE 1278.1 fingerprint an ELINT receiver would

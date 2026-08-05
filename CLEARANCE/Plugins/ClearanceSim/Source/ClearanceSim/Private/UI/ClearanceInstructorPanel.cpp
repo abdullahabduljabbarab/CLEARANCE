@@ -36,6 +36,14 @@ namespace
 	// before that block would be visible. - TripleA
 	float GScopeBrightness = 1.f;
 
+	// Same-shape counterpart for scope-radius padding: BP passes a full-canvas
+	// pixel radius into every C++ paint helper; the helper's first act is to
+	// multiply that value by this factor so all downstream drawing (boundary,
+	// rings, positions, zone radii) shrinks uniformly and leaves room for
+	// labels + margins on constrained canvases (VR diegetic monitor). Default
+	// 1.0 is a no-op for the flat-screen instructor HUD. - TripleA
+	float GScopeRadiusPadding = 1.f;
+
 	FLinearColor Brighten(FLinearColor C)
 	{
 		C.R *= GScopeBrightness;
@@ -161,6 +169,12 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 		// diegetic VR tower monitor) crank it to ~2.5 to compensate for
 		// sunlit-scene wash-out. - TripleA
 		GScopeBrightness = FMath::Max(0.f, ScopeBrightness);
+
+		// Same publish for the scope-radius padding. Applied inside every
+		// paint helper that takes ScopePixelRadius so the whole scope
+		// (boundary, rings, positions, zone radii) shrinks uniformly on
+		// canvases where labels would otherwise clip past the edge. - TripleA
+		GScopeRadiusPadding = FMath::Clamp(ScopeRadiusPadding, 0.4f, 1.0f);
 
 		// AllottedGeometry.GetLocalSize() is the auto-sized content bounds of
 		// the UUserWidget root. On a screen-space HUD (added to viewport) the
@@ -1547,6 +1561,7 @@ void UClearanceInstructorPanel::PopulateEventLogScrollBox(UScrollBox* ScrollBox,
 
 FVector2D UClearanceInstructorPanel::ScopeNmToPixel(FVector2D PositionNm, FVector2D ScopeCentre, float ScopePixelRadius) const
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	// Cesium X-mirror applied on scope so aircraft visual motion matches the
 	// direction the data-block label reports. - TripleA
 	const float Range = FMath::Max(1.f, ScopeRangeNm);
@@ -1735,6 +1750,7 @@ void UClearanceInstructorPanel::DrawAffiliationSymbol(
 
 void UClearanceInstructorPanel::DrawScopeBoundary(FPaintContext& Context, FVector2D ScopeCentre, float ScopePixelRadius)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	const float Outer = FMath::Max(8.f, ScopePixelRadius);
 
 	const FLinearColor Border    = FLinearColor(0.20f, 0.24f, 0.31f, 0.85f);
@@ -1814,6 +1830,7 @@ void UClearanceInstructorPanel::DrawScopeChaffCloud(FPaintContext& Context, FVec
 void UClearanceInstructorPanel::DrawZoneMarker(FPaintContext& Context, FVector2D ScopeCentre,
 	float ScopePixelRadius, const FInstructorZoneMarker& Zone)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	// Route position through ScopeNmToPixel so there's one projection path
 	// shared with aircraft / chaff / runway markers - keeps everything
 	// proportional through zoom changes. Radius uses the same nm->px scale
@@ -1859,6 +1876,7 @@ void UClearanceInstructorPanel::DrawZoneMarker(FPaintContext& Context, FVector2D
 void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector2D ScopeCentre,
 	float ScopePixelRadius, const FRunwayInfo& Runway)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	// Same projection as aircraft so the runway sits at the right place
 	// relative to traffic as the scope zooms. - TripleA
 	const FVector2D Threshold = ScopeNmToPixel(Runway.ThresholdNm, ScopeCentre, ScopePixelRadius);
@@ -1947,6 +1965,7 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 void UClearanceInstructorPanel::DrawWaypointMarker(FPaintContext& Context, FVector2D ScopeCentre,
 	float ScopePixelRadius, const FInstructorWaypointMarker& Waypoint)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	const FVector2D P = ScopeNmToPixel(Waypoint.PositionNm, ScopeCentre, ScopePixelRadius);
 	// Triangle marker much more subtle than the label so the navigation grid
 	// reads as background reference rather than competing with aircraft. - TripleA
@@ -1967,6 +1986,7 @@ void UClearanceInstructorPanel::DrawWaypointMarker(FPaintContext& Context, FVect
 void UClearanceInstructorPanel::DrawAirwaySegment(FPaintContext& Context, FVector2D ScopeCentre,
 	float ScopePixelRadius, const FInstructorAirwaySegment& Airway)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	const FVector2D A = ScopeNmToPixel(Airway.StartNm, ScopeCentre, ScopePixelRadius);
 	const FVector2D B = ScopeNmToPixel(Airway.EndNm,   ScopeCentre, ScopePixelRadius);
 	const FLinearColor Tint(0.36f, 0.46f, 0.62f, 0.55f);
@@ -1976,6 +1996,7 @@ void UClearanceInstructorPanel::DrawAirwaySegment(FPaintContext& Context, FVecto
 void UClearanceInstructorPanel::DrawRangeLabels(FPaintContext& Context, FVector2D ScopeCentre,
 	float ScopePixelRadius)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	const float Range = FMath::Max(1.f, ScopeRangeNm);
 	const FLinearColor Tint(0.55f, 0.72f, 0.95f, 0.65f);
 
@@ -2094,6 +2115,7 @@ void UClearanceInstructorPanel::DrawAircraftLabel(FPaintContext& Context, FVecto
 void UClearanceInstructorPanel::DrawCoverageGrid(FPaintContext& Context,
 	FVector2D ScopeCentre, float ScopePixelRadius)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	UWorld* World = GetWorld();
 	if (!World || !CachedController) { return; }
 
@@ -2318,6 +2340,7 @@ FVector2D UClearanceInstructorPanel::GetDeclutteredTrackPx(
 	const TArray<FRadarTrack>& AllTracks,
 	FVector2D ScopeCentre, float ScopePixelRadius) const
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	const FVector2D Natural = ScopeNmToPixel(FVector2D(Track.Position.X, Track.Position.Y),
 		ScopeCentre, ScopePixelRadius);
 
@@ -2367,6 +2390,7 @@ FVector2D UClearanceInstructorPanel::GetDeclutteredSymbolPx(
 	const TArray<FInstructorAircraftRow>& AllRows,
 	FVector2D ScopeCentre, float ScopePixelRadius) const
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	const FVector2D Natural = ScopeNmToPixel(Row.PositionNm, ScopeCentre, ScopePixelRadius);
 
 	// Threshold = ~12px (typical symbol HalfSize is 12, so two symbols whose
@@ -2426,6 +2450,7 @@ void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
 	FVector2D ScopeCentre, float ScopePixelRadius,
 	const TArray<FInstructorAircraftRow>& Rows, bool bShowFullDataBlock)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	// Candidate label-corner offsets relative to the symbol centre, in priority
 	// order. First non-overlapping slot wins. Three tiers: close, mid, far -
 	// at high traffic density (clustered aircraft) every close slot collides
@@ -2532,6 +2557,7 @@ void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
 	FVector2D ScopeCentre, float ScopePixelRadius,
 	const TArray<FRadarTrack>& Tracks, bool bShowFullDataBlock)
 {
+	ScopePixelRadius *= GScopeRadiusPadding; // padding
 	// Same candidate slot table as DrawAllAircraftLabels. Kept inline rather
 	// than shared because the two functions are siblings and the slot list
 	// might evolve per-mode (operator scope is denser - more tracks per

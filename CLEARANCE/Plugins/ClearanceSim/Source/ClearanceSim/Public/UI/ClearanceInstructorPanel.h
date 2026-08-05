@@ -637,6 +637,20 @@ public:
 		meta = (ClampMin = "0.1", ClampMax = "8.0", UIMin = "0.5", UIMax = "4.0"))
 	float ScopeBrightness = 1.f;
 
+	// Factor applied to the ScopePixelRadius value that BP passes into every
+	// C++ paint helper. Default 1.0 leaves the boundary + rings + positions
+	// at the caller's requested size (correct for the flat-screen HUD, where
+	// UMG already sizes the panel to the viewport). On a world-space
+	// WidgetComponent (the diegetic VR monitor) BP computes radius from the
+	// full DrawSize but data-block labels then clip past the monitor bezel;
+	// dropping this to ~0.78 shrinks everything (boundary, rings, aircraft
+	// positions, zone radii) uniformly so labels stay inside the canvas.
+	// Applied once inside each paint helper so no per-call-site changes on
+	// the BP side. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor|Scope",
+		meta = (ClampMin = "0.4", ClampMax = "1.0", UIMin = "0.5", UIMax = "1.0"))
+	float ScopeRadiusPadding = 1.f;
+
 	// Cap on recent notifications surfaced to the event log. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor")
 	int32 MaxNotifications = 40;

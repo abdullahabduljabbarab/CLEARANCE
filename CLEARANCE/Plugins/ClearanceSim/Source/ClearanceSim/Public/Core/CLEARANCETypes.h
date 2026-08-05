@@ -608,6 +608,16 @@ struct CLEARANCESIM_API FRadarTrack
 	// the per-tick fade pass resetting it back to full. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
 	float PaintConfidence = 1.f;
+
+	// Operator's classification of this track, populated server-side in
+	// RefreshOperatorTracks from the truth aircraft's ThreatClass (NOT
+	// TrueAffiliation - operator scope shows what the trainee believes,
+	// not god view). Default Unknown so ghost tracks + failed lookups
+	// read as amber "no IFF resolved" instead of green Neutral or the
+	// enum's zero-value Friendly. Consumed by the operator paint chain
+	// to tint the affiliation symbol. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Radar")
+	EThreatClass ThreatClass = EThreatClass::Unknown;
 };
 
 /** Radar emission signature - the IEEE 1278.1 fingerprint an ELINT receiver would

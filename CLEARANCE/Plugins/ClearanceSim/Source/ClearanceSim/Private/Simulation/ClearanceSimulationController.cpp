@@ -2831,9 +2831,23 @@ void AClearanceSimulationController::RefreshOperatorTracks()
 	}
 
 	RepOperatorTracks.Reset(Fused.Num());
+	AClearanceAirspaceManager* AM = GetAirspaceManager();
 	for (const TPair<FName, FRadarTrack>& Pair : Fused)
 	{
-		RepOperatorTracks.Add(Pair.Value);
+		FRadarTrack Out = Pair.Value;
+		// Populate ThreatClass from the operator-facing classification on the
+		// truth aircraft state. ChaffFalse ghost tracks (GHOST_* callsigns) and
+		// stale entries whose aircraft has since deregistered leave it at
+		// FRadarTrack's default (Unknown / amber), which reads as "no IFF
+		// resolved" on the operator scope. Without this the BP paint chain
+		// had no per-track threat data and every symbol drew as enum-default
+		// Friendly / blue. - TripleA
+		if (AM)
+		{
+			const FAircraftState S = AM->GetAircraftState(Out.TruthCallsign);
+			if (S.bIsValid) { Out.ThreatClass = S.ThreatClass; }
+		}
+		RepOperatorTracks.Add(Out);
 	}
 }
 

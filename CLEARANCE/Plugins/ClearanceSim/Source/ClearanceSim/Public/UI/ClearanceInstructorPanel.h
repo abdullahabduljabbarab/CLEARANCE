@@ -579,6 +579,22 @@ public:
 		const TArray<FRadarTrack>& Tracks,
 		bool bShowFullDataBlock = false);
 
+	// Companion to DrawOperatorTrackLabels: draws the affiliation symbol for
+	// every operator-scope track. Threat lookup uses the same truth-state path
+	// as DrawOperatorTrackLabels (AirspaceManager->GetAircraftState(TruthCallsign))
+	// so symbols and their data blocks are always tinted the same colour.
+	// BP callers replace the per-track ForEach DrawAffiliationSymbol node with
+	// a single call to this after the loop; keeps operator-scope colour logic
+	// in one place rather than depending on BP wiring the correct enum pin
+	// through Break FRadarTrack. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintCosmetic, Category = "Instructor|Scope")
+	void DrawOperatorTrackSymbols(
+		UPARAM(ref) struct FPaintContext& Context,
+		FVector2D ScopeCentre,
+		float ScopePixelRadius,
+		const TArray<FRadarTrack>& Tracks,
+		float SymbolHalfSizePx = 12.f);
+
 	// Whether the per-aircraft data blocks should show the full ATC format
 	// (callsign + FL + speed + heading) or the minimal two-line version.
 	// Toggleable in BP so the instructor can hide-on-clutter / expand-on-detail. - TripleA

@@ -2556,6 +2556,51 @@ void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
 	}
 }
 
+void UClearanceInstructorPanel::DrawOperatorTrackSymbols(FPaintContext& Context,
+	FVector2D ScopeCentre, float ScopePixelRadius,
+	const TArray<FRadarTrack>& Tracks, float SymbolHalfSizePx)
+{
+	// Mirrors the truth lookup used by DrawOperatorTrackLabels so symbols and
+	// labels share one source of tinting. BP callers that used to run a
+	// per-track ForEach and call DrawAffiliationSymbol with a manually-wired
+	// Threat pin should replace that with a single call to this after the
+	// loop; keeps operator-scope colour logic out of BP wiring where a stale
+	// or wrong-pin connection was rendering every symbol as enum-zero
+	// (Friendly / blue) even when the data block beside it read Neutral. - TripleA
+	AClearanceAirspaceManager* AM = CachedController ? CachedController->GetAirspaceManager() : nullptr;
+	const float HalfSizePx = FMath::Max(2.f, SymbolHalfSizePx);
+
+	for (const FRadarTrack& Trk : Tracks)
+	{
+		const FVector2D SymbolPx = GetDeclutteredTrackPx(Trk, Tracks, ScopeCentre, ScopePixelRadius);
+
+		// Prefer the truth aircraft's ThreatClass (operator's classification),
+		// fall back to the replicated FRadarTrack.ThreatClass if the lookup
+		// fails (deregistered aircraft, ghost tracks). Ghost tracks now default
+		// to Neutral per FRadarTrack's struct default. - TripleA
+		EThreatClass Threat = Trk.ThreatClass;
+		bool bIsMilitary = false;
+		float HeadingDeg = Trk.Heading;
+		if (AM)
+		{
+			const FAircraftState S = AM->GetAircraftState(Trk.TruthCallsign);
+			if (S.bIsValid)
+			{
+				Threat = S.ThreatClass;
+				bIsMilitary = S.bIsMilitary;
+			}
+		}
+
+		// Symbol alpha rides on the radar confidence: freshly-painted contacts
+		// solid, stale ones fade proportionally. Same treatment the operator
+		// track labels use, so a fading contact fades in both places
+		// simultaneously. - TripleA
+		const float Alpha = FMath::Clamp(Trk.Confidence, 0.f, 1.f);
+		DrawAffiliationSymbol(Context, SymbolPx, Threat, bIsMilitary,
+			HeadingDeg, EAlertLevel::None, HalfSizePx, Alpha);
+	}
+}
+
 void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
 	FVector2D ScopeCentre, float ScopePixelRadius,
 	const TArray<FRadarTrack>& Tracks, bool bShowFullDataBlock)

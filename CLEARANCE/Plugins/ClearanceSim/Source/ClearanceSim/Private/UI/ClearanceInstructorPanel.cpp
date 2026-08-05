@@ -2581,6 +2581,18 @@ void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
 	TArray<FBox2D> Placed;
 	Placed.Reserve(Tracks.Num());
 
+	// Same Cesium mirror used by BuildLabelLines on the truth path AND by
+	// DrawAffiliationSymbol's bearing vector: at Warton the local ENU frame
+	// inverts an axis relative to the sim internal frame, so displayed magnetic
+	// heading = (360 - internal) mod 360. Without this the operator scope
+	// showed raw internal headings while the truth scope showed magnetic,
+	// making the two views disagree on every aircraft's data block. - TripleA
+	auto ToMagInt = [](float H) -> int32
+	{
+		const float Shifted = FMath::Fmod(FMath::Fmod(360.f - H, 360.f) + 360.f, 360.f);
+		return FMath::RoundToInt(Shifted) % 360;
+	};
+
 	for (const FRadarTrack& Trk : Tracks)
 	{
 		// Use the decluttered position so leader sources track the nudged
@@ -2598,15 +2610,14 @@ void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
 		{
 			Lines.Add(FString::Printf(TEXT("FL%03d"), FL));
 			Lines.Add(FString::Printf(TEXT("%dkt"), FMath::RoundToInt(Trk.Speed)));
-			Lines.Add(FString::Printf(TEXT("%03d"), FMath::RoundToInt(Trk.Heading)));
+			Lines.Add(FString::Printf(TEXT("%03d"), ToMagInt(Trk.Heading)));
 		}
 		else
 		{
 			// Minimum block on operator scope: track callsign + "FL### HDG"
 			// using the radar's estimated heading (not truth). Same parallax-
 			// correction reasoning as the truth-scope label. - TripleA
-			const int32 Hdg = FMath::RoundToInt(Trk.Heading);
-			Lines.Add(FString::Printf(TEXT("FL%03d %03d"), FL, Hdg));
+			Lines.Add(FString::Printf(TEXT("FL%03d %03d"), FL, ToMagInt(Trk.Heading)));
 		}
 
 		const FVector2D LabelSize = EstimateLabelSize(Lines);

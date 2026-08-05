@@ -26,6 +26,25 @@
 #include "UObject/ConstructorHelpers.h"
 #include "EngineUtils.h"
 
+namespace
+{
+	// Set at NativePaint entry from the panel's ScopeBrightness UPROPERTY.
+	// Read inside Brighten() and every Paint* helper below. Slate paint is
+	// game-thread only so a plain file-scope float is safe; no thread_local
+	// needed. Defined up here (not in the paint-helper anon namespace lower
+	// in the file) because NativePaint + camera overlay helpers all use it
+	// before that block would be visible. - TripleA
+	float GScopeBrightness = 1.f;
+
+	FLinearColor Brighten(FLinearColor C)
+	{
+		C.R *= GScopeBrightness;
+		C.G *= GScopeBrightness;
+		C.B *= GScopeBrightness;
+		return C;
+	}
+}
+
 UClearanceInstructorPanel::UClearanceInstructorPanel(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -135,6 +154,14 @@ int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,
 	// root, not from those children. - TripleA
 	if (bShowScopeOrCamera)
 	{
+		// Publish this panel's brightness into the anon-namespace helper
+		// state so every Paint* call below (vectors AND text) picks up the
+		// same multiplier. Flat-screen HUD leaves ScopeBrightness at 1.0
+		// and nothing changes; world-space WidgetComponent instances (the
+		// diegetic VR tower monitor) crank it to ~2.5 to compensate for
+		// sunlit-scene wash-out. - TripleA
+		GScopeBrightness = FMath::Max(0.f, ScopeBrightness);
+
 		// AllottedGeometry.GetLocalSize() is the auto-sized content bounds of
 		// the UUserWidget root. On a screen-space HUD (added to viewport) the
 		// viewport forces the widget to fill the screen, so this happens to
@@ -650,7 +677,7 @@ void UClearanceInstructorPanel::DrawCameraOverlayLines(FPaintContext& Context, U
 	{
 		const FVector2D Start = ImageOriginInPanel + Line.StartUV * ImageSize;
 		const FVector2D End   = ImageOriginInPanel + Line.EndUV   * ImageSize;
-		UWidgetBlueprintLibrary::DrawLine(Context, Start, End, Line.Color, true, Line.Thickness);
+		UWidgetBlueprintLibrary::DrawLine(Context, Start, End, Brighten(Line.Color), true, Line.Thickness);
 	}
 }
 
@@ -668,7 +695,7 @@ void UClearanceInstructorPanel::DrawCameraFeedBorder(FPaintContext& Context, UIm
 	const FVector2D Origin = (ImageAbs - PanelAbs) / Scale;
 	const FVector2D Far(Origin.X + ImageSize.X, Origin.Y + ImageSize.Y);
 
-	const FLinearColor Cyan(0.20f, 0.85f, 1.00f, 0.6f);
+	const FLinearColor Cyan = Brighten(FLinearColor(0.20f, 0.85f, 1.00f, 0.6f));
 	constexpr float Thick = 1.f;
 	UWidgetBlueprintLibrary::DrawLine(Context, FVector2D(Origin.X, Origin.Y), FVector2D(Far.X,    Origin.Y), Cyan, true, Thick);
 	UWidgetBlueprintLibrary::DrawLine(Context, FVector2D(Far.X,    Origin.Y), FVector2D(Far.X,    Far.Y),    Cyan, true, Thick);
@@ -702,8 +729,8 @@ void UClearanceInstructorPanel::DrawCameraOverlayText(FPaintContext& Context, UI
 		// Cheap drop-shadow: same string painted 1 px down-right in black
 		// first. Keeps the cyan legible whether it lands over sky, runway
 		// or terrain. - TripleA
-		UWidgetBlueprintLibrary::DrawText(Context, Item.Text, Pos + FVector2D(2.f, 2.f), ShadowColor);
-		UWidgetBlueprintLibrary::DrawText(Context, Item.Text, Pos, Item.Color);
+		UWidgetBlueprintLibrary::DrawText(Context, Item.Text, Pos + FVector2D(2.f, 2.f), Brighten(ShadowColor));
+		UWidgetBlueprintLibrary::DrawText(Context, Item.Text, Pos, Brighten(Item.Color));
 	}
 }
 
@@ -1555,18 +1582,27 @@ namespace
 
 	void PaintLine(FPaintContext& Ctx, FVector2D A, FVector2D B, const FLinearColor& Tint, float Thickness = 1.5f)
 	{
-		UWidgetBlueprintLibrary::DrawLine(Ctx, A, B, Tint, true);
+		const FLinearColor T = Brighten(Tint);
+		UWidgetBlueprintLibrary::DrawLine(Ctx, A, B, T, true);
 		// UWidgetBlueprintLibrary::DrawLine ignores thickness in some UE
 		// versions; double-up to fake heavier strokes if needed. - TripleA
 		if (Thickness > 1.6f)
 		{
-			UWidgetBlueprintLibrary::DrawLine(Ctx, A + FVector2D(0.5f, 0.f), B + FVector2D(0.5f, 0.f), Tint, true);
+			UWidgetBlueprintLibrary::DrawLine(Ctx, A + FVector2D(0.5f, 0.f), B + FVector2D(0.5f, 0.f), T, true);
 		}
 	}
 
 	void PaintPolyline(FPaintContext& Ctx, const TArray<FVector2D>& Points, const FLinearColor& Tint)
 	{
-		UWidgetBlueprintLibrary::DrawLines(Ctx, Points, Tint, true);
+		UWidgetBlueprintLibrary::DrawLines(Ctx, Points, Brighten(Tint), true);
+	}
+
+	// Text draws bypass the PaintLine/PaintPolyline path; route through this
+	// helper so the ScopeBrightness multiplier reaches labels + data blocks
+	// the same way it reaches vector geometry. - TripleA
+	void PaintText(FPaintContext& Ctx, const FString& Text, FVector2D Pos, const FLinearColor& Tint)
+	{
+		UWidgetBlueprintLibrary::DrawText(Ctx, Text, Pos, Brighten(Tint));
 	}
 
 	void PaintCircle(FPaintContext& Ctx, FVector2D Centre, float Radius, int32 Segments, const FLinearColor& Tint)
@@ -1744,7 +1780,7 @@ void UClearanceInstructorPanel::DrawScopeBoundary(FPaintContext& Context, FVecto
 			const FString LabelText = FString::Printf(TEXT("%03d"), DegInt);
 			const FVector2D Anchor = ScopeCentre + Dir * (Outer + 14.f);
 			UWidgetBlueprintLibrary::DrawText(Context, LabelText,
-				Anchor + FVector2D(-10.f, -6.f), RoseLabel);
+				Anchor + FVector2D(-10.f, -6.f), Brighten(RoseLabel));
 		}
 	}
 
@@ -1762,7 +1798,7 @@ void UClearanceInstructorPanel::DrawScopeBoundary(FPaintContext& Context, FVecto
 		const FVector2D Dir(FMath::Sin(RadC), -FMath::Cos(RadC));
 		const FVector2D Anchor = ScopeCentre + Dir * (Outer + 32.f);
 		UWidgetBlueprintLibrary::DrawText(Context, CardinalGlyphs[c],
-			Anchor + FVector2D(-3.f, -7.f), CardinalTint);
+			Anchor + FVector2D(-3.f, -7.f), Brighten(CardinalTint));
 	}
 }
 
@@ -1816,7 +1852,7 @@ void UClearanceInstructorPanel::DrawZoneMarker(FPaintContext& Context, FVector2D
 		FLinearColor LabelTint = Tint;
 		LabelTint.A = 1.f;
 		UWidgetBlueprintLibrary::DrawText(Context, NameStr,
-			Centre + FVector2D(-NameWidthPx * 0.5f, -Rad - 14.f), LabelTint);
+			Centre + FVector2D(-NameWidthPx * 0.5f, -Rad - 14.f), Brighten(LabelTint));
 	}
 }
 
@@ -1905,7 +1941,7 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 	if (Des > 36)  { Des = Des % 36; if (Des == 0) { Des = 36; } }
 	const FString DesText = FString::Printf(TEXT("%02d"), Des);
 	UWidgetBlueprintLibrary::DrawText(Context, DesText,
-		Threshold + Cross * (ThreshHalf + 4.f) + FVector2D(-7.f, -6.f), DesignatorTint);
+		Threshold + Cross * (ThreshHalf + 4.f) + FVector2D(-7.f, -6.f), Brighten(DesignatorTint));
 }
 
 void UClearanceInstructorPanel::DrawWaypointMarker(FPaintContext& Context, FVector2D ScopeCentre,
@@ -1925,7 +1961,7 @@ void UClearanceInstructorPanel::DrawWaypointMarker(FPaintContext& Context, FVect
 	PaintLine(Context, BR,  Top, MarkerTint);
 
 	UWidgetBlueprintLibrary::DrawText(Context, Waypoint.Name.ToString(),
-		P + FVector2D(7.f, -2.f), LabelTint);
+		P + FVector2D(7.f, -2.f), Brighten(LabelTint));
 }
 
 void UClearanceInstructorPanel::DrawAirwaySegment(FPaintContext& Context, FVector2D ScopeCentre,
@@ -1951,7 +1987,7 @@ void UClearanceInstructorPanel::DrawRangeLabels(FPaintContext& Context, FVector2
 		const int32 Nm = FMath::RoundToInt(Range * F);
 		const FString Label = FString::Printf(TEXT("%d"), Nm);
 		const FVector2D Pos = ScopeCentre + FVector2D(4.f, -ScopePixelRadius * F - 6.f);
-		UWidgetBlueprintLibrary::DrawText(Context, Label, Pos, Tint);
+		UWidgetBlueprintLibrary::DrawText(Context, Label, Pos, Brighten(Tint));
 	}
 }
 
@@ -2051,7 +2087,7 @@ void UClearanceInstructorPanel::DrawAircraftLabel(FPaintContext& Context, FVecto
 	for (int32 i = 0; i < Lines.Num(); ++i)
 	{
 		UWidgetBlueprintLibrary::DrawText(Context, Lines[i],
-			LabelTopLeft + FVector2D(0.f, i * LineHeight), Tint);
+			LabelTopLeft + FVector2D(0.f, i * LineHeight), Brighten(Tint));
 	}
 }
 
@@ -2083,9 +2119,13 @@ void UClearanceInstructorPanel::DrawCoverageGrid(FPaintContext& Context,
 	// because the eye stops perceiving green below ~0.05 alpha; the shoulder
 	// keeps alpha visible most of the way to the edge then drops sharply
 	// for a soft boundary. - TripleA
-	const FLinearColor CentreColor  (0.20f, 0.85f, 0.30f, 0.10f);
-	const FLinearColor ShoulderColor(0.20f, 0.85f, 0.30f, 0.08f);
-	const FLinearColor EdgeColor    (0.20f, 0.85f, 0.30f, 0.00f);
+	// Coverage-grid vertices bypass the PaintLine/PaintPolyline helpers
+	// (they go direct to MakeCustomVerts), so apply ScopeBrightness at
+	// declaration to keep the heatmap tint consistent with the rest of
+	// the scope palette. - TripleA
+	const FLinearColor CentreColor   = Brighten(FLinearColor(0.20f, 0.85f, 0.30f, 0.10f));
+	const FLinearColor ShoulderColor = Brighten(FLinearColor(0.20f, 0.85f, 0.30f, 0.08f));
+	const FLinearColor EdgeColor     = Brighten(FLinearColor(0.20f, 0.85f, 0.30f, 0.00f));
 	constexpr int32 Segments = 48;
 	constexpr float  ShoulderRadiusFrac = 0.80f;
 
@@ -2483,7 +2523,7 @@ void UClearanceInstructorPanel::DrawAllAircraftLabels(FPaintContext& Context,
 		for (int32 i = 0; i < Lines.Num(); ++i)
 		{
 			UWidgetBlueprintLibrary::DrawText(Context, Lines[i],
-				LabelTopLeft + FVector2D(0.f, i * LineHeight), Tint);
+				LabelTopLeft + FVector2D(0.f, i * LineHeight), Brighten(Tint));
 		}
 	}
 }
@@ -2592,7 +2632,7 @@ void UClearanceInstructorPanel::DrawOperatorTrackLabels(FPaintContext& Context,
 		for (int32 i = 0; i < Lines.Num(); ++i)
 		{
 			UWidgetBlueprintLibrary::DrawText(Context, Lines[i],
-				LabelTopLeft + FVector2D(0.f, i * LineHeight), Tint);
+				LabelTopLeft + FVector2D(0.f, i * LineHeight), Brighten(Tint));
 		}
 	}
 }

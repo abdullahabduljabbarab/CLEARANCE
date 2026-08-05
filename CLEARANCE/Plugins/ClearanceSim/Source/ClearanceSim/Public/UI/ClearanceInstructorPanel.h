@@ -626,6 +626,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor|Scope")
 	float AutoFitMarginFactor = 1.15f;
 
+	// Multiplier applied to every RGB channel of every scope paint colour
+	// before it hits the draw layer. Alpha is left alone. On the flat-screen
+	// instructor HUD, leave this at 1.0. On a world-space WidgetComponent
+	// (the diegetic VR monitor in the tower), the sunlit interior washes
+	// out the base palette; bump to 2.0-3.0 to compensate. Applied inside
+	// the scope paint helpers so every line, polyline, symbol and label
+	// picks it up without per-call-site changes. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor|Scope",
+		meta = (ClampMin = "0.1", ClampMax = "8.0", UIMin = "0.5", UIMax = "4.0"))
+	float ScopeBrightness = 1.f;
+
 	// Cap on recent notifications surfaced to the event log. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instructor")
 	int32 MaxNotifications = 40;

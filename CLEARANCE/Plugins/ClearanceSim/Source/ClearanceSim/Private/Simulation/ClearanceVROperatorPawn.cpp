@@ -134,6 +134,13 @@ void AClearanceVROperatorPawn::BeginPlay()
 {
 	Super::BeginPlay();
 
+	UE_LOG(LogTemp, Warning,
+		TEXT("[VRPawn] BeginPlay: Role=%d NetMode=%d LocallyControlled=%d DefaultMappingContext=%s"),
+		(int32)GetLocalRole(),
+		(int32)GetNetMode(),
+		IsLocallyControlled() ? 1 : 0,
+		DefaultMappingContext ? *DefaultMappingContext->GetName() : TEXT("<null>"));
+
 	// The operator role is server-authoritative: this pawn is possessed on
 	// the server by AClearanceOperatorPC. In a listen-server PIE both the
 	// authoritative host pawn AND a client-side proxy pass IsLocallyControlled,
@@ -143,6 +150,7 @@ void AClearanceVROperatorPawn::BeginPlay()
 		GetNetMode() == NM_DedicatedServer ||
 		!IsLocallyControlled())
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[VRPawn] BeginPlay early return: not locally controlled server"));
 		return;
 	}
 
@@ -163,6 +171,12 @@ void AClearanceVROperatorPawn::BeginPlay()
 			if (DefaultMappingContext)
 			{
 				Subsystem->AddMappingContext(DefaultMappingContext, /*Priority*/ 100);
+				UE_LOG(LogTemp, Warning, TEXT("[VRPawn] BeginPlay: AddMappingContext(%s) at prio 100"),
+					*DefaultMappingContext->GetName());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[VRPawn] BeginPlay: DefaultMappingContext is null - IMC not added by C++"));
 			}
 		}
 	}
@@ -193,6 +207,17 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
+	// One-time diagnostic to isolate the trigger EI wiring. Prints unconditionally
+	// (before the role gate) so we can see whether the function is being called
+	// on the operator pawn at all. - TripleA
+	UE_LOG(LogTemp, Warning,
+		TEXT("[VRPawn] SetupPlayerInputComponent called. Role=%d NetMode=%d LocallyControlled=%d TriggerLeftAction=%s TriggerRightAction=%s"),
+		(int32)GetLocalRole(),
+		(int32)GetNetMode(),
+		IsLocallyControlled() ? 1 : 0,
+		TriggerLeftAction  ? *TriggerLeftAction->GetName()  : TEXT("<null>"),
+		TriggerRightAction ? *TriggerRightAction->GetName() : TEXT("<null>"));
+
 	// Same role gate as BeginPlay. Ghost pawns and remote-authority proxies
 	// still receive SetupPlayerInputComponent when replicated possession
 	// fires and their EIC bindings would stomp the real player's wiring. - TripleA
@@ -200,11 +225,13 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 		GetNetMode() == NM_DedicatedServer ||
 		!IsLocallyControlled())
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...early return: role/netmode/local gate"));
 		return;
 	}
 
 	if (UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(PlayerInputComponent))
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...binding actions on EIC"));
 		if (MoveAction)
 		{
 			EIC->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleMove);
@@ -222,15 +249,33 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 		// firing regardless). - TripleA
 		if (TriggerLeftAction)
 		{
+			// Bind to EVERY EI event so any successful mapping — regardless of
+			// whether the runtime treats the axis mapping as an edge or a
+			// continuous stream — produces at least one visible log. Once
+			// wiring is confirmed we can shrink back to just Started+Completed. - TripleA
+			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Started,   this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
+			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Ongoing,   this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
+			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...bound TriggerLeftAction on 5 EI events"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...TriggerLeftAction is NULL - not bound"));
 		}
 		if (TriggerRightAction)
 		{
+			EIC->BindAction(TriggerRightAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Started,   this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
+			EIC->BindAction(TriggerRightAction, ETriggerEvent::Ongoing,   this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
+			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...bound TriggerRightAction on 5 EI events"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...TriggerRightAction is NULL - not bound"));
 		}
 	}
 }

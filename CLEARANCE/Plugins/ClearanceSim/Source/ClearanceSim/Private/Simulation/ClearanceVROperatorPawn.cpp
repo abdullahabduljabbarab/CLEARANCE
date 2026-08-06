@@ -16,6 +16,14 @@
 #include "UI/ClearanceInstructorPanel.h"
 #include "Blueprint/UserWidget.h"
 
+// Meta XR Interaction SDK is shipped separately by Meta and lives outside
+// git. Auto-detected at build time by ClearanceSim.Build.cs: when the
+// plugin is present the hand ABPs get real controller state; when absent
+// the pump is a no-op and the hands stay in their default rest pose. - TripleA
+#if CLEARANCE_HAS_OCULUS_INTERACTION
+#include "Animation/QuestControllerAnimInstance.h"
+#endif
+
 // XR motion source names come from IXRSystemIdentifier - hardcoded per
 // OpenXR spec so we don't need the identifier lookup at runtime. - TripleA
 namespace ClearanceVR
@@ -26,7 +34,12 @@ namespace ClearanceVR
 
 AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	// Tick enabled so we can pump raw OculusTouch controller state into the
+	// Meta XR Interaction SDK QuestControllerAnimInstance every frame. The
+	// hand ABPs read those input properties to blend finger poses on grip /
+	// trigger / touch; without a per-tick pump the fingers stay frozen. - TripleA
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bStartWithTickEnabled = true;
 	bReplicates = true;
 
 	// Root is a plain scene component. Not a capsule - the operator doesn't
@@ -360,4 +373,133 @@ void AClearanceVROperatorPawn::HandleTriggerRightReleased(const FInputActionValu
 	if (!RightPressedButton) { return; }
 	RightPressedButton->HandleRelease(this);
 	RightPressedButton = nullptr;
+}
+
+void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	// Same locally-controlled gate as BeginPlay / SetupPlayerInputComponent -
+	// the pump is a client-side visual effect; only the operator's own hands
+	// need to animate on their own machine. Remote proxies would just miss
+	// input reads (there's no controller state on the proxy anyway). - TripleA
+	if (GetLocalRole() != ROLE_Authority ||
+		GetNetMode() == NM_DedicatedServer ||
+		!IsLocallyControlled())
+	{
+		return;
+	}
+
+	UpdateHandAnimInputs();
+}
+
+void AClearanceVROperatorPawn::UpdateHandAnimInputs()
+{
+#if !CLEARANCE_HAS_OCULUS_INTERACTION
+	// Meta XR Interaction SDK not installed on this build. Hand meshes (if
+	// assigned) stay in their default anim-class rest pose; controller input
+	// still reaches gameplay via the Enhanced Input trigger bindings. - TripleA
+	return;
+#else
+	// Resolve anim instances lazily - LeftHand / RightHand are set in BP by
+	// assigning SK_OpenXRHand_L/R + ABP_ControllerDrivenHand_L/R, so the
+	// instance only exists after the mesh + anim class have been applied.
+	// Cast to UQuestControllerAnimInstance so we can call the setters; if
+	// the assigned anim class isn't one of the ISDK-provided ones the cast
+	// returns null and this tick is a no-op. - TripleA
+	UQuestControllerAnimInstance* AnimL =
+		LeftHand  ? Cast<UQuestControllerAnimInstance>(LeftHand->GetAnimInstance())  : nullptr;
+	UQuestControllerAnimInstance* AnimR =
+		RightHand ? Cast<UQuestControllerAnimInstance>(RightHand->GetAnimInstance()) : nullptr;
+	if (!AnimL && !AnimR) { return; }
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC) { return; }
+
+	// OculusTouch input keys resolved from strings so the code compiles even
+	// when a specific EKeys::OculusTouch_* constant is missing from the UE
+	// version in use. Unknown keys return 0 from the queries below, matching
+	// the "no input" default and avoiding any hard failure. - TripleA
+	static const FKey KLeftTriggerAxis   (TEXT("OculusTouch_Left_Trigger_Axis"));
+	static const FKey KLeftGripAxis      (TEXT("OculusTouch_Left_Grip_Axis"));
+	static const FKey KLeftTriggerTouch  (TEXT("OculusTouch_Left_Trigger_Touch"));
+	static const FKey KLeftThumbX        (TEXT("OculusTouch_Left_Thumbstick_X"));
+	static const FKey KLeftThumbY        (TEXT("OculusTouch_Left_Thumbstick_Y"));
+	static const FKey KLeftThumbTouch    (TEXT("OculusTouch_Left_Thumbstick_Touch"));
+	static const FKey KLeftXClick        (TEXT("OculusTouch_Left_X_Click"));
+	static const FKey KLeftXTouch        (TEXT("OculusTouch_Left_X_Touch"));
+	static const FKey KLeftYClick        (TEXT("OculusTouch_Left_Y_Click"));
+	static const FKey KLeftYTouch        (TEXT("OculusTouch_Left_Y_Touch"));
+	static const FKey KLeftMenu          (TEXT("OculusTouch_Left_Menu_Click"));
+
+	static const FKey KRightTriggerAxis  (TEXT("OculusTouch_Right_Trigger_Axis"));
+	static const FKey KRightGripAxis     (TEXT("OculusTouch_Right_Grip_Axis"));
+	static const FKey KRightTriggerTouch (TEXT("OculusTouch_Right_Trigger_Touch"));
+	static const FKey KRightThumbX       (TEXT("OculusTouch_Right_Thumbstick_X"));
+	static const FKey KRightThumbY       (TEXT("OculusTouch_Right_Thumbstick_Y"));
+	static const FKey KRightThumbTouch   (TEXT("OculusTouch_Right_Thumbstick_Touch"));
+	static const FKey KRightAClick       (TEXT("OculusTouch_Right_A_Click"));
+	static const FKey KRightATouch       (TEXT("OculusTouch_Right_A_Touch"));
+	static const FKey KRightBClick       (TEXT("OculusTouch_Right_B_Click"));
+	static const FKey KRightBTouch       (TEXT("OculusTouch_Right_B_Touch"));
+
+	// The QuestControllerAnimInstance buttons + thumbsticks are shared
+	// between both hands (left has X/Y + Left Menu, right has A/B), while
+	// trigger + grip axes + thumbstick axes exist per-hand. Feed each anim
+	// instance the same button state so a left-hand-only or right-hand-only
+	// setup still animates the buttons its hand doesn't own (a controller
+	// touching its own X still needs the left hand's thumb to move). - TripleA
+	const float LTrig   = PC->GetInputAnalogKeyState(KLeftTriggerAxis);
+	const float LGrip   = PC->GetInputAnalogKeyState(KLeftGripAxis);
+	const bool  LTrigT  = PC->IsInputKeyDown(KLeftTriggerTouch);
+	const float LThumbX = PC->GetInputAnalogKeyState(KLeftThumbX);
+	const float LThumbY = PC->GetInputAnalogKeyState(KLeftThumbY);
+	const bool  LThumbT = PC->IsInputKeyDown(KLeftThumbTouch);
+	const bool  LXDown  = PC->IsInputKeyDown(KLeftXClick);
+	const bool  LXTouch = PC->IsInputKeyDown(KLeftXTouch);
+	const bool  LYDown  = PC->IsInputKeyDown(KLeftYClick);
+	const bool  LYTouch = PC->IsInputKeyDown(KLeftYTouch);
+	const bool  LMenu   = PC->IsInputKeyDown(KLeftMenu);
+
+	const float RTrig   = PC->GetInputAnalogKeyState(KRightTriggerAxis);
+	const float RGrip   = PC->GetInputAnalogKeyState(KRightGripAxis);
+	const bool  RTrigT  = PC->IsInputKeyDown(KRightTriggerTouch);
+	const float RThumbX = PC->GetInputAnalogKeyState(KRightThumbX);
+	const float RThumbY = PC->GetInputAnalogKeyState(KRightThumbY);
+	const bool  RThumbT = PC->IsInputKeyDown(KRightThumbTouch);
+	const bool  RADown  = PC->IsInputKeyDown(KRightAClick);
+	const bool  RATouch = PC->IsInputKeyDown(KRightATouch);
+	const bool  RBDown  = PC->IsInputKeyDown(KRightBClick);
+	const bool  RBTouch = PC->IsInputKeyDown(KRightBTouch);
+
+	auto ApplyAll = [&](UQuestControllerAnimInstance* Anim)
+	{
+		if (!Anim) { return; }
+		Anim->SetLeftFrontTriggerAxisValue(LTrig);
+		Anim->SetLeftGripTriggerAxisValue(LGrip);
+		Anim->SetLeftFrontTriggerTouched(LTrigT);
+		Anim->SetLeftThumbstickXAxisValue(LThumbX);
+		Anim->SetLeftThumbstickYAxisValue(LThumbY);
+		Anim->SetLeftThumbstickTouched(LThumbT);
+		Anim->SetXButtonDown(LXDown);
+		Anim->SetXButtonTouched(LXTouch);
+		Anim->SetYButtonDown(LYDown);
+		Anim->SetYButtonTouched(LYTouch);
+		Anim->SetLeftMenuButtonDown(LMenu);
+
+		Anim->SetRightFrontTriggerAxisValue(RTrig);
+		Anim->SetRightGripTriggerAxisValue(RGrip);
+		Anim->SetRightFrontTriggerTouched(RTrigT);
+		Anim->SetRightThumbstickXAxisValue(RThumbX);
+		Anim->SetRightThumbstickYAxisValue(RThumbY);
+		Anim->SetRightThumbstickTouched(RThumbT);
+		Anim->SetAButtonDown(RADown);
+		Anim->SetAButtonTouched(RATouch);
+		Anim->SetBButtonDown(RBDown);
+		Anim->SetBButtonTouched(RBTouch);
+	};
+
+	ApplyAll(AnimL);
+	ApplyAll(AnimR);
+#endif // CLEARANCE_HAS_OCULUS_INTERACTION
 }

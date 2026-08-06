@@ -35,6 +35,7 @@ public:
 	AClearanceVROperatorPawn();
 
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	// --- Locomotion tuning -----------------------------------------------
@@ -171,6 +172,14 @@ protected:
 	UFUNCTION()
 	void OnRightFingertipEndOverlap(UPrimitiveComponent* Self, AActor* OtherActor,
 		UPrimitiveComponent* Other, int32 BodyIndex);
+
+	// Read raw OculusTouch controller state via the local player controller
+	// and pump it into the QuestControllerAnimInstance on each hand mesh.
+	// Called from Tick; the Meta XR Interaction SDK hand ABPs read those
+	// setter properties every frame to blend finger poses (grip flex, thumb
+	// touch, trigger curl, etc). Without this the hands stay frozen in the
+	// default pointing pose. - TripleA
+	void UpdateHandAnimInputs();
 
 private:
 	// True when the snap-turn stick has returned to centre and the next

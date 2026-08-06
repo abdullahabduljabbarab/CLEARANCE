@@ -1,3 +1,4 @@
+using System.IO;
 using UnrealBuildTool;
 
 public class ClearanceSim : ModuleRules
@@ -5,6 +6,17 @@ public class ClearanceSim : ModuleRules
 	public ClearanceSim(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+
+		// Meta XR Interaction SDK (Oculus Interaction) is only present on
+		// machines that have installed Meta's separately-distributed plugin.
+		// Auto-detect and gate the anim-driving code with a preprocessor
+		// macro so the module compiles + runs cleanly with or without it.
+		// Same shape as the MBD generated-code fallback pattern. - TripleA
+		string OculusInteractionUPlugin = Path.Combine(PluginDirectory, "..", "MetaXRInteraction", "OculusInteraction.uplugin");
+		bool bHasOculusInteraction = File.Exists(OculusInteractionUPlugin);
+		PublicDefinitions.Add(bHasOculusInteraction ?
+			"CLEARANCE_HAS_OCULUS_INTERACTION=1" :
+			"CLEARANCE_HAS_OCULUS_INTERACTION=0");
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
@@ -33,8 +45,13 @@ public class ClearanceSim : ModuleRules
 			"Json",              // parse the transcription response
 			"Sockets",           // detect an already-running server
 			"Networking",
-			"OnlineSubsystem",        // Identity + Session interface for EOS sessions
-			"OnlineSubsystemUtils"    // helpers (BeaconHost, world-net plumbing)
+			"OnlineSubsystem",           // Identity + Session interface for EOS sessions
+			"OnlineSubsystemUtils"       // helpers (BeaconHost, world-net plumbing)
 		});
+
+		if (bHasOculusInteraction)
+		{
+			PrivateDependencyModuleNames.Add("OculusInteractionPrebuilts"); // QuestControllerAnimInstance setters
+		}
 	}
 }

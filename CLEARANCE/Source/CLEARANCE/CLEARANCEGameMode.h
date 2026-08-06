@@ -16,6 +16,17 @@ class ACLEARANCEGameMode : public AGameModeBase
 
 public:
 	ACLEARANCEGameMode();
+
+	// LVL_Warton hand-places the VR operator pawn so the tower-desk transform,
+	// hand mesh assignments, motion-controller wiring and IMC bindings all
+	// carry through from the map. The default GameMode flow spawns a fresh
+	// DefaultPawnClass at a PlayerStart and possesses THAT, leaving the
+	// hand-placed pawn unpossessed (input gates never pass, triggers never
+	// fire). Override RestartPlayer to hand possession to the pre-placed
+	// VR pawn when one exists; falls through to the default spawn flow when
+	// there isn't one, so PIE-in-an-empty-level or the flat instructor peer
+	// still work as before. - TripleA
+	virtual void RestartPlayer(AController* NewPlayer) override;
 };
 
 

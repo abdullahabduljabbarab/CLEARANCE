@@ -1,8 +1,29 @@
 #include "Simulation/ClearanceOperatorButton.h"
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Components/BoxComponent.h"
+#include "Engine/Engine.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Controller.h"
+
+// Debug prints on the whole console-button chain. Set to 0 to silence
+// once the buttons work in VR; leaving them on has essentially zero
+// perf cost (only fires on human-timescale press events). - TripleA
+#ifndef CLEARANCE_LOG_OPERATOR_BUTTONS
+#define CLEARANCE_LOG_OPERATOR_BUTTONS 1
+#endif
+
+#if CLEARANCE_LOG_OPERATOR_BUTTONS
+static void ClearanceButtonDebug(int32 Key, const FColor& C, const FString& Msg)
+{
+	UE_LOG(LogTemp, Warning, TEXT("[OperatorButton] %s"), *Msg);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(Key, 3.f, C, Msg);
+	}
+}
+#else
+static void ClearanceButtonDebug(int32, const FColor&, const FString&) {}
+#endif
 
 AClearanceOperatorButton::AClearanceOperatorButton()
 {
@@ -26,11 +47,26 @@ AClearanceOperatorButton::AClearanceOperatorButton()
 
 void AClearanceOperatorButton::HandlePress(APawn* PressingPawn)
 {
+	const uint8 KindByte = static_cast<uint8>(Kind);
+	ClearanceButtonDebug(1000 + GetUniqueID(), FColor::Green,
+		FString::Printf(TEXT("Button PRESSED: %s (Kind=%d)"),
+			*GetName(), KindByte));
+
 	OnButtonPressed.Broadcast(this);
 
-	if (!PressingPawn) { return; }
+	if (!PressingPawn)
+	{
+		ClearanceButtonDebug(1100 + GetUniqueID(), FColor::Red,
+			TEXT("  ...but PressingPawn is null"));
+		return;
+	}
 	AClearanceOperatorPC* PC = Cast<AClearanceOperatorPC>(PressingPawn->GetController());
-	if (!PC) { return; }
+	if (!PC)
+	{
+		ClearanceButtonDebug(1100 + GetUniqueID(), FColor::Red,
+			TEXT("  ...but pawn has no ClearanceOperatorPC controller"));
+		return;
+	}
 
 	switch (Kind)
 	{

@@ -317,19 +317,53 @@ void AClearanceVROperatorPawn::HandleSnapTurn(const FInputActionValue& Value)
 // pressed button regardless of current overlap (press-and-hold PTT needs
 // the release edge even if the operator has since slid off). - TripleA
 
+// Debug prints for the fingertip + trigger chain. Set to 0 once the
+// buttons work in VR; leaving on has negligible cost (only fires on
+// human-timescale overlap + trigger events). - TripleA
+#ifndef CLEARANCE_LOG_OPERATOR_INTERACTION
+#define CLEARANCE_LOG_OPERATOR_INTERACTION 1
+#endif
+
+#if CLEARANCE_LOG_OPERATOR_INTERACTION
+static void ClearanceInteractionDebug(int32 Key, const FColor& C, const FString& Msg)
+{
+	UE_LOG(LogTemp, Warning, TEXT("[VRInteraction] %s"), *Msg);
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(Key, 3.f, C, Msg);
+	}
+}
+#else
+static void ClearanceInteractionDebug(int32, const FColor&, const FString&) {}
+#endif
+
 void AClearanceVROperatorPawn::OnLeftFingertipBeginOverlap(UPrimitiveComponent*, AActor* OtherActor,
 	UPrimitiveComponent*, int32, bool, const FHitResult&)
 {
 	if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
 	{
 		LeftHoveredButton = Btn;
+		ClearanceInteractionDebug(2000, FColor::Yellow,
+			FString::Printf(TEXT("L fingertip HOVER: %s"), *Btn->GetName()));
+	}
+	else if (OtherActor)
+	{
+		// Overlapping SOMETHING but it isn't a button. Rare, but useful to know
+		// if the box is intersecting stray world geometry. - TripleA
+		ClearanceInteractionDebug(2001, FColor::Cyan,
+			FString::Printf(TEXT("L fingertip touched non-button: %s"), *OtherActor->GetName()));
 	}
 }
 
 void AClearanceVROperatorPawn::OnLeftFingertipEndOverlap(UPrimitiveComponent*, AActor* OtherActor,
 	UPrimitiveComponent*, int32)
 {
-	if (LeftHoveredButton == OtherActor) { LeftHoveredButton = nullptr; }
+	if (LeftHoveredButton == OtherActor)
+	{
+		ClearanceInteractionDebug(2000, FColor::Silver,
+			FString::Printf(TEXT("L fingertip LEFT: %s"), *OtherActor->GetName()));
+		LeftHoveredButton = nullptr;
+	}
 }
 
 void AClearanceVROperatorPawn::OnRightFingertipBeginOverlap(UPrimitiveComponent*, AActor* OtherActor,
@@ -338,17 +372,32 @@ void AClearanceVROperatorPawn::OnRightFingertipBeginOverlap(UPrimitiveComponent*
 	if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
 	{
 		RightHoveredButton = Btn;
+		ClearanceInteractionDebug(2100, FColor::Yellow,
+			FString::Printf(TEXT("R fingertip HOVER: %s"), *Btn->GetName()));
+	}
+	else if (OtherActor)
+	{
+		ClearanceInteractionDebug(2101, FColor::Cyan,
+			FString::Printf(TEXT("R fingertip touched non-button: %s"), *OtherActor->GetName()));
 	}
 }
 
 void AClearanceVROperatorPawn::OnRightFingertipEndOverlap(UPrimitiveComponent*, AActor* OtherActor,
 	UPrimitiveComponent*, int32)
 {
-	if (RightHoveredButton == OtherActor) { RightHoveredButton = nullptr; }
+	if (RightHoveredButton == OtherActor)
+	{
+		ClearanceInteractionDebug(2100, FColor::Silver,
+			FString::Printf(TEXT("R fingertip LEFT: %s"), *OtherActor->GetName()));
+		RightHoveredButton = nullptr;
+	}
 }
 
 void AClearanceVROperatorPawn::HandleTriggerLeftPressed(const FInputActionValue&)
 {
+	ClearanceInteractionDebug(2200, FColor::Blue,
+		FString::Printf(TEXT("L trigger PRESSED (hovered: %s)"),
+			LeftHoveredButton ? *LeftHoveredButton->GetName() : TEXT("<none>")));
 	if (!LeftHoveredButton) { return; }
 	LeftPressedButton = LeftHoveredButton;
 	LeftPressedButton->HandlePress(this);
@@ -356,6 +405,9 @@ void AClearanceVROperatorPawn::HandleTriggerLeftPressed(const FInputActionValue&
 
 void AClearanceVROperatorPawn::HandleTriggerLeftReleased(const FInputActionValue&)
 {
+	ClearanceInteractionDebug(2201, FColor::Blue,
+		FString::Printf(TEXT("L trigger RELEASED (pressed: %s)"),
+			LeftPressedButton ? *LeftPressedButton->GetName() : TEXT("<none>")));
 	if (!LeftPressedButton) { return; }
 	LeftPressedButton->HandleRelease(this);
 	LeftPressedButton = nullptr;
@@ -363,6 +415,9 @@ void AClearanceVROperatorPawn::HandleTriggerLeftReleased(const FInputActionValue
 
 void AClearanceVROperatorPawn::HandleTriggerRightPressed(const FInputActionValue&)
 {
+	ClearanceInteractionDebug(2300, FColor::Blue,
+		FString::Printf(TEXT("R trigger PRESSED (hovered: %s)"),
+			RightHoveredButton ? *RightHoveredButton->GetName() : TEXT("<none>")));
 	if (!RightHoveredButton) { return; }
 	RightPressedButton = RightHoveredButton;
 	RightPressedButton->HandlePress(this);
@@ -370,6 +425,9 @@ void AClearanceVROperatorPawn::HandleTriggerRightPressed(const FInputActionValue
 
 void AClearanceVROperatorPawn::HandleTriggerRightReleased(const FInputActionValue&)
 {
+	ClearanceInteractionDebug(2301, FColor::Blue,
+		FString::Printf(TEXT("R trigger RELEASED (pressed: %s)"),
+			RightPressedButton ? *RightPressedButton->GetName() : TEXT("<none>")));
 	if (!RightPressedButton) { return; }
 	RightPressedButton->HandleRelease(this);
 	RightPressedButton = nullptr;

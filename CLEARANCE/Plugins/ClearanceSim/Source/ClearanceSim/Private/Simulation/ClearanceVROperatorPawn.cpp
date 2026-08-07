@@ -15,9 +15,14 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "UI/ClearanceInstructorPanel.h"
 #include "Blueprint/UserWidget.h"
+#include "Framework/Application/SlateApplication.h"
+#include "TimerManager.h"
+#include "Engine/GameViewportClient.h"
+#include "Widgets/SViewport.h"
+#include "Widgets/SWindow.h"
 
 // Meta XR Interaction SDK is shipped separately by Meta and lives outside
-// git. Auto-detected at build time by ClearanceSim.Build.cs: when the
+// git.  Auto-detected at build time by ClearanceSim.Build.cs: when the
 // plugin is present the hand ABPs get real controller state; when absent
 // the pump is a no-op and the hands stay in their default rest pose. - TripleA
 #if CLEARANCE_HAS_OCULUS_INTERACTION
@@ -134,13 +139,6 @@ void AClearanceVROperatorPawn::BeginPlay()
 {
 	Super::BeginPlay();
 
-	UE_LOG(LogTemp, Warning,
-		TEXT("[VRPawn] BeginPlay: Role=%d NetMode=%d LocallyControlled=%d DefaultMappingContext=%s"),
-		(int32)GetLocalRole(),
-		(int32)GetNetMode(),
-		IsLocallyControlled() ? 1 : 0,
-		DefaultMappingContext ? *DefaultMappingContext->GetName() : TEXT("<null>"));
-
 	// The operator role is server-authoritative: this pawn is possessed on
 	// the server by AClearanceOperatorPC. In a listen-server PIE both the
 	// authoritative host pawn AND a client-side proxy pass IsLocallyControlled,
@@ -150,7 +148,6 @@ void AClearanceVROperatorPawn::BeginPlay()
 		GetNetMode() == NM_DedicatedServer ||
 		!IsLocallyControlled())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[VRPawn] BeginPlay early return: not locally controlled server"));
 		return;
 	}
 
@@ -171,12 +168,6 @@ void AClearanceVROperatorPawn::BeginPlay()
 			if (DefaultMappingContext)
 			{
 				Subsystem->AddMappingContext(DefaultMappingContext, /*Priority*/ 100);
-				UE_LOG(LogTemp, Warning, TEXT("[VRPawn] BeginPlay: AddMappingContext(%s) at prio 100"),
-					*DefaultMappingContext->GetName());
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[VRPawn] BeginPlay: DefaultMappingContext is null - IMC not added by C++"));
 			}
 		}
 	}
@@ -201,22 +192,61 @@ void AClearanceVROperatorPawn::BeginPlay()
 	FInputModeGameOnly GameMode;
 	PC->SetInputMode(GameMode);
 	PC->bShowMouseCursor = false;
+
+	// VR Preview launches the game viewport in a separate popped-out window.
+	// That window loses BOTH OS-level activation AND Slate keyboard focus
+	// to the main editor tab, so every keystroke + Enhanced Input axis
+	// event lands on the editor instead of the game. Physically clicking
+	// the viewport transfers both - reproduce that programmatically.
+	//
+	// Retry across several frames because the game viewport widget doesn't
+	// exist synchronously at BeginPlay time; the window is spawned by
+	// SGameLayerManager on a subsequent Slate tick. First attempt at 100 ms
+	// usually lands the widget; the extras cover slow shader-compile
+	// launches where the window creation is delayed. Cheap - once focus
+	// is captured the retries are functionally no-ops. - TripleA
+	if (UWorld* World = GetWorld())
+	{
+		auto FocusKick = [WeakThis = TWeakObjectPtr<AClearanceVROperatorPawn>(this)]()
+		{
+			if (!WeakThis.IsValid() || !FSlateApplication::IsInitialized()) { return; }
+
+			FSlateApplication& Slate = FSlateApplication::Get();
+
+			// 1. Slate-side focus - covers keyboard events routed via Slate.
+			Slate.SetAllUserFocusToGameViewport(EFocusCause::SetDirectly);
+
+			// 2. OS-level activation - Windows sends WM_ACTIVATE to the window
+			//    which is what OpenXR / EI actually watch to unblock the input
+			//    session. Without this the Slate focus above is a no-op for
+			//    keys that route through the OS input stack. - TripleA
+			if (GEngine && GEngine->GameViewport)
+			{
+				if (TSharedPtr<SWindow> GameWindow = GEngine->GameViewport->GetWindow())
+				{
+					GameWindow->BringToFront(/*bForce*/ true);
+					GameWindow->HACK_ForceToFront();
+					if (TSharedPtr<SViewport> ViewportWidget = GEngine->GameViewport->GetGameViewportWidget())
+					{
+						Slate.SetKeyboardFocus(ViewportWidget, EFocusCause::SetDirectly);
+					}
+				}
+			}
+		};
+
+		// Fire the kick at 100/300/700/1500 ms. Any of them can be the one
+		// that lands after the popped-out window finishes initialising. - TripleA
+		for (float Delay : { 0.10f, 0.30f, 0.70f, 1.50f })
+		{
+			FTimerHandle Handle;
+			World->GetTimerManager().SetTimer(Handle, FTimerDelegate::CreateLambda(FocusKick), Delay, /*bLoop*/ false);
+		}
+	}
 }
 
 void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
-
-	// One-time diagnostic to isolate the trigger EI wiring. Prints unconditionally
-	// (before the role gate) so we can see whether the function is being called
-	// on the operator pawn at all. - TripleA
-	UE_LOG(LogTemp, Warning,
-		TEXT("[VRPawn] SetupPlayerInputComponent called. Role=%d NetMode=%d LocallyControlled=%d TriggerLeftAction=%s TriggerRightAction=%s"),
-		(int32)GetLocalRole(),
-		(int32)GetNetMode(),
-		IsLocallyControlled() ? 1 : 0,
-		TriggerLeftAction  ? *TriggerLeftAction->GetName()  : TEXT("<null>"),
-		TriggerRightAction ? *TriggerRightAction->GetName() : TEXT("<null>"));
 
 	// Same role gate as BeginPlay. Ghost pawns and remote-authority proxies
 	// still receive SetupPlayerInputComponent when replicated possession
@@ -225,13 +255,11 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 		GetNetMode() == NM_DedicatedServer ||
 		!IsLocallyControlled())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...early return: role/netmode/local gate"));
 		return;
 	}
 
 	if (UEnhancedInputComponent* EIC = Cast<UEnhancedInputComponent>(PlayerInputComponent))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...binding actions on EIC"));
 		if (MoveAction)
 		{
 			EIC->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleMove);
@@ -241,28 +269,19 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 			EIC->BindAction(SnapTurnAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleSnapTurn);
 		}
 
-		// Trigger axis with Started (press edge) + Completed (release edge)
-		// events. Press dispatches to whichever console button is currently
-		// under the fingertip; release dispatches to the button that WAS
-		// pressed (which may no longer be under the finger if the operator
-		// slid off - press-and-hold semantics rely on the release edge
-		// firing regardless). - TripleA
+		// Trigger dispatch is redundant on top of the Tick-based poll below
+		// (Tick reads the EI action value directly and edge-detects) but the
+		// bindings are left in place as a belt-and-suspenders path: any
+		// ETriggerEvent kind that manages to fire will hit the same handler
+		// as the poll would. Duplicate press events are harmless because the
+		// handler bails when there's no hovered button. - TripleA
 		if (TriggerLeftAction)
 		{
-			// Bind to EVERY EI event so any successful mapping — regardless of
-			// whether the runtime treats the axis mapping as an edge or a
-			// continuous stream — produces at least one visible log. Once
-			// wiring is confirmed we can shrink back to just Started+Completed. - TripleA
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Started,   this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Ongoing,   this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
-			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...bound TriggerLeftAction on 5 EI events"));
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...TriggerLeftAction is NULL - not bound"));
 		}
 		if (TriggerRightAction)
 		{
@@ -271,11 +290,6 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Ongoing,   this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
-			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...bound TriggerRightAction on 5 EI events"));
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[VRPawn] ...TriggerRightAction is NULL - not bound"));
 		}
 	}
 }
@@ -362,11 +376,10 @@ void AClearanceVROperatorPawn::HandleSnapTurn(const FInputActionValue& Value)
 // pressed button regardless of current overlap (press-and-hold PTT needs
 // the release edge even if the operator has since slid off). - TripleA
 
-// Debug prints for the fingertip + trigger chain. Set to 0 once the
-// buttons work in VR; leaving on has negligible cost (only fires on
-// human-timescale overlap + trigger events). - TripleA
+// Debug prints for the fingertip + trigger chain. Flip to 1 to re-enable
+// yellow / blue on-screen text tracking hover + press events. - TripleA
 #ifndef CLEARANCE_LOG_OPERATOR_INTERACTION
-#define CLEARANCE_LOG_OPERATOR_INTERACTION 1
+#define CLEARANCE_LOG_OPERATOR_INTERACTION 0
 #endif
 
 #if CLEARANCE_LOG_OPERATOR_INTERACTION
@@ -494,6 +507,70 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 	}
 
 	UpdateHandAnimInputs();
+
+	// --- Trigger edge detection ---------------------------------------------
+	//
+	// EI's dispatch to pawn BindAction handlers is unreliable across PIE
+	// sessions on Windows: the subsystem confirms the action fires
+	// (visible in `showdebug enhancedinput`) but the pawn's InputComponent
+	// bindings never invoke. Root cause is a Slate/OpenXR possession-focus
+	// race that our C++ can't intercept. Reading the action value directly
+	// out of the EI subsystem's accumulator (which IS updated correctly)
+	// and edge-detecting here dispatches presses reliably regardless.
+	// EI BindAction is left registered as belt-and-suspenders - handlers
+	// no-op when there's no hovered button, so a duplicate call is safe. - TripleA
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC) { return; }
+
+	// Per-instance edge state kept in a static map keyed by the pawn -
+	// declaring plain bool members would need a header change (class layout
+	// bump) which blocks Live Coding on the whole thing. Static local +
+	// weak ptr key survives a hot patch and safely coexists with future
+	// split-screen / pawn swaps: entries for dead pawns quietly return
+	// default false. - TripleA
+	struct FTriggerEdgeState { bool bLeftDown = false; bool bRightDown = false; };
+	static TMap<TWeakObjectPtr<AClearanceVROperatorPawn>, FTriggerEdgeState> EdgeStateByPawn;
+	FTriggerEdgeState& Edge = EdgeStateByPawn.FindOrAdd(TWeakObjectPtr<AClearanceVROperatorPawn>(this));
+
+	// Read trigger axis THROUGH the Enhanced Input subsystem, not via
+	// PC->GetInputAnalogKeyState. When an IMC binds a key to an action,
+	// EI consumes it out of the legacy PlayerInput->KeyStateMap and the
+	// legacy poll reports zero even though the axis is definitely moving.
+	// The subsystem's own GetActionValue accumulator IS updated per tick
+	// and is the correct source for a poll of a mapped analog key. - TripleA
+	float LAxisVal = 0.f;
+	float RAxisVal = 0.f;
+	if (ULocalPlayer* LP = PC->GetLocalPlayer())
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* Sub = LP->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+		{
+			if (UEnhancedPlayerInput* EPI = Sub->GetPlayerInput())
+			{
+				if (TriggerLeftAction)  { LAxisVal = EPI->GetActionValue(TriggerLeftAction ).Get<float>(); }
+				if (TriggerRightAction) { RAxisVal = EPI->GetActionValue(TriggerRightAction).Get<float>(); }
+			}
+		}
+	}
+
+	// 0.5 matches the Down trigger config on the IA assets, so press/release
+	// timing feels identical whether EI or this poll delivered the event. - TripleA
+	constexpr float kPressThreshold = 0.5f;
+	const bool bLeftNow  = LAxisVal  >= kPressThreshold;
+	const bool bRightNow = RAxisVal >= kPressThreshold;
+
+	FInputActionValue Dummy;
+	if (bLeftNow != Edge.bLeftDown)
+	{
+		Edge.bLeftDown = bLeftNow;
+		if (bLeftNow) { HandleTriggerLeftPressed(Dummy); }
+		else          { HandleTriggerLeftReleased(Dummy); }
+	}
+	if (bRightNow != Edge.bRightDown)
+	{
+		Edge.bRightDown = bRightNow;
+		if (bRightNow) { HandleTriggerRightPressed(Dummy); }
+		else           { HandleTriggerRightReleased(Dummy); }
+	}
 }
 
 void AClearanceVROperatorPawn::UpdateHandAnimInputs()

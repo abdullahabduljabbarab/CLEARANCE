@@ -5,11 +5,11 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Controller.h"
 
-// Debug prints on the whole console-button chain. Set to 0 to silence
-// once the buttons work in VR; leaving them on has essentially zero
-// perf cost (only fires on human-timescale press events). - TripleA
+// Green on-screen prints on the whole console-button chain. Flip to 1 to
+// re-enable if a diegetic button stops firing and you need to trace the
+// press dispatch back through hover / trigger / handler. - TripleA
 #ifndef CLEARANCE_LOG_OPERATOR_BUTTONS
-#define CLEARANCE_LOG_OPERATOR_BUTTONS 1
+#define CLEARANCE_LOG_OPERATOR_BUTTONS 0
 #endif
 
 #if CLEARANCE_LOG_OPERATOR_BUTTONS

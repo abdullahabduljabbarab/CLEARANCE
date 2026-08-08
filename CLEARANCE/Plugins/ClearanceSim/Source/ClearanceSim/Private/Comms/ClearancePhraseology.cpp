@@ -2,8 +2,10 @@
 #include "Comms/ClearanceVoiceOutput.h"
 #include "Simulation/ClearanceSimulationController.h"
 #include "Simulation/ClearanceOperatorPC.h"
+#include "UI/ClearanceInstructorPanel.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Comms/ClearanceCommsRouter.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
 #include "EngineUtils.h"
 
 namespace
@@ -328,6 +330,45 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		const FString R = TEXT("Station calling, say again your callsign");
 		SpeakAsController(Controller, R);
 		return R;
+	}
+
+	// Selection lock: if the operator has an aircraft focused on the console,
+	// voice can ONLY address that aircraft. Prevents "I meant to say BAW105"
+	// mistakes where the trainee speaks one callsign while the highlighted
+	// aircraft is another. Mirrors real ATC selection discipline: focus on
+	// the strip, then talk to that specific aircraft. If no aircraft is
+	// selected, voice can address anyone (fallback to old behaviour). - TripleA
+	{
+		FName SelectedCs = NAME_None;
+		if (UWorld* World = Controller ? Controller->GetWorld() : nullptr)
+		{
+			TArray<UUserWidget*> Panels;
+			UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, Panels,
+				UClearanceInstructorPanel::StaticClass(), /*TopLevelOnly*/ false);
+			for (UUserWidget* W : Panels)
+			{
+				if (auto* Panel = Cast<UClearanceInstructorPanel>(W))
+				{
+					const FName Cs = Panel->GetSelectedCallsign();
+					if (Cs != NAME_None) { SelectedCs = Cs; break; }
+				}
+			}
+		}
+		if (SelectedCs != NAME_None && SelectedCs != Callsign)
+		{
+			// Log the operator's raw transmission so the AAR shows what was
+			// actually said. Then have the ADDRESSED aircraft (the one the
+			// operator spoke, not the one focused) respond in-voice with
+			// polite confusion - real ATC pilot behaviour when a call comes
+			// through with ambiguous or mis-heard addressing. The confusion
+			// itself is the gameplay signal: operator hears the wrong aircraft
+			// answering + realises they targeted the wrong callsign. - TripleA
+			Controller->LogTranscriptLine(EClearanceCommsRole::Operator, NAME_None, Transmission);
+			const FString R = FString::Printf(
+				TEXT("Tower, %s, say again for who?"), *Callsign.ToString());
+			SpeakOut(Controller, Callsign, R);
+			return R;
+		}
 	}
 
 	struct FParsed { FAircraftInstruction Instruction; FString Readback; };

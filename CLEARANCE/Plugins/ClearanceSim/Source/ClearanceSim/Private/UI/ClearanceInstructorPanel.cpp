@@ -257,6 +257,27 @@ void UClearanceInstructorPanel::NativeTick(const FGeometry& MyGeometry, float In
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
+	// Auto-clear the selection if the currently-focused aircraft has left
+	// the sector (crashed, exited, cleared by instructor, deregistered on
+	// scenario reset). Without this the VR scope keeps highlighting a
+	// callsign that no longer exists and voice commands to it silently
+	// route nowhere. Cheap check - matches by callsign against the current
+	// row list, no aircraft = clear, no match = clear. - TripleA
+	if (SelectedCallsign != NAME_None)
+	{
+		TArray<FInstructorAircraftRow> CurrentRows;
+		BuildAircraftRows(CurrentRows);
+		bool bStillPresent = false;
+		for (const FInstructorAircraftRow& R : CurrentRows)
+		{
+			if (R.Callsign == SelectedCallsign) { bStillPresent = true; break; }
+		}
+		if (!bStillPresent)
+		{
+			SetSelectedCallsign(NAME_None);
+		}
+	}
+
 	// Federation activity rate sampler - runs on the raw frame tick (not the
 	// throttled 5Hz refresh below) so the /s value in the panel is meaningful
 	// even while the rest of the UI is coasting. Snapshots cumulative counts

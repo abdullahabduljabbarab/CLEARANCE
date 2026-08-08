@@ -2,6 +2,7 @@
 #include "Simulation/ClearanceSimulationController.h"
 #include "Comms/ClearanceVoiceInput.h"
 #include "Net/UnrealNetwork.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Simulation/ClearanceDDSEmitter.h"
@@ -672,17 +673,62 @@ void AClearanceOperatorPC::Server_InjectDeleteCheckpoint_Implementation(FName Na
 // buttons on the tower mesh. All client-local: selection state lives on
 // the local instructor-panel widget, PTT gates the local mic. - TripleA
 
+// InstructorPanel widget class is instantiated per host: once for the desktop
+// viewport (the instructor client's window) AND once per world-space
+// WidgetComponent (the diegetic VR monitor mesh on the operator's tower cab).
+// The operator sits SERVER-SIDE where PC->InstructorPanel is intentionally
+// null (created only on the instructor client, see BeginPlay's role gate).
+// So both the "read aircraft list" side and the "write selection" side have
+// to route through whichever widget instances actually exist in the world -
+// which for the operator is the VR monitor's WidgetComponent-owned instance.
+// GetAllWidgetsOfClass finds those regardless of host role. - TripleA
+
+// Grab any live InstructorPanel instance - all instances see the same
+// replicated aircraft list from the sim controller so any is fine as the
+// data source. - TripleA
+static UClearanceInstructorPanel* FindAnyInstructorPanel(UObject* WorldContext)
+{
+	if (!WorldContext) { return nullptr; }
+	TArray<UUserWidget*> Found;
+	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(WorldContext, Found,
+		UClearanceInstructorPanel::StaticClass(), /*TopLevelOnly*/ false);
+	for (UUserWidget* W : Found)
+	{
+		if (auto* Panel = Cast<UClearanceInstructorPanel>(W))
+		{
+			return Panel;
+		}
+	}
+	return nullptr;
+}
+
+static void PushSelectedCallsignToAllPanels(UObject* WorldContext, FName Callsign)
+{
+	if (!WorldContext) { return; }
+	TArray<UUserWidget*> Found;
+	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(WorldContext, Found,
+		UClearanceInstructorPanel::StaticClass(), /*TopLevelOnly*/ false);
+	for (UUserWidget* W : Found)
+	{
+		if (auto* Panel = Cast<UClearanceInstructorPanel>(W))
+		{
+			Panel->SetSelectedCallsign(Callsign);
+		}
+	}
+}
+
 void AClearanceOperatorPC::SelectNextAircraft()
 {
-	if (!InstructorPanel) { return; }
-	const TArray<FInstructorAircraftRow> Rows = InstructorPanel->GetAircraftRows();
+	UClearanceInstructorPanel* Panel = FindAnyInstructorPanel(this);
+	if (!Panel) { return; }
+	const TArray<FInstructorAircraftRow> Rows = Panel->GetAircraftRows();
 	if (Rows.Num() == 0)
 	{
-		InstructorPanel->SetSelectedCallsign(NAME_None);
+		PushSelectedCallsignToAllPanels(this, NAME_None);
 		return;
 	}
 
-	const FName Current = InstructorPanel->GetSelectedCallsign();
+	const FName Current = Panel->GetSelectedCallsign();
 	int32 Next = 0;
 	if (Current != NAME_None)
 	{
@@ -691,20 +737,21 @@ void AClearanceOperatorPC::SelectNextAircraft()
 			if (Rows[i].Callsign == Current) { Next = (i + 1) % Rows.Num(); break; }
 		}
 	}
-	InstructorPanel->SetSelectedCallsign(Rows[Next].Callsign);
+	PushSelectedCallsignToAllPanels(this, Rows[Next].Callsign);
 }
 
 void AClearanceOperatorPC::SelectPreviousAircraft()
 {
-	if (!InstructorPanel) { return; }
-	const TArray<FInstructorAircraftRow> Rows = InstructorPanel->GetAircraftRows();
+	UClearanceInstructorPanel* Panel = FindAnyInstructorPanel(this);
+	if (!Panel) { return; }
+	const TArray<FInstructorAircraftRow> Rows = Panel->GetAircraftRows();
 	if (Rows.Num() == 0)
 	{
-		InstructorPanel->SetSelectedCallsign(NAME_None);
+		PushSelectedCallsignToAllPanels(this, NAME_None);
 		return;
 	}
 
-	const FName Current = InstructorPanel->GetSelectedCallsign();
+	const FName Current = Panel->GetSelectedCallsign();
 	int32 Prev = Rows.Num() - 1;
 	if (Current != NAME_None)
 	{
@@ -713,12 +760,12 @@ void AClearanceOperatorPC::SelectPreviousAircraft()
 			if (Rows[i].Callsign == Current) { Prev = (i - 1 + Rows.Num()) % Rows.Num(); break; }
 		}
 	}
-	InstructorPanel->SetSelectedCallsign(Rows[Prev].Callsign);
+	PushSelectedCallsignToAllPanels(this, Rows[Prev].Callsign);
 }
 
 void AClearanceOperatorPC::ClearAircraftSelection()
 {
-	if (InstructorPanel) { InstructorPanel->SetSelectedCallsign(NAME_None); }
+	PushSelectedCallsignToAllPanels(this, NAME_None);
 }
 
 void AClearanceOperatorPC::StartPTT()

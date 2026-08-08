@@ -177,6 +177,24 @@ enum class EWakeCategory : uint8
 // CORE DATA STRUCTS
 // ============================================================================
 
+// Radio channel the operator's PTT transmits on. Aircraft only hear voice
+// commands when their AssignedFrequency matches the operator's active
+// channel. Real ATC channel discipline: outer-sector traffic on Approach,
+// close-in traffic on Tower, emergency traffic on Emergency, universal
+// distress on Guard. Handoff instructions ("BAW123 contact Tower on 118.5")
+// reassign the addressed aircraft's frequency so the receiving controller
+// takes over cleanly. Declared here (before FAircraftState / FAircraftInstruction)
+// so UHT sees the enum type before it sees the properties that reference it. - TripleA
+UENUM(BlueprintType)
+enum class ECommsFrequency : uint8
+{
+	None		UMETA(DisplayName = "None"),          // No channel selected (mic effectively cold)
+	Tower		UMETA(DisplayName = "Tower"),         // Close-in: final approach, runway, taxi
+	Approach	UMETA(DisplayName = "Approach"),      // Inbound: sector edge to ~10nm final, vectoring + spacing
+	Emergency	UMETA(DisplayName = "Emergency"),     // Dedicated emergency coordination channel
+	Guard		UMETA(DisplayName = "Guard")          // 121.5 MHz universal distress, always monitored
+};
+
 /**
  * Authoritative state of a single aircraft. Owned by the Airspace Manager;
  * read by every other system; never mutated outside the Airspace Manager. - TripleA
@@ -366,6 +384,16 @@ struct CLEARANCESIM_API FAircraftState
 	// when other sensors cover the same volume from a different angle. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EW")
 	bool bJammingOn = false;
+
+	// Which radio channel this aircraft is currently tuned to. The operator's
+	// PTT only reaches aircraft whose AssignedFrequency matches the operator's
+	// active tx channel; a handoff instruction ("BAW123 contact Tower on X")
+	// reassigns this field so the receiving controller can talk to them.
+	// Every aircraft spawns on Approach - real ATC hands them off from Center
+	// on Approach freq, they're never spawned on Tower. Emergency-declared
+	// aircraft auto-tune to Emergency channel until cleared. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Comms")
+	ECommsFrequency AssignedFrequency = ECommsFrequency::Approach;
 };
 
 // One chaff cloud release. Sits in the world for a few seconds scattering
@@ -420,6 +448,15 @@ struct CLEARANCESIM_API FAircraftInstruction
 	/** Altitude changes: expedite the climb/descent (faster rate). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instruction")
 	bool bExpedite = false;
+
+	// Which channel this instruction was transmitted on. Populated at the
+	// phraseology-parse callsite from the operator's PC CurrentTxFrequency.
+	// The router uses this to gate delivery: aircraft with a matching
+	// AssignedFrequency receive; others don't hear it (NO RESPONSE).
+	// SourceFrequency == None bypasses the gate (scripted / instructor
+	// injects that aren't spoken on any channel). - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Instruction")
+	ECommsFrequency SourceFrequency = ECommsFrequency::None;
 };
 
 /** A detected separation conflict between two aircraft. */
@@ -902,23 +939,6 @@ enum class EClearanceCommsRole : uint8
 	Gci		    UMETA(DisplayName = "GCI"),        // Ground Control Intercept
 	Atis		UMETA(DisplayName = "ATIS"),       // Automated terminal info
 	Met		    UMETA(DisplayName = "MET")         // Meteorological
-};
-
-// Radio channel the operator's PTT transmits on. Aircraft only hear voice
-// commands when their AssignedFrequency matches the operator's active
-// channel. Real ATC channel discipline: outer-sector traffic on Approach,
-// close-in traffic on Tower, emergency traffic on Emergency, universal
-// distress on Guard. Handoff instructions ("BAW123 contact Tower on 118.5")
-// reassign the addressed aircraft's frequency so the receiving controller
-// takes over cleanly. - TripleA
-UENUM(BlueprintType)
-enum class ECommsFrequency : uint8
-{
-	None		UMETA(DisplayName = "None"),          // No channel selected (mic effectively cold)
-	Tower		UMETA(DisplayName = "Tower"),         // Close-in: final approach, runway, taxi
-	Approach	UMETA(DisplayName = "Approach"),      // Inbound: sector edge to ~10nm final, vectoring + spacing
-	Emergency	UMETA(DisplayName = "Emergency"),     // Dedicated emergency coordination channel
-	Guard		UMETA(DisplayName = "Guard")          // 121.5 MHz universal distress, always monitored
 };
 
 USTRUCT(BlueprintType)

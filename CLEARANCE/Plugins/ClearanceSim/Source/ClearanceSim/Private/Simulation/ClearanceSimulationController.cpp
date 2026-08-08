@@ -3784,6 +3784,31 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 	if (AirspaceManager)
 	{
 		const FAircraftState Target = AirspaceManager->GetAircraftState(Instruction.TargetCallsign);
+
+		// Frequency gate: if the instruction carries a source channel (set at
+		// the phraseology-parse callsite from the operator's active tx freq)
+		// and the target aircraft is tuned to a DIFFERENT channel, the
+		// aircraft doesn't hear it. Silent rejection with the same NO RESPONSE
+		// path NORDO uses - the non-response is the operator's cue that they
+		// need to switch channels (or hand the aircraft off). Instructions
+		// without a SourceFrequency (scripted / instructor injects) bypass
+		// the gate. Guard is a universal listen-only monitor so operator
+		// transmissions on Guard don't reach specific aircraft - Guard exists
+		// for the operator to hear incoming distress, not to command. - TripleA
+		if (Instruction.SourceFrequency != ECommsFrequency::None
+			&& Instruction.SourceFrequency != ECommsFrequency::Guard
+			&& Target.bIsValid
+			&& Target.AssignedFrequency != Instruction.SourceFrequency)
+		{
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
+					FString::Printf(TEXT("%s not on this frequency"),
+						*Instruction.TargetCallsign.ToString()));
+			}
+			return EInstructionResult::Rejected_NoResponse;
+		}
+
 		if (Target.bIsValid && !Target.bIFFOperational
 			&& Target.ThreatClass != EThreatClass::Friendly
 			&& Target.ThreatClass != EThreatClass::Neutral)

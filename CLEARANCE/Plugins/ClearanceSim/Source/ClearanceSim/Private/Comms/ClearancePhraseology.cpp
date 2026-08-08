@@ -1,6 +1,7 @@
 #include "Comms/ClearancePhraseology.h"
 #include "Comms/ClearanceVoiceOutput.h"
 #include "Simulation/ClearanceSimulationController.h"
+#include "Simulation/ClearanceOperatorPC.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Comms/ClearanceCommsRouter.h"
 #include "EngineUtils.h"
@@ -339,6 +340,70 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	FString HoldReadback;            // injected into Accepted after the parse loop
 	bool bExitIssued     = false;
 
+	// Look up the operator PC on this server to read its active tx frequency.
+	// Instructions get stamped with this so the router freq filter can gate
+	// delivery per aircraft. Single-op assumption for now; multi-operator
+	// would need PC context threaded through Interpret. - TripleA
+	ECommsFrequency SourceFreq = ECommsFrequency::None;
+	if (UWorld* World = Controller ? Controller->GetWorld() : nullptr)
+	{
+		for (TActorIterator<AClearanceOperatorPC> It(World); It; ++It)
+		{
+			if (AClearanceOperatorPC* PC = *It)
+			{
+				SourceFreq = PC->CurrentTxFrequency;
+				break;
+			}
+		}
+	}
+
+	// Handoff phraseology: "contact tower / approach / emergency / guard".
+	// Reassigns the addressed aircraft's AssignedFrequency and produces a
+	// standard readback. Real ATC handoff format is "BAW123, contact Tower on
+	// 118.5, good day"; the "on <freq>" clause is optional - we only care
+	// about the facility keyword. Detection runs before the main parse loop
+	// so a handoff transmission with no other content still lands. - TripleA
+	{
+		ECommsFrequency HandoffTo = ECommsFrequency::None;
+		const int32 ContactIdx = Tokens.IndexOfByPredicate(
+			[](const FString& T){ return T == TEXT("contact"); });
+		if (ContactIdx != INDEX_NONE && ContactIdx + 1 < Tokens.Num())
+		{
+			const FString& Next = Tokens[ContactIdx + 1];
+			if      (Next == TEXT("tower"))     { HandoffTo = ECommsFrequency::Tower; }
+			else if (Next == TEXT("approach"))  { HandoffTo = ECommsFrequency::Approach; }
+			else if (Next == TEXT("emergency")) { HandoffTo = ECommsFrequency::Emergency; }
+			else if (Next == TEXT("guard"))     { HandoffTo = ECommsFrequency::Guard; }
+		}
+
+		if (HandoffTo != ECommsFrequency::None && Controller && Controller->GetAirspaceManager())
+		{
+			// Only allow the handoff if the operator can currently address this
+			// aircraft (same freq gate as instructions). Handoffs from Guard
+			// bypass because Guard is universal listen. - TripleA
+			AClearanceAirspaceManager* Mgr = Controller->GetAirspaceManager();
+			FAircraftState Target = Mgr->GetAircraftState(Callsign);
+			const bool bFreqOK = (SourceFreq == ECommsFrequency::None
+				|| SourceFreq == ECommsFrequency::Guard
+				|| Target.AssignedFrequency == SourceFreq);
+
+			if (Target.bIsValid && bFreqOK)
+			{
+				Target.AssignedFrequency = HandoffTo;
+				Mgr->RequestStateUpdate(Target);
+				const TCHAR* FacilityWord =
+					HandoffTo == ECommsFrequency::Tower     ? TEXT("Tower")     :
+					HandoffTo == ECommsFrequency::Approach  ? TEXT("Approach")  :
+					HandoffTo == ECommsFrequency::Emergency ? TEXT("Emergency") :
+					                                          TEXT("Guard");
+				const FString R = FString::Printf(TEXT("Contact %s, %s"),
+					FacilityWord, *Callsign.ToString());
+				SpeakOut(Controller, Callsign, R);
+				return R;
+			}
+		}
+	}
+
 	auto Make = [&](EInstructionType Type, float TargetValue, const FString& Readback, int32 TurnDir, bool bExp)
 	{
 		FParsed P;
@@ -347,6 +412,7 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		P.Instruction.TargetValue = TargetValue;
 		P.Instruction.TurnDirection = TurnDir;
 		P.Instruction.bExpedite = bExp;
+		P.Instruction.SourceFrequency = SourceFreq;
 		P.Readback = Readback;
 		Parsed.Add(P);
 	};

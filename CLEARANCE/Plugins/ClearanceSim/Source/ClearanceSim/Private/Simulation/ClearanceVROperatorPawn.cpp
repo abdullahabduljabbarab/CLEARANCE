@@ -270,24 +270,23 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 		}
 
 		// Trigger dispatch is redundant on top of the Tick-based poll below
-		// (Tick reads the EI action value directly and edge-detects) but the
-		// bindings are left in place as a belt-and-suspenders path: any
-		// ETriggerEvent kind that manages to fire will hit the same handler
-		// as the poll would. Duplicate press events are harmless because the
-		// handler bails when there's no hovered button. - TripleA
+		// (Tick reads the EI action value directly and edge-detects) but
+		// Started + Completed are kept as a belt-and-suspenders path in case
+		// the poll ever misses an edge on a hitchy frame. Triggered / Ongoing
+		// are NOT bound here - those fire every frame while the trigger is
+		// held and would cause the button handler to be re-invoked ~60 times
+		// per second per press, spamming the sound + haptic. The button itself
+		// guards against duplicate calls but there is no reason to make the
+		// noise. - TripleA
 		if (TriggerLeftAction)
 		{
-			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Started,   this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
-			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Ongoing,   this, &AClearanceVROperatorPawn::HandleTriggerLeftPressed);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
 			EIC->BindAction(TriggerLeftAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerLeftReleased);
 		}
 		if (TriggerRightAction)
 		{
-			EIC->BindAction(TriggerRightAction, ETriggerEvent::Triggered, this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Started,   this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
-			EIC->BindAction(TriggerRightAction, ETriggerEvent::Ongoing,   this, &AClearanceVROperatorPawn::HandleTriggerRightPressed);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
 		}
@@ -401,6 +400,7 @@ void AClearanceVROperatorPawn::OnLeftFingertipBeginOverlap(UPrimitiveComponent*,
 	if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
 	{
 		LeftHoveredButton = Btn;
+		Btn->HandleHoverBegin(this, EOperatorButtonHand::Left);
 		ClearanceInteractionDebug(2000, FColor::Yellow,
 			FString::Printf(TEXT("L fingertip HOVER: %s"), *Btn->GetName()));
 	}
@@ -418,6 +418,10 @@ void AClearanceVROperatorPawn::OnLeftFingertipEndOverlap(UPrimitiveComponent*, A
 {
 	if (LeftHoveredButton == OtherActor)
 	{
+		if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
+		{
+			Btn->HandleHoverEnd(this, EOperatorButtonHand::Left);
+		}
 		ClearanceInteractionDebug(2000, FColor::Silver,
 			FString::Printf(TEXT("L fingertip LEFT: %s"), *OtherActor->GetName()));
 		LeftHoveredButton = nullptr;
@@ -430,6 +434,7 @@ void AClearanceVROperatorPawn::OnRightFingertipBeginOverlap(UPrimitiveComponent*
 	if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
 	{
 		RightHoveredButton = Btn;
+		Btn->HandleHoverBegin(this, EOperatorButtonHand::Right);
 		ClearanceInteractionDebug(2100, FColor::Yellow,
 			FString::Printf(TEXT("R fingertip HOVER: %s"), *Btn->GetName()));
 	}
@@ -445,6 +450,10 @@ void AClearanceVROperatorPawn::OnRightFingertipEndOverlap(UPrimitiveComponent*, 
 {
 	if (RightHoveredButton == OtherActor)
 	{
+		if (AClearanceOperatorButton* Btn = Cast<AClearanceOperatorButton>(OtherActor))
+		{
+			Btn->HandleHoverEnd(this, EOperatorButtonHand::Right);
+		}
 		ClearanceInteractionDebug(2100, FColor::Silver,
 			FString::Printf(TEXT("R fingertip LEFT: %s"), *OtherActor->GetName()));
 		RightHoveredButton = nullptr;
@@ -458,7 +467,7 @@ void AClearanceVROperatorPawn::HandleTriggerLeftPressed(const FInputActionValue&
 			LeftHoveredButton ? *LeftHoveredButton->GetName() : TEXT("<none>")));
 	if (!LeftHoveredButton) { return; }
 	LeftPressedButton = LeftHoveredButton;
-	LeftPressedButton->HandlePress(this);
+	LeftPressedButton->HandlePress(this, EOperatorButtonHand::Left);
 }
 
 void AClearanceVROperatorPawn::HandleTriggerLeftReleased(const FInputActionValue&)
@@ -467,7 +476,7 @@ void AClearanceVROperatorPawn::HandleTriggerLeftReleased(const FInputActionValue
 		FString::Printf(TEXT("L trigger RELEASED (pressed: %s)"),
 			LeftPressedButton ? *LeftPressedButton->GetName() : TEXT("<none>")));
 	if (!LeftPressedButton) { return; }
-	LeftPressedButton->HandleRelease(this);
+	LeftPressedButton->HandleRelease(this, EOperatorButtonHand::Left);
 	LeftPressedButton = nullptr;
 }
 
@@ -478,7 +487,7 @@ void AClearanceVROperatorPawn::HandleTriggerRightPressed(const FInputActionValue
 			RightHoveredButton ? *RightHoveredButton->GetName() : TEXT("<none>")));
 	if (!RightHoveredButton) { return; }
 	RightPressedButton = RightHoveredButton;
-	RightPressedButton->HandlePress(this);
+	RightPressedButton->HandlePress(this, EOperatorButtonHand::Right);
 }
 
 void AClearanceVROperatorPawn::HandleTriggerRightReleased(const FInputActionValue&)
@@ -487,7 +496,7 @@ void AClearanceVROperatorPawn::HandleTriggerRightReleased(const FInputActionValu
 		FString::Printf(TEXT("R trigger RELEASED (pressed: %s)"),
 			RightPressedButton ? *RightPressedButton->GetName() : TEXT("<none>")));
 	if (!RightPressedButton) { return; }
-	RightPressedButton->HandleRelease(this);
+	RightPressedButton->HandleRelease(this, EOperatorButtonHand::Right);
 	RightPressedButton = nullptr;
 }
 

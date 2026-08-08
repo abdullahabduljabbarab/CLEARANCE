@@ -341,6 +341,18 @@ void AClearanceOperatorButton::HandlePress(APawn* PressingPawn, EOperatorButtonH
 	case EOperatorButtonKind::ClearAircraftSelection:
 		PC->ClearAircraftSelection();
 		break;
+	case EOperatorButtonKind::FreqTower:
+		PC->SetTxFreqTower();
+		break;
+	case EOperatorButtonKind::FreqApproach:
+		PC->SetTxFreqApproach();
+		break;
+	case EOperatorButtonKind::FreqEmergency:
+		PC->SetTxFreqEmergency();
+		break;
+	case EOperatorButtonKind::FreqGuard:
+		PC->SetTxFreqGuard();
+		break;
 	// Later mimic-panel kinds fall through as no-ops for now. Wiring the
 	// helpers on the operator PC lights them up without touching this
 	// switch (add a case here). - TripleA

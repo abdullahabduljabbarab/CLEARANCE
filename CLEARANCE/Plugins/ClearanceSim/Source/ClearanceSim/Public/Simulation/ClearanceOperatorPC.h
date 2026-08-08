@@ -20,6 +20,7 @@ class CLEARANCESIM_API AClearanceOperatorPC : public APlayerController
 public:
 	virtual void BeginPlay() override;
 	virtual void PlayerTick(float DeltaTime) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	// Accessor so the VR operator pawn can dismiss the desktop instructor
 	// widget once it takes over. Desktop operators keep the panel; in VR
@@ -221,6 +222,29 @@ public:
 	// PTT release: stop mic capture, triggers whisper transcription.
 	UFUNCTION(BlueprintCallable, Category = "Operator|Console")
 	void StopPTT();
+
+	// --- Frequency bank -------------------------------------------------------
+	// TWR / APP / EMRG / GRD buttons switch which channel PTT transmits on.
+	// Aircraft with a matching AssignedFrequency receive the voice; others
+	// don't. Console indicator + transcript tag reflect the active channel. - TripleA
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentTxFrequency, BlueprintReadOnly, Category = "Operator|Console")
+	ECommsFrequency CurrentTxFrequency = ECommsFrequency::Tower;
+
+	UFUNCTION()
+	void OnRep_CurrentTxFrequency();
+
+	// Server RPC fired by the freq buttons. Server validates + assigns +
+	// replicates back to the owning client. Also broadcasts a System line
+	// into the transcript so the change is audit-visible. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Operator|Console")
+	void Server_SetTxFrequency(ECommsFrequency NewFreq);
+
+	// Convenience helpers wired into the AClearanceOperatorButton dispatch
+	// switch. Each just calls Server_SetTxFrequency with its constant. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console") void SetTxFreqTower();
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console") void SetTxFreqApproach();
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console") void SetTxFreqEmergency();
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console") void SetTxFreqGuard();
 
 private:
 	float ViewPushAccumSec = 0.f;

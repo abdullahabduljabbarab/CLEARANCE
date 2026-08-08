@@ -904,6 +904,23 @@ enum class EClearanceCommsRole : uint8
 	Met		    UMETA(DisplayName = "MET")         // Meteorological
 };
 
+// Radio channel the operator's PTT transmits on. Aircraft only hear voice
+// commands when their AssignedFrequency matches the operator's active
+// channel. Real ATC channel discipline: outer-sector traffic on Approach,
+// close-in traffic on Tower, emergency traffic on Emergency, universal
+// distress on Guard. Handoff instructions ("BAW123 contact Tower on 118.5")
+// reassign the addressed aircraft's frequency so the receiving controller
+// takes over cleanly. - TripleA
+UENUM(BlueprintType)
+enum class ECommsFrequency : uint8
+{
+	None		UMETA(DisplayName = "None"),          // No channel selected (mic effectively cold)
+	Tower		UMETA(DisplayName = "Tower"),         // Close-in: final approach, runway, taxi
+	Approach	UMETA(DisplayName = "Approach"),      // Inbound: sector edge to ~10nm final, vectoring + spacing
+	Emergency	UMETA(DisplayName = "Emergency"),     // Dedicated emergency coordination channel
+	Guard		UMETA(DisplayName = "Guard")          // 121.5 MHz universal distress, always monitored
+};
+
 USTRUCT(BlueprintType)
 struct CLEARANCESIM_API FCommsTranscriptEntry
 {

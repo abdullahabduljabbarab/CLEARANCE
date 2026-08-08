@@ -1,6 +1,7 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Simulation/ClearanceSimulationController.h"
 #include "Comms/ClearanceVoiceInput.h"
+#include "Net/UnrealNetwork.h"
 #include "Simulation/ClearanceDISEmitter.h"
 #include "Simulation/ClearanceDISReceiver.h"
 #include "Simulation/ClearanceDDSEmitter.h"
@@ -740,3 +741,75 @@ void AClearanceOperatorPC::StopPTT()
 {
 	if (CachedVoiceInput) { CachedVoiceInput->StopListening(); }
 }
+
+// --- Replication ------------------------------------------------------------
+
+void AClearanceOperatorPC::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	// Owning client only - only the operator whose PC this is needs to see
+	// their own tx frequency (drives the console freq lamp + local PTT
+	// gating). Other peers don't need it. - TripleA
+	DOREPLIFETIME_CONDITION(AClearanceOperatorPC, CurrentTxFrequency, COND_OwnerOnly);
+}
+
+// --- Frequency bank ---------------------------------------------------------
+
+static const TCHAR* FreqLabel(ECommsFrequency F)
+{
+	switch (F)
+	{
+	case ECommsFrequency::Tower:     return TEXT("TWR");
+	case ECommsFrequency::Approach:  return TEXT("APP");
+	case ECommsFrequency::Emergency: return TEXT("EMRG");
+	case ECommsFrequency::Guard:     return TEXT("GRD");
+	default:                         return TEXT("---");
+	}
+}
+
+bool AClearanceOperatorPC::Server_SetTxFrequency_Validate(ECommsFrequency)
+{
+	return true;
+}
+
+void AClearanceOperatorPC::Server_SetTxFrequency_Implementation(ECommsFrequency NewFreq)
+{
+	if (CurrentTxFrequency == NewFreq) { return; }
+	CurrentTxFrequency = NewFreq;
+
+	// Announce the switch in the transcript so the reviewer can trace which
+	// channel every transmission went on. Uses the sim controller's system
+	// logger if available; falls back silently in bare-actor tests. - TripleA
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AClearanceSimulationController> It(World); It; ++It)
+		{
+			if (AClearanceSimulationController* SC = *It)
+			{
+				SC->LogTranscriptSystem(NAME_None, FString::Printf(TEXT("Freq -> %s"), FreqLabel(NewFreq)));
+				break;
+			}
+		}
+	}
+
+	// Hand a client-side hook via OnRep so the UI can react to server-side
+	// forced changes (e.g. auto-tune to Emergency when an aircraft flagged
+	// as focused declares mayday). - TripleA
+	if (IsLocalController())
+	{
+		OnRep_CurrentTxFrequency();
+	}
+}
+
+void AClearanceOperatorPC::OnRep_CurrentTxFrequency()
+{
+	// Placeholder hook - UMG panel binds here to drive the console freq lamp
+	// and the mic-gate widget colouring. No behaviour yet; comms-router
+	// filter will read CurrentTxFrequency directly on the server. - TripleA
+}
+
+void AClearanceOperatorPC::SetTxFreqTower()     { Server_SetTxFrequency(ECommsFrequency::Tower);     }
+void AClearanceOperatorPC::SetTxFreqApproach()  { Server_SetTxFrequency(ECommsFrequency::Approach);  }
+void AClearanceOperatorPC::SetTxFreqEmergency() { Server_SetTxFrequency(ECommsFrequency::Emergency); }
+void AClearanceOperatorPC::SetTxFreqGuard()     { Server_SetTxFrequency(ECommsFrequency::Guard);     }

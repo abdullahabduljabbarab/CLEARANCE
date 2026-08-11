@@ -36,7 +36,7 @@ namespace
 
 	// ANSI colour codes so the subscriber's console output stands out on
 	// the demo video. Purple accent for HLA to match the panel activity
-	// indicator suggested in Neo's handoff. - TripleA
+	// indicator convention used elsewhere in the sim. - TripleA
 	constexpr const char* kReset  = "\033[0m";
 	constexpr const char* kPurple = "\033[95m";
 	constexpr const char* kCyan   = "\033[96m";

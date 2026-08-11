@@ -75,10 +75,10 @@ void UClearanceInstructorPanel::NativeConstruct()
 //
 // Drag + zoom + double-click reset live in C++ because the UMG paint-event /
 // mouse-event overrides have to bind to the parent class's NativeOn... pair,
-// which the MCP editor tool can't reliably author from the Widget Blueprint
-// side. C++ here forwards into AddOverviewPan / AddOverviewZoom /
-// ResetOverviewView on the controller; the controller owns the actual pan +
-// zoom state so it persists across view switches. - TripleA
+// which is awkward to keep synced from the Widget Blueprint side. C++ here
+// forwards into AddOverviewPan / AddOverviewZoom / ResetOverviewView on the
+// controller; the controller owns the actual pan + zoom state so it persists
+// across view switches. - TripleA
 
 bool UClearanceInstructorPanel::IsOverviewActiveForInput() const
 {

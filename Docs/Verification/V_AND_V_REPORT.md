@@ -36,9 +36,9 @@ This report covers:
 |---|---|
 | Unreal Engine version | 5.7 |
 | Windows version | Windows 11 Home |
-| GPU / CPU | Stamped at release |
+| GPU / CPU | NVIDIA GeForce RTX 4070 Ti SUPER / Intel Core i7-14700KF |
 | RTI Connext version | 7.7.0 |
-| Fast DDS version | Stamped at release |
+| Fast DDS version | 3.6 |
 | OpenRTI version | 0.10.0 |
 | Wireshark version | 4.x with the default IEEE 1278.1 DIS dissector |
 

@@ -3,6 +3,7 @@
 #include "Simulation/ClearanceSimulationController.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Net/UnrealNetwork.h"
+#include "ClearanceDIS/ClearanceDISPDU.h"
 #include "Engine/World.h"
 #include "Engine/StaticMesh.h"
 #include "Components/StaticMeshComponent.h"
@@ -238,6 +239,20 @@ void AClearanceMissile::BeginPlay()
 	Wrapper = MakeUnique<FMissileWrapper>();
 	Wrapper->Initialize();
 
+	// Allocate the Fire event number + build the missile's DIS callsign
+	// BEFORE queuing the Fire PDU. QueueFireEvent stamps MunitionEntityId
+	// as HashCallsignToEntityNumber(MissileCallsign); if we called it
+	// with MissileCallsign still None, the emitter would fall through to
+	// the derived-hash path (DeriveMunitionEntityNumber(firer, event))
+	// and the later Detonation PDU would use a different Munition ID -
+	// federation observers pair by MunitionEntity, so a mismatch breaks
+	// the correlation. - TripleA
+	if (SimController.IsValid())
+	{
+		FireEventNumber = SimController->AllocateFireEventNumber();
+	}
+	MissileCallsign = FName(*FString::Printf(TEXT("MSL_%d"), FMath::Max(1, FireEventNumber)));
+
 	QueueFireEvent();
 	bInFlight = true;
 
@@ -249,7 +264,6 @@ void AClearanceMissile::BeginPlay()
 	// handler sees bIsMissile and skips Behaviour / CommsRouter / mesh-
 	// variant spawn, so this doesn't fight the missile's own guidance
 	// tick or duplicate the AIM-120b mesh. - TripleA
-	MissileCallsign = FName(*FString::Printf(TEXT("MSL_%d"), FMath::Max(1, FireEventNumber)));
 
 	FAircraftState S;
 	S.Callsign            = MissileCallsign;
@@ -537,7 +551,14 @@ void AClearanceMissile::QueueFireEvent()
 	if (!SimController.IsValid()) { return; }
 
 	AClearanceSimulationController* Ctrl = SimController.Get();
-	FireEventNumber = Ctrl->AllocateFireEventNumber();
+	// FireEventNumber may already have been allocated upfront in BeginPlay
+	// so the MissileCallsign / MunitionEntity hash is stable before we
+	// build the Fire event. Only allocate here if a caller wired us in
+	// without doing that. - TripleA
+	if (FireEventNumber <= 0)
+	{
+		FireEventNumber = Ctrl->AllocateFireEventNumber();
+	}
 
 	FWeaponsFireEvent Event;
 	Event.FiringCallsign = LauncherCallsign;
@@ -547,13 +568,44 @@ void AClearanceMissile::QueueFireEvent()
 	Event.VelocityXKts   = MpsToKts(MissileVelMps.X);
 	Event.VelocityYKts   = MpsToKts(MissileVelMps.Y);
 	Event.VelocityZKts   = MpsToKts(MissileVelMps.Z);
-	Event.MunitionKind   = 1;    // 1 = missile (Annex A Kind 2, but our enum maps 1 to missile)
+	Event.MunitionKind        = 2;    // Category = Guided (SISO-REF-010)
+	Event.MunitionDomain      = 3;    // Anti-Air
+	Event.MunitionSubcategory = 8;    // AIM-120 family
+	Event.MunitionSpecific    = 3;    // AIM-120B
+	Event.MunitionCategory    = 2;    // Guided (redundant with MunitionKind mapping but explicit)
 	Event.WarheadKind    = 1000; // Annex A: 1000 = HE
 	Event.FuseKind       = 1000; // Annex A: 1000 = contact
 	Event.Quantity       = 1;
 	Event.Rate           = 0;    // rounds/min, 0 for missile
-	Event.RangeMeters    = 0.f;  // TODO: sample range-at-launch from initial geometry
+	// Range-at-launch: straight-line distance from muzzle to target at the
+	// moment we queue the Fire PDU. Fire PDU §7.4.3 wants effective range
+	// as a diagnostic, not a live update. - TripleA
+	{
+		FVector TargetPosWorld = FVector::ZeroVector;
+		if (AirspaceManager.IsValid())
+		{
+			const FAircraftState T = AirspaceManager->GetAircraftState(TargetCallsign);
+			if (T.bIsValid)
+			{
+				TargetPosWorld = NmFtToMeters(T.Position, T.Altitude);
+			}
+		}
+		Event.RangeMeters = TargetPosWorld.IsNearlyZero()
+			? 0.f
+			: static_cast<float>(FVector::Dist(MissilePosMeters, TargetPosWorld));
+	}
 	Event.EventNumber    = FireEventNumber;
+
+	// Stamp the munition entity ID so the Fire PDU points at the same DIS
+	// entity the missile broadcasts as via EmitStates - lets external
+	// federates correlate the "declared munition" with the flying entity's
+	// live position PDUs. Uses the exact hash EntityFromCallsign runs. - TripleA
+	if (!MissileCallsign.IsNone())
+	{
+		const FTCHARToUTF8 Utf8(*MissileCallsign.ToString());
+		Event.MunitionEntityId = static_cast<int32>(
+			ClearanceDIS::HashCallsignToEntityNumber(std::string_view(Utf8.Get(), Utf8.Length())));
+	}
 
 	Ctrl->QueueFireEvent(Event);
 
@@ -585,7 +637,11 @@ void AClearanceMissile::OnTerminationDetected(int32 InTerminationFlag)
 		Event.VelocityXKts     = MpsToKts(MissileVelMps.X);
 		Event.VelocityYKts     = MpsToKts(MissileVelMps.Y);
 		Event.VelocityZKts     = MpsToKts(MissileVelMps.Z);
-		Event.MunitionKind     = 1;
+		Event.MunitionKind        = 2;
+		Event.MunitionDomain      = 3;
+		Event.MunitionSubcategory = 8;
+		Event.MunitionSpecific    = 3;
+		Event.MunitionCategory    = 2;
 		Event.WarheadKind      = 1000;
 		Event.FuseKind         = 1000;
 		Event.Quantity         = 1;
@@ -596,6 +652,15 @@ void AClearanceMissile::OnTerminationDetected(int32 InTerminationFlag)
 		//   6 = None           (LOS reversal - hard miss, no detonation)
 		Event.DetonationResult = (InTerminationFlag == 1) ? 1 : (InTerminationFlag == 2 ? 5 : 6);
 		Event.EventNumber      = FireEventNumber;
+
+		// Match the Fire PDU's MunitionEntity so the pair reads correctly
+		// on a federation observer that keys by entity ID. - TripleA
+		if (!MissileCallsign.IsNone())
+		{
+			const FTCHARToUTF8 Utf8(*MissileCallsign.ToString());
+			Event.MunitionEntityId = static_cast<int32>(
+				ClearanceDIS::HashCallsignToEntityNumber(std::string_view(Utf8.Get(), Utf8.Length())));
+		}
 
 		SimController->QueueDetonationEvent(Event);
 

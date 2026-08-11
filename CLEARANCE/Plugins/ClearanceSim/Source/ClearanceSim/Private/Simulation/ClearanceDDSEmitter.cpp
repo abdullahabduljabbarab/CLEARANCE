@@ -199,7 +199,9 @@ void UClearanceDDSEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Event
 		M.FiringEntity(Firer);
 		M.TargetEntity(Target);
 		M.EventNumber(static_cast<uint16_t>(E.EventNumber & 0xFFFFu));
-		M.MunitionEntity(ClearanceDIS::DeriveMunitionEntityNumber(Firer, static_cast<std::uint32_t>(E.EventNumber)));
+		M.MunitionEntity(E.MunitionEntityId != 0
+			? static_cast<uint16_t>(E.MunitionEntityId & 0xFFFFu)
+			: ClearanceDIS::DeriveMunitionEntityNumber(Firer, static_cast<std::uint32_t>(E.EventNumber)));
 		M.XMeters(double(E.LocationNm.X) * 1852.0);
 		M.YMeters(double(E.LocationNm.Y) * 1852.0);
 		M.ZMeters(double(E.AltitudeFt)   * 0.3048);
@@ -230,7 +232,9 @@ void UClearanceDDSEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationE
 		M.FiringEntity(Firer);
 		M.TargetEntity(Target);
 		M.EventNumber(static_cast<uint16_t>(E.EventNumber & 0xFFFFu));
-		M.MunitionEntity(ClearanceDIS::DeriveMunitionEntityNumber(Firer, static_cast<std::uint32_t>(E.EventNumber)));
+		M.MunitionEntity(E.MunitionEntityId != 0
+			? static_cast<uint16_t>(E.MunitionEntityId & 0xFFFFu)
+			: ClearanceDIS::DeriveMunitionEntityNumber(Firer, static_cast<std::uint32_t>(E.EventNumber)));
 		M.XMeters(double(E.LocationNm.X) * 1852.0);
 		M.YMeters(double(E.LocationNm.Y) * 1852.0);
 		M.ZMeters(double(E.AltitudeFt)   * 0.3048);

@@ -41,6 +41,15 @@ void UClearanceConflictDetector::DetectConflicts()
 			const FAircraftState& A = States[i];
 			const FAircraftState& B = States[j];
 
+			// Missiles are inert wrt the civilian safety net - a SAM racing
+			// toward its target must not trigger TCAS / wake / separation
+			// alerts on either the missile or the target. Skip any pair that
+			// has a missile on either side. - TripleA
+			if (A.bIsMissile || B.bIsMissile)
+			{
+				continue;
+			}
+
 			// Engagement pairs - suppress the civilian safety net (sep alerts, TCAS,
 			// wake) so the operator isn't penalised for the intercept itself:
 			//   * Hostile/Unknown-involved - any contact GCI is actively tracking

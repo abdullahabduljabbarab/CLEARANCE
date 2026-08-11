@@ -13,6 +13,7 @@
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
 #include "Common/UdpSocketBuilder.h"
+#include "Interfaces/IPv4/IPv4Address.h"
 
 #include "ClearanceDIS/ClearanceDISPDU.h"
 
@@ -59,6 +60,15 @@ namespace ClearanceDISEmitterHelpers
 		default:                    return {1, 2, 225, 1, 22, 5,  0};
 		}
 	}
+
+	// SISO-REF-010 EBV Munition entity type for the SAM warhead: Kind 2
+	// (Munition), Domain 3 (Anti-Air), Country 224 (UK - the sim is
+	// Warton-based and the Burst Descriptor already stamps Country 224 for
+	// consistency across all weapons traffic), Category 2 (Guided),
+	// Subcategory 8 (AIM-120 family), Specific 3 (B model). Federation
+	// observers rendering by entity type will draw a missile icon
+	// instead of a light aircraft. - TripleA
+	constexpr FEntityTypeSubfields kMissileAIM120B = {2, 3, 224, 2, 8, 3, 0};
 
 	// Map CLEARANCE's ThreatClass onto the DIS Force ID field per §7.3.2.6.
 	uint8 ForceIdFor(EThreatClass T)
@@ -120,14 +130,35 @@ bool UClearanceDISEmitter::Start(const FString& Host, int32 Port)
 	// packets are dropped before the local peer's socket sees them, so RECV
 	// stays at 0/s even with everything else wired. TTL 1 confines packets to
 	// the local link - matches DIS training-range convention. - TripleA
+	// Discover a real local IPv4 interface to bind the sender to. Windows
+	// refuses to route outgoing multicast (WSAEHOSTUNREACH / SendTo=-1) when
+	// the socket is unbound - there's no default multicast route so the OS
+	// can't pick an egress interface. Binding to a specific local IP
+	// implicitly sets IP_MULTICAST_IF, which makes SendTo succeed. Ignored
+	// on Linux/Mac where INADDR_ANY works. - TripleA
+	FIPv4Address BindIP = FIPv4Address::Any;
+	{
+		bool bCanBind = false;
+		TSharedRef<FInternetAddr> Local = SS->GetLocalHostAddr(*GLog, bCanBind);
+		if (Local->IsValid())
+		{
+			uint32 IP = 0;
+			Local->GetIp(IP);
+			BindIP = FIPv4Address(IP);
+		}
+	}
+
 	Socket = FUdpSocketBuilder(TEXT("ClearanceDISEmitter"))
 		.AsReusable()
 		.WithBroadcast()
 		.WithMulticastLoopback()
 		.WithMulticastTtl(1)
 		.WithSendBufferSize(64 * 1024)
+		.BoundToAddress(BindIP)
 		.Build();
 	if (!Socket) { return false; }
+	UE_LOG(LogTemp, Log, TEXT("[ClearanceDISEmitter] Bound sender socket to interface %s"),
+		*BindIP.ToString());
 
 	TargetAddr = SS->CreateInternetAddr();
 	bool bAddrOk = false;
@@ -173,7 +204,12 @@ void UClearanceDISEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 		PodS.EntityNumber = ClearanceDISEmitterHelpers::EntityFromCallsign(S.Callsign);
 		PodS.ForceId      = ClearanceDISEmitterHelpers::ForceIdFor(S.ThreatClass);
 
-		const ClearanceDISEmitterHelpers::FEntityTypeSubfields ET = ClearanceDISEmitterHelpers::EntityTypeFor(S.WakeCategory);
+		// Missiles get the AIM-120B Munition entity type; aircraft use the
+		// wake-category-derived platform mapping. Without this branch the
+		// missile would emit as a light aircraft over the wire. - TripleA
+		const ClearanceDISEmitterHelpers::FEntityTypeSubfields ET = S.bIsMissile
+			? ClearanceDISEmitterHelpers::kMissileAIM120B
+			: ClearanceDISEmitterHelpers::EntityTypeFor(S.WakeCategory);
 		PodS.EntityKind        = ET.Kind;
 		PodS.EntityDomain      = ET.Domain;
 		PodS.EntityCountry     = ET.Country;
@@ -261,7 +297,14 @@ void UClearanceDISEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Event
 		Pod.FiringEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.FiringCallsign);
 		Pod.TargetEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.TargetCallsign);
 		Pod.EventNumber    = static_cast<std::uint16_t>(E.EventNumber & 0xFFFFu);
-		Pod.MunitionEntity = ClearanceDIS::DeriveMunitionEntityNumber(Pod.FiringEntity, static_cast<std::uint32_t>(E.EventNumber));
+		// Prefer the caller-supplied munition entity ID (e.g. the missile
+		// actor stamps its own EntityFromCallsign(MissileCallsign) here so
+		// the Fire PDU's declared munition matches the flying entity's own
+		// Entity State PDUs). Fall back to the derived value for legacy
+		// weapons events that don't spawn a follow-on entity. - TripleA
+		Pod.MunitionEntity = (E.MunitionEntityId != 0)
+			? static_cast<std::uint16_t>(E.MunitionEntityId & 0xFFFFu)
+			: ClearanceDIS::DeriveMunitionEntityNumber(Pod.FiringEntity, static_cast<std::uint32_t>(E.EventNumber));
 
 		Pod.XMeters = double(E.LocationNm.X) * 1852.0;
 		Pod.YMeters = double(E.LocationNm.Y) * 1852.0;
@@ -271,6 +314,13 @@ void UClearanceDISEmitter::EmitFireEvents(const TArray<FWeaponsFireEvent>& Event
 		Pod.VzMps   = E.VelocityZKts * 0.514444f;
 
 		Pod.MunitionKind = E.MunitionKind;
+		// Optional entity-type subfields - non-zero values from the caller
+		// tighten the Burst Descriptor to a specific weapon (e.g. AIM-120B).
+		// Zero means "use the default generic-missile tuple". - TripleA
+		if (E.MunitionDomain      != 0) { Pod.MunitionDomain      = E.MunitionDomain; }
+		if (E.MunitionCategory    != 0) { Pod.MunitionKind        = E.MunitionCategory; }
+		if (E.MunitionSubcategory != 0) { Pod.MunitionSubcategory = E.MunitionSubcategory; }
+		if (E.MunitionSpecific    != 0) { Pod.MunitionSpecific    = E.MunitionSpecific; }
 		Pod.WarheadKind  = static_cast<std::uint16_t>(E.WarheadKind);
 		Pod.FuseKind     = static_cast<std::uint16_t>(E.FuseKind);
 		Pod.Quantity     = static_cast<std::uint16_t>(E.Quantity);
@@ -298,7 +348,9 @@ void UClearanceDISEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationE
 		Pod.FiringEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.FiringCallsign);
 		Pod.TargetEntity   = ClearanceDISEmitterHelpers::EntityFromCallsign(E.TargetCallsign);
 		Pod.EventNumber    = static_cast<std::uint16_t>(E.EventNumber & 0xFFFFu);
-		Pod.MunitionEntity = ClearanceDIS::DeriveMunitionEntityNumber(Pod.FiringEntity, static_cast<std::uint32_t>(E.EventNumber));
+		Pod.MunitionEntity = (E.MunitionEntityId != 0)
+			? static_cast<std::uint16_t>(E.MunitionEntityId & 0xFFFFu)
+			: ClearanceDIS::DeriveMunitionEntityNumber(Pod.FiringEntity, static_cast<std::uint32_t>(E.EventNumber));
 
 		Pod.XMeters = double(E.LocationNm.X) * 1852.0;
 		Pod.YMeters = double(E.LocationNm.Y) * 1852.0;
@@ -308,6 +360,10 @@ void UClearanceDISEmitter::EmitDetonationEvents(const TArray<FWeaponsDetonationE
 		Pod.VzMps   = E.VelocityZKts * 0.514444f;
 
 		Pod.MunitionKind = E.MunitionKind;
+		if (E.MunitionDomain      != 0) { Pod.MunitionDomain      = E.MunitionDomain; }
+		if (E.MunitionCategory    != 0) { Pod.MunitionKind        = E.MunitionCategory; }
+		if (E.MunitionSubcategory != 0) { Pod.MunitionSubcategory = E.MunitionSubcategory; }
+		if (E.MunitionSpecific    != 0) { Pod.MunitionSpecific    = E.MunitionSpecific; }
 		Pod.WarheadKind  = static_cast<std::uint16_t>(E.WarheadKind);
 		Pod.FuseKind     = static_cast<std::uint16_t>(E.FuseKind);
 		Pod.Quantity     = static_cast<std::uint16_t>(E.Quantity);

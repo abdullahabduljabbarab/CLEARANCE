@@ -754,6 +754,24 @@ struct CLEARANCESIM_API FWeaponsFireEvent
 	UPROPERTY(BlueprintReadOnly) int32 Rate = 0;               // rounds/min for cannon, 0 for missile
 	UPROPERTY(BlueprintReadOnly) float RangeMeters = 0.f;      // effective range at launch
 	UPROPERTY(BlueprintReadOnly) int32 EventNumber = 0;       // unique per launch, referenced by Detonation
+
+	// Explicit DIS entity number for the munition itself (per §7.4.3). When
+	// the sim also broadcasts the munition as a separate Entity State PDU
+	// (missiles do this), setting this to the same numerical ID lets a
+	// federation observer correlate the Fire PDU's declared munition with
+	// the flying entity. If left at 0, the DIS emitter falls back to
+	// DeriveMunitionEntityNumber(FiringEntity, EventNumber). - TripleA
+	UPROPERTY(BlueprintReadOnly) int32 MunitionEntityId = 0;
+
+	// Burst Descriptor Entity Type subfields per SISO-REF-010. Left at 0
+	// means "use emitter defaults" (generic missile / Domain Air). Set
+	// these to the specific tuple to make the Fire PDU's declared
+	// munition match the flying EntityState PDU exactly - e.g. AIM-120B
+	// is Domain 3 Anti-Air, Category 2 Guided, Subcat 8, Specific 3. - TripleA
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionDomain      = 0;
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionCategory    = 0;
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionSubcategory = 0;
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionSpecific    = 0;
 };
 
 /** Snapshot of a weapons-detonation event, handed to the DIS emitter for
@@ -785,6 +803,19 @@ struct CLEARANCESIM_API FWeaponsDetonationEvent
 	//   6 = None (dud/no detonation)
 	UPROPERTY(BlueprintReadOnly) uint8 DetonationResult = 1;
 	UPROPERTY(BlueprintReadOnly) int32 EventNumber = 0;   // matches the originating Fire PDU
+
+	// Same semantics as FWeaponsFireEvent::MunitionEntityId - explicit ID
+	// for the munition entity so an observer can correlate this Detonation
+	// PDU with the earlier Entity State PDUs of the flying munition. - TripleA
+	UPROPERTY(BlueprintReadOnly) int32 MunitionEntityId = 0;
+
+	// Burst Descriptor Entity Type subfields - see FWeaponsFireEvent for
+	// the semantics. Set them so the Detonation PDU's declared munition
+	// matches the earlier Fire PDU. - TripleA
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionDomain      = 0;
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionCategory    = 0;
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionSubcategory = 0;
+	UPROPERTY(BlueprintReadOnly) uint8 MunitionSpecific    = 0;
 };
 
 /** Snapshot of a single radio transmission, handed to the DIS emitter for

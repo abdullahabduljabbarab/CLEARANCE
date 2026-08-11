@@ -56,6 +56,14 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectScramble(FName BanditCallsign);
 
+	// Fire a ground-launched SAM at the given aircraft. Forwards to
+	// SimulationController::Server_InjectFireMissile on the server. The
+	// launcher position is picked automatically from any placed
+	// AClearanceMissileLauncher actor in the level (falls back to a
+	// 20 km-behind-target spawn if none is placed). - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
+	void Server_InjectFireMissile(FName TargetCallsign);
+
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectSetWind(float DirectionDeg, float SpeedKts);
 

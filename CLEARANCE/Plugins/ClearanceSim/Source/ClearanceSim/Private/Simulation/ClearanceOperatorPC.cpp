@@ -234,6 +234,23 @@ void AClearanceOperatorPC::Server_InjectScramble_Implementation(FName BanditCall
 	}
 }
 
+// --- Missile fire ----------------------------------------------------------
+
+bool AClearanceOperatorPC::Server_InjectFireMissile_Validate(FName TargetCallsign)
+{
+	return true;
+}
+void AClearanceOperatorPC::Server_InjectFireMissile_Implementation(FName TargetCallsign)
+{
+	if (TargetCallsign == NAME_None) { return; }
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->LogTranscriptLine(EClearanceCommsRole::Instructor, TargetCallsign,
+			FString::Printf(TEXT("SAM engagement on %s"), *TargetCallsign.ToString()));
+		C->Server_InjectFireMissile(TargetCallsign);
+	}
+}
+
 // --- Wind ------------------------------------------------------------------
 
 bool AClearanceOperatorPC::Server_InjectSetWind_Validate(float DirectionDeg, float SpeedKts)

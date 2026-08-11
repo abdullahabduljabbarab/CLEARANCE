@@ -860,3 +860,42 @@ void AClearanceOperatorPC::SetTxFreqTower()     { Server_SetTxFrequency(ECommsFr
 void AClearanceOperatorPC::SetTxFreqApproach()  { Server_SetTxFrequency(ECommsFrequency::Approach);  }
 void AClearanceOperatorPC::SetTxFreqEmergency() { Server_SetTxFrequency(ECommsFrequency::Emergency); }
 void AClearanceOperatorPC::SetTxFreqGuard()     { Server_SetTxFrequency(ECommsFrequency::Guard);     }
+
+// --- Crash alarm ------------------------------------------------------------
+
+void AClearanceOperatorPC::FireCrashAlarm()
+{
+	// Read the currently selected aircraft (may be None) so the per-aircraft
+	// tag is optional - operator can slam the alarm without a specific
+	// callsign focused. Uses the same panel-fanout lookup the select buttons
+	// use so it works on the server side where PC->InstructorPanel is null. - TripleA
+	FName CrashCallsign = NAME_None;
+	TArray<UUserWidget*> Panels;
+	UWidgetBlueprintLibrary::GetAllWidgetsOfClass(this, Panels,
+		UClearanceInstructorPanel::StaticClass(), /*TopLevelOnly*/ false);
+	for (UUserWidget* W : Panels)
+	{
+		if (auto* Panel = Cast<UClearanceInstructorPanel>(W))
+		{
+			const FName Cs = Panel->GetSelectedCallsign();
+			if (Cs != NAME_None) { CrashCallsign = Cs; break; }
+		}
+	}
+
+	AClearanceSimulationController* SC = nullptr;
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AClearanceSimulationController> It(World); It; ++It)
+		{
+			SC = *It;
+			break;
+		}
+	}
+	if (!SC) { return; }
+
+	const FString Body = CrashCallsign != NAME_None
+		? FString::Printf(TEXT("CRASH ALARM: %s"), *CrashCallsign.ToString())
+		: TEXT("CRASH ALARM ACTIVATED");
+	SC->PushNotification(Body, FColor::Red, /*LifetimeSec*/ 12.f);
+	SC->LogTranscriptSystem(CrashCallsign, Body);
+}

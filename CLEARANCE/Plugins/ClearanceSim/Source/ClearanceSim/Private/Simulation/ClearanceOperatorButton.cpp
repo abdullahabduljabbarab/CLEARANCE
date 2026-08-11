@@ -4,6 +4,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Controller.h"
 #include "GameFramework/PlayerController.h"
@@ -13,6 +14,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Sound/SoundBase.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
 // Green on-screen prints on the whole console-button chain. Flip to 1 to
@@ -232,6 +234,40 @@ void AClearanceOperatorButton::PlaySoundAtButton(USoundBase* Sound) const
 
 // --- Visual state ----------------------------------------------------------
 
+// --- Break-glass cover ------------------------------------------------------
+
+void AClearanceOperatorButton::UnlockCover()
+{
+	if (bCoverUnlocked) { return; }   // already unlocked, don't restart the timer
+	bCoverUnlocked = true;
+	OnCoverLockChanged(true);
+
+	// Auto-relock after the configured window. Operator has to press the alarm
+	// during that window or the cover snaps shut and they have to unlock again.
+	// Prevents the "one operator unlocks and 20 minutes later a bystander
+	// stumbles into the alarm" trap. - TripleA
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(CoverRelockTimer);
+		World->GetTimerManager().SetTimer(
+			CoverRelockTimer,
+			FTimerDelegate::CreateWeakLambda(this, [this]() { LockCover(); }),
+			CoverUnlockDurationSec,
+			/*bLoop*/ false);
+	}
+}
+
+void AClearanceOperatorButton::LockCover()
+{
+	if (!bCoverUnlocked) { return; }
+	bCoverUnlocked = false;
+	OnCoverLockChanged(false);
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(CoverRelockTimer);
+	}
+}
+
 void AClearanceOperatorButton::SetVisualState(EOperatorButtonVisualState NewState)
 {
 	if (VisualState == NewState) { return; }
@@ -352,6 +388,31 @@ void AClearanceOperatorButton::HandlePress(APawn* PressingPawn, EOperatorButtonH
 		break;
 	case EOperatorButtonKind::FreqGuard:
 		PC->SetTxFreqGuard();
+		break;
+	case EOperatorButtonKind::UnlockCrashCover:
+		// Opens the glass on the paired alarm button for a bounded window.
+		// Silent no-op if TargetButton isn't wired - Neo needs to point this
+		// at the alarm button in Details. - TripleA
+		if (AClearanceOperatorButton* Target = TargetButton.LoadSynchronous())
+		{
+			Target->UnlockCover();
+		}
+		break;
+	case EOperatorButtonKind::FireCrashCallout:
+		// Gated by the break-glass cover. Silent rejection if locked -
+		// operator has to press the paired UnlockCrashCover button first.
+		// On successful fire we IMMEDIATELY relock so a second press
+		// within the window doesn't stack multiple alarms. Currently
+		// selected aircraft (may be None) is passed through to the PC
+		// helper for optional per-aircraft incident logging. - TripleA
+		if (!bCoverUnlocked)
+		{
+			ClearanceButtonDebug(1200 + GetUniqueID(), FColor::Red,
+				TEXT("  CRASH ALARM covered - press UNLOCK first"));
+			break;
+		}
+		PC->FireCrashAlarm();
+		LockCover();
 		break;
 	// Later mimic-panel kinds fall through as no-ops for now. Wiring the
 	// helpers on the operator PC lights them up without touching this

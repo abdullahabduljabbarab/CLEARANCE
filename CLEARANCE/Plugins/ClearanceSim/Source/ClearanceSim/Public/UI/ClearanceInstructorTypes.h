@@ -50,6 +50,12 @@ struct CLEARANCESIM_API FInstructorAircraftRow
 	UPROPERTY(BlueprintReadOnly) bool bIsMilitary = false;
 	UPROPERTY(BlueprintReadOnly) bool bIFFOperational = true;
 
+	// True if the "aircraft" behind this row is a missile in flight (SAM
+	// launched from the ground battery). BP row can style it differently -
+	// tag colour, hide instruction buttons, etc. Selecting the row still
+	// works for camera + label overlay, which is the whole point. - TripleA
+	UPROPERTY(BlueprintReadOnly) bool bIsMissile = false;
+
 	// Federation ownership - drives the OWN / SITE N chip on the row.
 	// 0 = local (we own this aircraft); >0 = peer Site ID that owns it. - TripleA
 	UPROPERTY(BlueprintReadOnly) bool bIsExternal = false;

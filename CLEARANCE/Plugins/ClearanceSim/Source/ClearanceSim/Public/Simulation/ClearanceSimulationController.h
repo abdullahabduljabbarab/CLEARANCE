@@ -121,6 +121,9 @@ public:
 	bool IsSessionActive() const { return bSessionActive && !bPaused; }
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	bool IsSessionPaused() const { return bPaused; }
+
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	float GetSessionTime() const { return SessionTime; }
 
 	// The UI's single way in: build an instruction, send it here. - TripleA
@@ -136,6 +139,40 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	AClearanceAirspaceManager* GetAirspaceManager() const { return AirspaceManager; }
+
+	// -------------------------------------------------------------------
+	// Weapon-event queue accessors. Fire and Detonation events pushed
+	// here are drained by the DIS / DDS / RTI / HLA emitters on the next
+	// tick, so any system that spawns a weapon just adds to these queues
+	// and lets the federation emitters do the wire work. - TripleA
+
+	// Increment-and-return the monotonic Event ID counter. 16-bit wrap
+	// matches the DIS FiringEntityID.EventNumber width. Used by callers
+	// that need to link a Fire event to its later Detonation event by ID.
+	int32 AllocateFireEventNumber();
+
+	// Push a Fire event onto the pending queue. Server-only; no-op on
+	// clients. The emitter tick handles the wire publish next round.
+	void QueueFireEvent(const FWeaponsFireEvent& Event);
+
+	// Push a Detonation event onto the pending queue. Server-only.
+	void QueueDetonationEvent(const FWeaponsDetonationEvent& Event);
+
+	// Server-side spawn helper for AClearanceMissile. Ground-launched
+	// (fixed SAM site at the airport reference point) with the given
+	// target callsign resolved in the AirspaceManager. Blueprint-callable
+	// so an Instructor Panel "Launch Missile" button can invoke it
+	// directly on the authority after the operator has selected the
+	// target aircraft. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation|Weapons")
+	class AClearanceMissile* Server_InjectFireMissile(FName TargetCallsign);
+
+	// Called by AClearanceMissile when its guidance model reports an
+	// intercept. Kicks the target aircraft into the existing crash
+	// pipeline (visible mayday-style descent, incident log, scoring hit,
+	// crash site marker), so a missile hit reads the same as a natural
+	// mayday from the operator's side. - TripleA
+	void MissileHit(FName TargetCallsign, const FString& Reason);
 
 	UFUNCTION(BlueprintCallable, Category = "Simulation")
 	UClearanceScoring* GetScoring() const { return Scoring; }
@@ -1224,6 +1261,14 @@ public:
 	FVector OperatorViewLocation = FVector::ZeroVector;
 
 	void SpawnPresetCameras();
+	// Public so fast-moving actors (missiles) can force a camera refresh
+	// at the end of their own tick. Without this the follow camera sees
+	// a stale position for one frame - visible as rubber-banding at
+	// 60 fps, invisible at low fps because both update within the same
+	// perceptible frame. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void RefreshFollowCamera() { UpdateFollowCamera(); }
+
 	void UpdateFollowCamera();
 	void UpdateInstructorPip(float DeltaSeconds);
 	// Live world frozen on EnterReplay so ResumeLive can restore it. - TripleA
@@ -1347,6 +1392,15 @@ public:
 	FVector WorldPositionFor(const FAircraftState& State) const;
 	// Altitude (ft) -> vertical world offset above ground, via the altitude curve.
 	float AltitudeToWorldZOffset(float AltitudeFt) const;
+
+	// Inverse of WorldPositionFor for a ground-level placement. Takes a UE
+	// world location (cm) and returns the corresponding sim-frame metres
+	// (X = east metres, Y = north metres, Z = altitude metres above sea).
+	// Missile launcher actors placed in the level convert their world
+	// position through here so Fire() knows where in sim-space the launch
+	// point sits. - TripleA
+	UFUNCTION(BlueprintPure, Category = "Simulation")
+	FVector WorldToSimMeters(const FVector& WorldLocation) const;
 	const TArray<FAircraftVisualVariant>& VariantsFor(EWakeCategory Category) const;
 
 	UFUNCTION()

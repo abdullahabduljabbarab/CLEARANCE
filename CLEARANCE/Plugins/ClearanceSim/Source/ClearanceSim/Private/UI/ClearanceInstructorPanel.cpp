@@ -490,6 +490,7 @@ bool UClearanceInstructorPanel::BuildAircraftRows(TArray<FInstructorAircraftRow>
 		R.bUnderGCIControl   = S.bUnderGCIControl;
 		R.bIsMilitary        = S.bIsMilitary;
 		R.bIFFOperational    = S.bIFFOperational;
+		R.bIsMissile         = S.bIsMissile;
 		R.bIsExternal        = S.bIsExternal;
 		R.OwnerSiteId        = S.OwnerSiteId;
 		R.PositionNm         = FVector2D(S.Position.X, S.Position.Y);

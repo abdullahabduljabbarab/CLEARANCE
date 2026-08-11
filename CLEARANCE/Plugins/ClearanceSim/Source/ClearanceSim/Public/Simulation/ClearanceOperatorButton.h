@@ -31,6 +31,7 @@ enum class EOperatorButtonKind : uint8
 	RequestRunwayNorth,
 	RequestRunwaySouth,
 	FireCrashCallout,
+	UnlockCrashCover,       // Break-glass unlock button paired with FireCrashCallout
 	FreqTower,
 	FreqApproach,
 	FreqEmergency,
@@ -283,7 +284,47 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Operator|Button")
 	FOperatorButtonEvent OnButtonReleased;
 
+	// --- Break-glass cover (for crash-alarm and other guarded buttons) --------
+	// Two-button interaction: an outside "unlock" button (Kind = UnlockCrashCover)
+	// with its TargetButton pointing at THIS button (the alarm, Kind =
+	// FireCrashCallout) opens the glass cover for CoverUnlockDurationSec. The
+	// alarm button silently rejects presses while the cover is locked, so the
+	// operator has to physically unlock first, then press within the window.
+	// Auto-relock timer fires OnCoverLockChanged(false) so the BP visual
+	// (glass mesh material / animation) tracks state without any BP tick. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Operator|Button|Cover",
+		meta = (ClampMin = "0.5", ClampMax = "30.0"))
+	float CoverUnlockDurationSec = 4.f;
+
+	// Set on an UnlockCrashCover button - points at the FireCrashCallout button
+	// to unlock. Soft ref so the level can wire it cleanly without a cyclic
+	// hard dependency. - TripleA
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Operator|Button|Cover")
+	TSoftObjectPtr<AClearanceOperatorButton> TargetButton;
+
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Operator|Button|Cover")
+	bool bCoverUnlocked = false;
+
+	// Fires whenever the cover state flips (unlock button pressed, auto-relock
+	// timer, or manual LockCover call). BP subclass binds this to swap the
+	// glass mesh material / play open-slide animation / play glass-latch SFX. - TripleA
+	UFUNCTION(BlueprintImplementableEvent, Category = "Operator|Button|Cover")
+	void OnCoverLockChanged(bool bNowUnlocked);
+
+	// Unlocks this button's cover for CoverUnlockDurationSec seconds. Called
+	// from an UnlockCrashCover button's HandlePress dispatch, or from BP if
+	// custom unlock flow is wired. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Operator|Button|Cover")
+	void UnlockCover();
+
+	UFUNCTION(BlueprintCallable, Category = "Operator|Button|Cover")
+	void LockCover();
+
 private:
+	// Cover auto-relock timer handle. Set by UnlockCover, fires LockCover after
+	// CoverUnlockDurationSec so the operator has a bounded window. - TripleA
+	FTimerHandle CoverRelockTimer;
+
 	// Current visual state. Kept private so external callers go through
 	// SetVisualState (which handles the change-broadcast + no-op guards). - TripleA
 	UPROPERTY(Transient) EOperatorButtonVisualState VisualState = EOperatorButtonVisualState::Idle;

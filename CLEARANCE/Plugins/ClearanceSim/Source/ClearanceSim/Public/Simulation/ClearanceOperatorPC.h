@@ -246,6 +246,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Operator|Console") void SetTxFreqEmergency();
 	UFUNCTION(BlueprintCallable, Category = "Operator|Console") void SetTxFreqGuard();
 
+	// Fire the airfield crash alarm - critical-priority notification broadcast
+	// to all peers, red transcript System line so the AAR captures the event,
+	// and if an aircraft is currently selected the incident is tagged to that
+	// callsign (per-aircraft crash callout). Alarm siren SFX comes from the
+	// alarm button's PressSound, not this helper, so the sound + haptic + visual
+	// flash fire in the physical location the operator pressed. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Operator|Console")
+	void FireCrashAlarm();
+
 private:
 	float ViewPushAccumSec = 0.f;
 

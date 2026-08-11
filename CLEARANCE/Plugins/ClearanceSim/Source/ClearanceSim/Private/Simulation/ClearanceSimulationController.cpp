@@ -1,4 +1,5 @@
 #include "Simulation/ClearanceSimulationController.h"
+#include "Simulation/ClearanceMissile.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Airspace/ClearanceRunway.h"
 #include "Airspace/ClearanceViolationZone.h"
@@ -1836,6 +1837,11 @@ bool AClearanceSimulationController::DeclareEmergencyOn(FName Callsign, EEmergen
 	if (!AirspaceManager || Kind == EEmergencyType::None) { return false; }
 	FAircraftState S = AirspaceManager->GetAircraftState(Callsign);
 	if (!S.bIsValid) { return false; }
+	// Missiles are inert wrt the emergency system - no squawk, no fuel,
+	// no mayday phraseology - so quietly reject any injection attempt
+	// rather than corrupting the missile state / triggering scoring
+	// downstream. - TripleA
+	if (S.bIsMissile) { return false; }
 	if (S.ActiveEmergency != EEmergencyType::None) { return false; } // already emergency
 
 	// Instructor override wins if > 0; otherwise fall through to the
@@ -2611,6 +2617,28 @@ FVector AClearanceSimulationController::WorldPositionFor(const FAircraftState& S
 	return FVector(Origin.X + State.Position.X * WorldUnitsPerNm,
 		Origin.Y + State.Position.Y * WorldUnitsPerNm,
 		GroundWorldZ + AltitudeToWorldZOffset(State.Altitude));
+}
+
+FVector AClearanceSimulationController::WorldToSimMeters(const FVector& WorldLocation) const
+{
+	// Inverse of WorldPositionFor. XY uses the sim origin + WorldUnitsPerNm.
+	// Z inverts AltitudeToWorldZOffset: linear branch is exact; power branch
+	// is approximated as linear because launchers sit near the deck where
+	// the power curve == linear anyway (0 ft -> 0 offset in either). - TripleA
+	const FVector Origin = GetActorLocation();
+	const float UnitsPerNm = FMath::Max(1.f, WorldUnitsPerNm);
+	const double NmX = (WorldLocation.X - Origin.X) / UnitsPerNm;
+	const double NmY = (WorldLocation.Y - Origin.Y) / UnitsPerNm;
+	constexpr double MetersPerNm = 1852.0;
+	constexpr double MetersPerFt = 0.3048;
+
+	const double ZOffset = static_cast<double>(WorldLocation.Z - GroundWorldZ);
+	const double AltFt   = (AltitudeWorldScale > 1e-3f)
+		? ZOffset / static_cast<double>(AltitudeWorldScale)
+		: 0.0;
+	const double AltM = AltFt * MetersPerFt;
+
+	return FVector(NmX * MetersPerNm, NmY * MetersPerNm, AltM);
 }
 
 float AClearanceSimulationController::AltitudeToWorldZOffset(float AltitudeFt) const
@@ -3774,6 +3802,58 @@ bool AClearanceSimulationController::SetAircraftAutopilotEngaged(FName Callsign,
 	return true;
 }
 
+// ---- Weapon-event queue accessors --------------------------------------
+// Thin forwarders so the internal PendingFireEvents / PendingDetonationEvents
+// arrays and NextFireEventNumber counter stay private. Any actor that needs
+// to raise a weapon event calls through these instead of reaching into the
+// controller's guts. - TripleA
+
+int32 AClearanceSimulationController::AllocateFireEventNumber()
+{
+	if (!HasAuthority()) { return 0; }
+	// 16-bit wrap matches DIS FiringEntityID.EventNumber width.
+	return static_cast<int32>((NextFireEventNumber++) & 0xFFFFu);
+}
+
+void AClearanceSimulationController::QueueFireEvent(const FWeaponsFireEvent& Event)
+{
+	if (!HasAuthority()) { return; }
+	PendingFireEvents.Add(Event);
+}
+
+void AClearanceSimulationController::QueueDetonationEvent(const FWeaponsDetonationEvent& Event)
+{
+	if (!HasAuthority()) { return; }
+	PendingDetonationEvents.Add(Event);
+}
+
+AClearanceMissile* AClearanceSimulationController::Server_InjectFireMissile(FName TargetCallsign)
+{
+	if (!HasAuthority()) { return nullptr; }
+	// AClearanceMissile::Fire resolves the target callsign, computes the
+	// ground launch site, spawns the actor, and queues the Fire event.
+	// This method is a thin BP-friendly forwarder for panel UIs. - TripleA
+	return AClearanceMissile::Fire(this, TargetCallsign);
+}
+
+void AClearanceSimulationController::MissileHit(FName TargetCallsign, const FString& Reason)
+{
+	if (!HasAuthority() || !AirspaceManager) { return; }
+	const FAircraftState Target = AirspaceManager->GetAircraftState(TargetCallsign);
+	if (!Target.bIsValid)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[MissileHit] Target %s not in airspace at intercept time; nothing to crash."),
+			*TargetCallsign.ToString());
+		return;
+	}
+	// Route through the same crash entry the existing mayday / GPWS
+	// pipeline uses. BeginCrash starts the visible descent; the per-tick
+	// TickCrashingAircraft path eventually calls CrashAircraft when the
+	// wreck reaches the ground. - TripleA
+	BeginCrash(Target, Reason);
+}
+
 EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const FAircraftInstruction& Instruction)
 {
 	// Civilian ATC can't command anything under air defence control, and can't
@@ -4864,9 +4944,30 @@ void AClearanceSimulationController::UpdateFollowCamera()
 	if (!S.bIsValid) { return; }
 
 	const FVector Aircraft = WorldPositionFor(S);
-	const float HeadingRad = FMath::DegreesToRadians(S.Heading);
-	const FVector Forward(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
-	const FVector Right(FMath::Cos(HeadingRad), -FMath::Sin(HeadingRad), 0.f); // 90 right of forward
+
+	// Missiles need 3D-aware camera framing - a straight-up VLS booster
+	// has no meaningful yaw so the aircraft heading-based math would
+	// point the camera at nothing. Use the missile's actual world-space
+	// velocity direction as Forward instead. Aircraft keep the horizontal
+	// heading-based framing they've always had. - TripleA
+	FVector Forward;
+	FVector Right;
+	if (S.bIsMissile && !S.Velocity.IsNearlyZero(1e-4f))
+	{
+		Forward = S.Velocity.GetSafeNormal();               // full 3D
+		const FVector WorldUp(0.f, 0.f, 1.f);
+		Right = FVector::CrossProduct(WorldUp, Forward).GetSafeNormal();
+		if (Right.IsNearlyZero(1e-3f))                       // Forward parallel to Up
+		{
+			Right = FVector(1.f, 0.f, 0.f);
+		}
+	}
+	else
+	{
+		const float HeadingRad = FMath::DegreesToRadians(S.Heading);
+		Forward = FVector(FMath::Sin(HeadingRad), FMath::Cos(HeadingRad), 0.f);
+		Right   = FVector(FMath::Cos(HeadingRad), -FMath::Sin(HeadingRad), 0.f);
+	}
 	const FVector Up(0.f, 0.f, 1.f);
 
 	FVector CamPos = Aircraft;
@@ -6163,6 +6264,20 @@ void AClearanceSimulationController::HandleAircraftRegistered(FName Callsign)
 	const bool bExternal = AirspaceManager
 		? AirspaceManager->GetAircraftState(Callsign).bIsExternal
 		: false;
+
+	// Missiles register themselves into the airspace so the instructor list
+	// + camera modes pick them up, but they run their own guidance tick and
+	// carry their own mesh - no Behaviour, no CommsRouter registration, no
+	// aircraft-variant visual on top. - TripleA
+	const bool bMissile = AirspaceManager
+		? AirspaceManager->GetAircraftState(Callsign).bIsMissile
+		: false;
+
+	if (bMissile)
+	{
+		// Nothing else to wire; the AClearanceMissile actor owns everything.
+		return;
+	}
 
 	if (!bExternal)
 	{

@@ -305,6 +305,15 @@ struct CLEARANCESIM_API FAircraftState
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
 	bool bIsMilitary = false;
 
+	// This "aircraft" is actually a missile in flight, published into the
+	// airspace so it shows up in the instructor list + camera modes. The
+	// SimulationController skips Behaviour / CommsRouter / mesh-variant
+	// spawn for missiles - they run their own guidance + carry their own
+	// mesh. Consumers that shouldn't include missiles in their pipeline
+	// (conflict detection, scoring incidents, etc) can filter on this. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GCI")
+	bool bIsMissile = false;
+
 	// True if this aircraft is fed in from an outside source (a DIS feed, a network
 	// peer). The local Behaviour doesn't fly it, the local player can't command it,
 	// and the local emitter doesn't re-broadcast it. Truth lives with whoever sent

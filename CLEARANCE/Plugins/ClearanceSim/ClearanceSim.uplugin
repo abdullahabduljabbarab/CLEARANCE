@@ -49,6 +49,11 @@
 			"Name": "ClearanceRadarMBD",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "ClearanceMissileMBD",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [

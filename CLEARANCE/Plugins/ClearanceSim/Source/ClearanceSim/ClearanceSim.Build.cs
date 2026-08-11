@@ -32,7 +32,8 @@ public class ClearanceSim : ModuleRules
 			"ClearanceRTI",       // RTI Connext DDS pub/sub middleware - third wire alongside DDS
 			"ClearanceHLA",       // OpenRTI IEEE 1516-2010 HLA-Evolved federate - fourth wire
 			"ClearanceAutopilotMBD", // Simulink-generated cascade autopilot (Model-Based Design bridge)
-			"ClearanceRadarMBD"      // Simulink-generated radar DSP chain (Model-Based Design bridge)
+			"ClearanceRadarMBD",     // Simulink-generated radar DSP chain (Model-Based Design bridge)
+			"ClearanceMissileMBD"    // Simulink-generated proportional-navigation missile guidance (Model-Based Design bridge)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]

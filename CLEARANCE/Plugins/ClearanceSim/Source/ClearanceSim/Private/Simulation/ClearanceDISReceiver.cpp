@@ -38,12 +38,13 @@ bool UClearanceDISReceiver::Start(int32 Port)
 {
 	Stop();
 
-	// Join the CLEARANCE default multicast group as part of the bind so we
-	// actually receive traffic addressed to 224.0.0.1 (the emitter's default
-	// target host). Without IP_ADD_MEMBERSHIP the OS drops multicast packets
-	// even though the port is bound. Unicast senders still work - joining a
-	// multicast group doesn't stop the socket from receiving normal UDP
-	// addressed directly to us. - TripleA
+	// Join the CLEARANCE default multicast group so we actually receive
+	// traffic addressed to 224.0.0.1 (the emitter's default target).
+	// Symmetric with the sender-side fix: on Windows, letting the OS
+	// pick the multicast interface via INADDR_ANY (what FUdpSocketBuilder
+	// does under the hood) frequently fails with WSAEHOSTUNREACH because
+	// there's no default multicast route. Build the socket unjoined,
+	// then join on every discovered local IPv4 interface. - TripleA
 	const FIPv4Address MulticastGroup(224, 0, 0, 1);
 
 	Socket = FUdpSocketBuilder(TEXT("ClearanceDISRecv"))
@@ -51,7 +52,6 @@ bool UClearanceDISReceiver::Start(int32 Port)
 		.AsNonBlocking()
 		.WithReceiveBufferSize(256 * 1024)
 		.BoundToPort(Port)
-		.JoinedToGroup(MulticastGroup)
 		.WithMulticastLoopback()
 		.Build();
 
@@ -60,8 +60,48 @@ bool UClearanceDISReceiver::Start(int32 Port)
 		UE_LOG(LogTemp, Warning, TEXT("DIS receiver: failed to bind UDP port %d"), Port);
 		return false;
 	}
-	UE_LOG(LogTemp, Display, TEXT("DIS receiver: listening on UDP port %d, joined multicast %s"),
-		Port, *MulticastGroup.ToString());
+
+	int32 JoinsOk = 0;
+	if (ISocketSubsystem* SS = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM))
+	{
+		TArray<TSharedPtr<FInternetAddr>> LocalAddrs;
+		SS->GetLocalAdapterAddresses(LocalAddrs);
+		TSharedRef<FInternetAddr> GroupAddr = SS->CreateInternetAddr();
+		GroupAddr->SetIp(MulticastGroup.Value);
+
+		for (const TSharedPtr<FInternetAddr>& LocalAddr : LocalAddrs)
+		{
+			if (!LocalAddr.IsValid() || !LocalAddr->IsValid()) { continue; }
+			if (Socket->JoinMulticastGroup(*GroupAddr, *LocalAddr))
+			{
+				++JoinsOk;
+				UE_LOG(LogTemp, Log, TEXT("DIS receiver: joined %s on interface %s"),
+					*MulticastGroup.ToString(), *LocalAddr->ToString(false));
+			}
+		}
+		// Loopback fallback so a same-box test still works if no adapter
+		// accepted the join above.
+		if (JoinsOk == 0)
+		{
+			TSharedRef<FInternetAddr> Loopback = SS->CreateInternetAddr();
+			Loopback->SetIp(FIPv4Address(127, 0, 0, 1).Value);
+			if (Socket->JoinMulticastGroup(*GroupAddr, *Loopback))
+			{
+				++JoinsOk;
+				UE_LOG(LogTemp, Log, TEXT("DIS receiver: joined %s on loopback"),
+					*MulticastGroup.ToString());
+			}
+		}
+	}
+	if (JoinsOk == 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("DIS receiver: bound port %d but joined 0 multicast interfaces (unicast will still work)"),
+			Port);
+	}
+	UE_LOG(LogTemp, Display,
+		TEXT("DIS receiver: listening on UDP port %d, multicast joins=%d"),
+		Port, JoinsOk);
 	// Cumulative packet count is reset on Start / Stop, not per Poll - the
 	// panel's rate sampler needs a monotonic counter to compute deltas from. - TripleA
 	LastPacketsReceived = 0;
@@ -162,10 +202,13 @@ bool UClearanceDISReceiver::ParseAndInject(const uint8* Data, int32 Length, ACle
 {
 	if (Length < 144) { return false; }
 
-	// Header
+	// Header. Accept both v6 (IEEE 1278.1-1995) and v7 (IEEE 1278.1-2012);
+	// CLEARANCE's own emitter writes v7, and locking the receiver to v6
+	// only meant we silently dropped every packet we sent to ourselves
+	// on loopback and every packet from any modern DIS federate. - TripleA
 	const uint8 ProtocolVersion = Data[0];
 	const uint8 PduType         = Data[2];
-	if (ProtocolVersion != 6 || PduType != 1) { return false; } // DIS v6 Entity State only
+	if ((ProtocolVersion != 6 && ProtocolVersion != 7) || PduType != 1) { return false; }
 
 	// Entity ID at offset 12
 	const uint16 SrcSite   = ReadU16BE(Data + 12);

@@ -156,9 +156,20 @@ FClearanceMissileOutputs FMissileWrapper::Step(const FClearanceMissileInputs& In
 	// still reads as a 15-20 s wall-clock arc. Timeout is generous so the
 	// lofted arc has room to complete even against a target running
 	// nearly parallel to the LOS. - TripleA
-	constexpr double kV_M0     = 300.0;     // sim-time m/s
-	constexpr double kR_LETHAL = 25.0;      // m,   from missile_params.m
-	constexpr double kT_MAX    = 120.0;     // s wall-clock, generous for lofted paths
+	constexpr double kV_M0            = 300.0;     // sim-time m/s
+	constexpr double kR_LETHAL        = 25.0;      // m,   from missile_params.m
+	constexpr double kT_MAX           = 120.0;     // s wall-clock, generous for lofted paths
+	// Engagement envelope for the pursuit demo. Real AIM-120C-8 max
+	// effective range is ~180 km, but CLEARANCE's scenarios spawn
+	// aircraft at stretched sim coordinates (routinely ±500 nm =
+	// ±926 km from origin), so a realistic 200 km gate would fail
+	// almost every launch. 2000 km catches truly absurd shots
+	// (launcher at Warton, target at the far edge of the sector twice
+	// over) without gating the normal demo path. Tightening this back
+	// toward the real ~180 km envelope is a follow-up once the sim
+	// geometry shrinks or scenario spawns clamp closer to launcher
+	// positions. - TripleA
+	constexpr double kMaxEngagementRangeMeters = 2000000.0;   // 2000 km
 
 	const double Dt = static_cast<double>(In.DeltaSeconds);
 
@@ -166,6 +177,33 @@ FClearanceMissileOutputs FMissileWrapper::Step(const FClearanceMissileInputs& In
 	const FVector TargetPos = In.TargetPosMeters;
 	const FVector RawDelta  = TargetPos - MissilePos;
 	const double  Range     = RawDelta.Size();
+
+	// Out-of-envelope shot: latch the flag on the first Step where the
+	// initial launcher-to-target range is over the missile's realistic
+	// envelope, then keep returning TerminationFlag=2 (burn-out) every
+	// subsequent Step until the actor tears the wrapper down. The
+	// latch is sticky so a transient close-approach during pitch-over
+	// can't unset it and let the pursuit resume. - TripleA
+	if (!bOutOfEnvelope && In.ElapsedSeconds < 0.05 && Range > kMaxEngagementRangeMeters)
+	{
+		bOutOfEnvelope = true;
+	}
+	if (bOutOfEnvelope)
+	{
+		OutputMissilePos[0] = MissilePos.X;
+		OutputMissilePos[1] = MissilePos.Y;
+		OutputMissilePos[2] = MissilePos.Z;
+		OutputMissileVel[0] = 0.0;
+		OutputMissileVel[1] = 0.0;
+		OutputMissileVel[2] = 0.0;
+		OutputTermFlag = 2.0;
+		FClearanceMissileOutputs Out;
+		Out.MissilePosMeters = MissilePos;
+		Out.MissileVelMps    = FVector::ZeroVector;
+		Out.TerminationFlag  = 2;
+		LastOutputs = Out;
+		return Out;
+	}
 
 	// Three-phase VLS profile (Aster / SM-2 / SM-6 style):
 	//   1. BOOST     - punch straight up off the rail until ~half target alt

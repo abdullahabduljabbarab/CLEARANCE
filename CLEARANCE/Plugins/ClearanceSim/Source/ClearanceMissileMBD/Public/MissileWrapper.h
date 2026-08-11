@@ -130,4 +130,13 @@ private:
 	// authored 50 Hz regardless of the sim tick rate.
 	double StepAccumulatorSeconds = 0.0;
 	FClearanceMissileOutputs LastOutputs = {};
+
+	// Latched at the first Step call: if the initial launcher-to-target
+	// range exceeds the missile's realistic engagement envelope, every
+	// subsequent Step returns TerminationFlag=2 (burn-out / no
+	// intercept) so downstream sees a Detonation PDU with Result 5
+	// instead of the pursuit demo magically closing on an
+	// out-of-range target. Sticky so a transient in-range moment
+	// during boost doesn't unlatch it. - TripleA
+	bool bOutOfEnvelope = false;
 };

@@ -528,16 +528,22 @@ void AClearanceMissile::Tick(float DeltaSeconds)
 		SimController->RefreshFollowCamera();
 	}
 
-	// Ignore termination flags during a short grace period after launch.
-	// The Simulink model bakes V_M_INIT for the default lateral-crossing
-	// scenario, so on arbitrary launches the initial velocity points the
-	// wrong way and LOS_Reversal_Check can trip on tick 1 before the
-	// guidance has settled. Give it 2 seconds to establish. Proper fix
-	// is to regenerate the model with launch-velocity-as-input. - TripleA
+	// Grace period suppresses flag 3 (LOS reversal false-positive that
+	// the Simulink model trips on tick 1 because V_M_INIT is baked for
+	// a specific launch scenario). Flag 1 (intercept) and Flag 2
+	// (timeout / out-of-envelope burn-out) are legit terminations that
+	// should fire immediately - deferring flag 2 was letting an out-
+	// of-envelope launch resume pursuit after the 2-second window and
+	// magically "intercept" a target 1000+ km away. - TripleA
 	constexpr double kGuidanceSettleSeconds = 2.0;
-	if (TerminationFlag != 0 && ElapsedSeconds >= kGuidanceSettleSeconds)
+	if (TerminationFlag != 0)
 	{
-		OnTerminationDetected(TerminationFlag);
+		const bool bDeferLosReversal = (TerminationFlag == 3
+			&& ElapsedSeconds < kGuidanceSettleSeconds);
+		if (!bDeferLosReversal)
+		{
+			OnTerminationDetected(TerminationFlag);
+		}
 	}
 }
 
@@ -565,9 +571,36 @@ void AClearanceMissile::QueueFireEvent()
 	Event.TargetCallsign = TargetCallsign;
 	Event.LocationNm     = MetersToNm2D(MissilePosMeters);
 	Event.AltitudeFt     = MetersToFt(MissilePosMeters.Z);
-	Event.VelocityXKts   = MpsToKts(MissileVelMps.X);
-	Event.VelocityYKts   = MpsToKts(MissileVelMps.Y);
-	Event.VelocityZKts   = MpsToKts(MissileVelMps.Z);
+
+	// Fire PDU velocity is the munition's INITIAL velocity vector at
+	// launch instant (§7.4.3), which lets a receiving federate dead-
+	// reckon the missile from the Fire PDU alone until the first
+	// Entity State PDU lands. MissileVelMps is zero at fire time
+	// (integrator hasn't stepped yet), so compute a lead-collision
+	// launch vector here: kV_M0 magnitude along the unit vector from
+	// launcher to current target position. Matches the same value the
+	// guidance model would seed Integrate_v's IC with if the model
+	// took v_M0 as a runtime input. - TripleA
+	{
+		constexpr double kV_M0LaunchMps = 500.0;
+		FVector LaunchVelMps = FVector::ZeroVector;
+		if (AirspaceManager.IsValid())
+		{
+			const FAircraftState T = AirspaceManager->GetAircraftState(TargetCallsign);
+			if (T.bIsValid)
+			{
+				const FVector TgtWorld = NmFtToMeters(T.Position, T.Altitude);
+				const FVector Delta    = TgtWorld - MissilePosMeters;
+				if (!Delta.IsNearlyZero(1.0))
+				{
+					LaunchVelMps = Delta.GetSafeNormal() * kV_M0LaunchMps;
+				}
+			}
+		}
+		Event.VelocityXKts = MpsToKts(LaunchVelMps.X);
+		Event.VelocityYKts = MpsToKts(LaunchVelMps.Y);
+		Event.VelocityZKts = MpsToKts(LaunchVelMps.Z);
+	}
 	Event.MunitionKind        = 2;    // Category = Guided (SISO-REF-010)
 	Event.MunitionDomain      = 3;    // Anti-Air
 	Event.MunitionSubcategory = 8;    // AIM-120 family

@@ -17,7 +17,12 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Kismet/GameplayStatics.h"
 #include "Simulation/ClearanceMissile.h"
+#include "Simulation/ClearanceMissileLauncher.h"
+#include "Simulation/ClearanceSimulationController.h"
+#include "Airspace/ClearanceAirspaceManager.h"
+#include "Core/CLEARANCETypes.h"
 
 namespace ClearanceMissileConsole
 {
@@ -81,6 +86,95 @@ namespace ClearanceMissileConsole
 		UE_LOG(LogTemp, Log,
 			TEXT("[clearance.missile.abort] Aborted %d in-flight SAM(s)"), Killed);
 	}
+
+	// -------------------------------------------------------------------
+	// clearance.missile.spawn_test_target [range_km] [bearing_deg]
+	//
+	// Drops a fake civilian aircraft near the placed launcher so a
+	// subsequent clearance.missile.fire produces sensible short-range
+	// PDU coordinates for demo captures. Without this the sim's normal
+	// aircraft-spawner scatters callsigns across the whole sector, so
+	// even the "closest" existing aircraft can be 300+ km from the
+	// launcher and the resulting Detonation PDU location numbers read
+	// as absurd for a portfolio screenshot.
+	//
+	// Defaults: 50 km range, bearing 090 (east) from launcher, altitude
+	// FL200 (6096 m), speed 350 kt, heading 270. Callsign is
+	// DEMO_TARGET so the row is visually obvious. - TripleA
+	// -------------------------------------------------------------------
+	static void CmdSpawnTestTarget(const TArray<FString>& Args)
+	{
+		UWorld* World = GetCommandWorld();
+		if (!World) { return; }
+
+		AClearanceSimulationController* Ctrl = Cast<AClearanceSimulationController>(
+			UGameplayStatics::GetActorOfClass(World, AClearanceSimulationController::StaticClass()));
+		if (!Ctrl || !Ctrl->GetAirspaceManager())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[clearance.missile.spawn_test_target] No SimulationController / AirspaceManager."));
+			return;
+		}
+		AClearanceMissileLauncher* Launcher = Cast<AClearanceMissileLauncher>(
+			UGameplayStatics::GetActorOfClass(World, AClearanceMissileLauncher::StaticClass()));
+		if (!Launcher)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[clearance.missile.spawn_test_target] No AClearanceMissileLauncher in the level."));
+			return;
+		}
+
+		const float RangeKm   = (Args.Num() > 0) ? FCString::Atof(*Args[0]) :  50.f;
+		const float BearingD  = (Args.Num() > 1) ? FCString::Atof(*Args[1]) :  90.f;
+
+		// Launcher's sim-space position in nm (via the same inverse
+		// projection the missile Fire path uses).
+		const FVector LauncherMeters = Ctrl->WorldToSimMeters(Launcher->GetMuzzleWorldLocation());
+		constexpr double kMetersPerNm = 1852.0;
+		const double LauncherNmX = LauncherMeters.X / kMetersPerNm;
+		const double LauncherNmY = LauncherMeters.Y / kMetersPerNm;
+
+		const double RangeNm    = RangeKm * 1000.0 / kMetersPerNm;
+		const double BearingRad = FMath::DegreesToRadians(BearingD);
+		// atan2(X, Y) convention across the sim: bearing 0 = +Y.
+		const double TgtNmX = LauncherNmX + RangeNm * FMath::Sin(BearingRad);
+		const double TgtNmY = LauncherNmY + RangeNm * FMath::Cos(BearingRad);
+
+		FAircraftState S;
+		S.Callsign          = FName(TEXT("DEMO_TARGET"));
+		S.Position          = FVector(TgtNmX, TgtNmY, 0.0);
+		S.Altitude          = 20000.f;
+		S.Speed             = 350.f;
+		S.Heading           = 270.f;
+		S.FlightPhase       = EFlightPhase::Enroute;
+		S.WakeCategory      = EWakeCategory::Medium;
+		S.ThreatClass       = EThreatClass::Neutral;
+		S.TrueAffiliation   = EThreatClass::Neutral;
+		S.bIFFOperational   = true;
+		S.SquawkCode        = 1200;
+		S.bIsValid          = true;
+
+		if (Ctrl->GetAirspaceManager()->RegisterAircraft(S))
+		{
+			UE_LOG(LogTemp, Log,
+				TEXT("[clearance.missile.spawn_test_target] DEMO_TARGET spawned at (%.2f, %.2f) nm "
+				     "(%.1f km at bearing %.0f from launcher). Fire with: clearance.missile.fire DEMO_TARGET"),
+				TgtNmX, TgtNmY, RangeKm, BearingD);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[clearance.missile.spawn_test_target] AirspaceManager rejected DEMO_TARGET "
+				     "(already registered? cap hit?). Try clearance.missile.abort + retry."));
+		}
+	}
+
+	static FAutoConsoleCommand CmdSpawnTestTargetHandle(
+		TEXT("clearance.missile.spawn_test_target"),
+		TEXT("Spawn DEMO_TARGET near the placed launcher for short-range demo shots. "
+			 "Usage: clearance.missile.spawn_test_target [range_km=50] [bearing_deg=90]"),
+		FConsoleCommandWithArgsDelegate::CreateStatic(&CmdSpawnTestTarget),
+		ECVF_Default);
 
 	static FAutoConsoleCommand CmdFireHandle(
 		TEXT("clearance.missile.fire"),

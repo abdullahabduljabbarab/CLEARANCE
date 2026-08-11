@@ -80,7 +80,7 @@ public:
 
 	// -------- BP hook for the visual layer -----------------------------
 	//
-	// Neo attaches a Niagara particle trail + mesh in the BP child.
+	// A Blueprint child attaches a Niagara particle trail + mesh here.
 	// This event fires when the wrapper reports termination so the BP
 	// can trigger detonation VFX before the actor is destroyed. - TripleA
 	UFUNCTION(BlueprintImplementableEvent, Category = "Missile")
@@ -145,8 +145,8 @@ protected:
 	// the actor root. Loaded in the constructor so the missile shows in
 	// every camera view (main viewport, tower PIP, chase PIP, etc.)
 	// without needing debug-shape show flags on each SceneCapture2D.
-	// Neo's BP_ClearanceMissile child can override the mesh / add a
-	// Niagara trail on top. - TripleA
+	// A BP_ClearanceMissile Blueprint child can override the mesh / add
+	// a Niagara trail on top. - TripleA
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Missile")
 	TObjectPtr<class UStaticMeshComponent> MissileMesh;
 

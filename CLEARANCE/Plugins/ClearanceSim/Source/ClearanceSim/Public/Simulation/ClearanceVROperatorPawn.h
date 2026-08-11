@@ -119,9 +119,9 @@ public:
 	// Fingertip collision volumes. Sized to feel like an index-fingertip
 	// touching a button on the console. Placed as children of the motion
 	// controllers rather than sockets on the hand mesh so interaction
-	// works regardless of which hand mesh (or none) is assigned. If Neo
-	// wants finger-perfect precision later, reparent these to a hand
-	// socket in the BP subclass. - TripleA
+	// works regardless of which hand mesh (or none) is assigned. For
+	// finger-perfect precision later, reparent these to a hand socket
+	// in the BP subclass. - TripleA
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR|Interaction")
 	TObjectPtr<USphereComponent> LeftFingertip;
 

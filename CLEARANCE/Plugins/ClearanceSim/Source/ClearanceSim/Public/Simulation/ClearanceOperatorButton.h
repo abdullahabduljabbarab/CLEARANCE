@@ -69,8 +69,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOperatorButtonEvent,
 	class AClearanceOperatorButton*, Button);
 
 // Physical console button on the tower mesh. Placed one instance per
-// pressable shape in the mesh (Neo positions + sizes the collision box
-// over each button). Fired by AClearanceVROperatorPawn when a motion
+// pressable shape in the mesh (level designer positions + sizes the
+// collision box over each button). Fired by AClearanceVROperatorPawn when a motion
 // controller's fingertip sphere overlaps and the trigger presses.
 // Dispatches to the operator PC based on Kind; broadcasts BP delegates
 // for SFX / press animation / LED emissive changes. - TripleA
@@ -102,9 +102,9 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Operator|Button")
 	TObjectPtr<USceneComponent> Root;
 
-	// Fingertip overlap volume. Neo sizes this to match the physical button
-	// on the tower mesh in the level editor. Default is a small cube that
-	// the operator can enlarge or shrink in Details. - TripleA
+	// Fingertip overlap volume. Sized per-instance in Details to match
+	// the physical button on the tower mesh. Default is a small cube
+	// that can be enlarged or shrunk in Details. - TripleA
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Operator|Button")
 	TObjectPtr<UBoxComponent> InteractionVolume;
 
@@ -131,10 +131,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Operator|Button")
 	TObjectPtr<UMaterialInterface> CapBaseMaterial;
 
-	// Labels are Neo's responsibility per-instance via DecalActors placed on
-	// the tower panel next to each button (dymo tape / gaffer tape look).
-	// Not part of this class - keeps the button actor lightweight and lets
-	// Neo tweak label appearance per placement without touching C++. - TripleA
+	// Labels are placed per-instance via DecalActors on the tower panel
+	// next to each button (dymo tape / gaffer tape look). Not part of
+	// this class - keeps the button actor lightweight and lets label
+	// appearance be tweaked per placement without touching C++. - TripleA
 
 	// --- Feel: haptics --------------------------------------------------------
 	// Haptic effect played on the pressing controller when the trigger fires
@@ -240,9 +240,9 @@ public:
 	// switch and less doesn't register as a press at all. Applied along Cap's
 	// LOCAL Z axis so re-orienting the Cap in the level (side-mounted buttons
 	// on a vertical panel etc.) presses in the correct direction. C++ applies
-	// this ON TOP of the authored Cap relative location so Neo can position
-	// each button freely and the press animation always moves down FROM
-	// wherever the cap sits at rest. - TripleA
+	// this ON TOP of the authored Cap relative location so each button
+	// can be positioned freely and the press animation always moves
+	// down FROM wherever the cap sits at rest. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Feel|Visual")
 	float CapPressDownOffset = -0.3f;
 

@@ -681,7 +681,7 @@ void AClearanceMissile::OnTerminationDetected(int32 InTerminationFlag)
 		}
 	}
 
-	// BP hook so Neo's child can spawn detonation VFX / sound.
+	// BP hook so a Blueprint child can spawn detonation VFX / sound.
 	OnTerminated(InTerminationFlag);
 
 	// Give any BP effects a tick to spawn, then remove the missile.

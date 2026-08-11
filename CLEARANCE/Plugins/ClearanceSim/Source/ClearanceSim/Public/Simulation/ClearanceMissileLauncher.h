@@ -30,13 +30,13 @@ public:
 
 	// Where the missile spawns relative to the launcher root (UE cm).
 	// Default 2 m above ground so the missile clears any launch rail
-	// mesh Neo drops in via the BP child. - TripleA
+	// mesh a BP child adds later. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Launcher")
 	FVector MuzzleOffsetCm = FVector(0.f, 0.f, 200.f);
 
 	// Static mesh subcomponent - visible in the level, replaceable in a
 	// BP child. Default empty so a raw C++ placement still has a
-	// selectable root; Neo can plug a launch-rail mesh in later. - TripleA
+	// selectable root; a launcher-rail mesh can be plugged in later. - TripleA
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Launcher")
 	TObjectPtr<class UStaticMeshComponent> LauncherMesh;
 

@@ -48,9 +48,10 @@ AClearanceOperatorButton::AClearanceOperatorButton()
 
 	InteractionVolume = CreateDefaultSubobject<UBoxComponent>(TEXT("InteractionVolume"));
 	InteractionVolume->SetupAttachment(Root);
-	// Small default hit box; Neo scales per-instance to match the physical
-	// button geometry. Overlap-only (no block) so the fingertip sphere
-	// can pass through without physically stopping the controller. - TripleA
+	// Small default hit box; scaled per-instance in the Details panel to
+	// match the physical button geometry. Overlap-only (no block) so the
+	// fingertip sphere can pass through without physically stopping the
+	// controller. - TripleA
 	InteractionVolume->SetBoxExtent(FVector(3.f, 3.f, 3.f));
 	InteractionVolume->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 	InteractionVolume->SetCollisionObjectType(ECC_WorldStatic);
@@ -111,12 +112,13 @@ void AClearanceOperatorButton::BeginPlay()
 	// we don't touch it at construction), PIE gets a clean runtime replica.
 	// Hiding via SetHiddenInGame + SetVisibility isn't reliable in every
 	// mesh / Substrate combination, so we just remove the source. - TripleA
-	// Capture whatever Neo authored on the CDO Cap (transform + mesh +
-	// material). This lets Neo configure Cap via the ordinary editor
-	// workflow - set the Cap component's Static Mesh slot in Details,
-	// drag it around in the viewport, override the material - and PIE
-	// still picks it up. Falls back to the CapMeshAsset / CapBaseMaterial
-	// UPROPERTYs if Neo left the component slots at their defaults. - TripleA
+	// Capture whatever the level designer authored on the CDO Cap
+	// (transform + mesh + material). This lets Cap be configured via the
+	// ordinary editor workflow - set the Cap component's Static Mesh slot
+	// in Details, drag it around in the viewport, override the material -
+	// and PIE still picks it up. Falls back to the CapMeshAsset /
+	// CapBaseMaterial UPROPERTYs if the component slots are left at
+	// their defaults. - TripleA
 	const FTransform SavedTransform = Cap->GetRelativeTransform();
 	CapAuthoredRelativeLocation = SavedTransform.GetLocation();
 	UStaticMesh* SourceMesh = Cap->GetStaticMesh();
@@ -197,7 +199,7 @@ void AClearanceOperatorButton::ApplyVisualToCapMID(EOperatorButtonVisualState St
 	// Press-down animation: offset Cap Z by CapPressDownOffset on Pressed /
 	// Active states, snap back to the authored resting position on Idle /
 	// Hovered. Applied ON TOP of the authored resting location captured at
-	// BeginPlay so Neo can position each button freely without breaking
+	// BeginPlay so each button can be positioned freely without breaking
 	// the animation. No interp - snap is intentional, feels more mechanical
 	// than an eased translate. - TripleA
 	if (Cap)
@@ -391,8 +393,8 @@ void AClearanceOperatorButton::HandlePress(APawn* PressingPawn, EOperatorButtonH
 		break;
 	case EOperatorButtonKind::UnlockCrashCover:
 		// Opens the glass on the paired alarm button for a bounded window.
-		// Silent no-op if TargetButton isn't wired - Neo needs to point this
-		// at the alarm button in Details. - TripleA
+		// Silent no-op if TargetButton isn't wired - point this at the
+		// alarm button via the Details panel. - TripleA
 		if (AClearanceOperatorButton* Target = TargetButton.LoadSynchronous())
 		{
 			Target->UnlockCover();

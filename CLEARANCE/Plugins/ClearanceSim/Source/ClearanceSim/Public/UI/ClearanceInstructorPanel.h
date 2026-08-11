@@ -268,8 +268,8 @@ public:
 	TArray<FInstructorCameraLabel> GetCameraLabels() const;
 
 	// Projected world-space lines for the camera-feed HUD overlay - runway
-	// centerlines, extended approach centerlines. Neo paints each entry
-	// between StartUV * ImageSize and EndUV * ImageSize. - TripleA
+	// centerlines, extended approach centerlines. The Blueprint paints
+	// each entry between StartUV * ImageSize and EndUV * ImageSize. - TripleA
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Instructor|Camera")
 	TArray<FInstructorCameraLine> GetCameraOverlayLines() const;
 

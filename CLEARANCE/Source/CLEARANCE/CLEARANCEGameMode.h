@@ -30,9 +30,6 @@ public:
 	virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 
 	// True if this session was launched with ?role=instructor on the URL.
-	// Read from InitGame's Options (which UE guarantees delivers the URL
-	// query string on both listen-server hosts and PIE), so no dependency
-	// on UWorld::URL being populated by the time RestartPlayer runs.
 	UFUNCTION(BlueprintPure, Category = "Clearance|Session")
 	bool IsInstructorRole() const { return bLaunchedAsInstructor; }
 

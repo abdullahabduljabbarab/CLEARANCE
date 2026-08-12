@@ -57,6 +57,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Clearance|Menu", meta = (WorldContext = "WorldContextObject"))
 	static void OpenOperatorSessionSolo(UObject* WorldContextObject);
 
+	// Combined solo (flat, no VR): one player at a flat desk sees both the
+	// operator VR pawn's camera view AND the instructor panel overlaid on
+	// top. GameAndUI input mode lets mouse hit the panel while keyboard /
+	// gamepad reach the pawn. Autonomous emergency injector on since the
+	// same player can't inject events with one hand and react with the
+	// other. Use case: solo dev testing, portfolio demos on machines
+	// without VR, single-person walkthroughs. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Clearance|Menu", meta = (WorldContext = "WorldContextObject"))
+	static void OpenCombinedSessionSolo(UObject* WorldContextObject);
+
 	// LAN host (as instructor): OpenLevel with ?listen?role=instructor so
 	// the level comes up as a listen server accepting clients. The VR
 	// operator on the other PC joins via JoinLANSession below.

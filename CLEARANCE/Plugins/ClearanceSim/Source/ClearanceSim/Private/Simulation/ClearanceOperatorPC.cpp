@@ -56,16 +56,23 @@ void AClearanceOperatorPC::BeginPlay()
 
 	if (!IsLocalController()) { return; }
 
-	// Role selection. Server side (listen-server host or standalone) reads
-	// the URL query string that InitGame received - lives on the base
+	// Role selection.
+	//
+	// Server side (listen-server host or standalone) reads the URL query
+	// string that InitGame received - lives on the base
 	// AGameModeBase::OptionsString UPROPERTY, so we can pull it without
 	// casting to CLEARANCE's derived game mode (that class lives in the
 	// main game module and this plugin can't include from it - circular
-	// dep). Client side has no game mode instance (game mode is server-
-	// only), so falls back to the authority convention: authority =
-	// operator, non-authority = instructor. Matches how LAN clients
-	// connect - JoinLANSession appends ?role=instructor which the server
-	// sees on its side; the client-side non-authority check confirms it. - TripleA
+	// dep).
+	//
+	// Client side has no game mode instance (game mode is server-only),
+	// so falls back to the authority convention: authority = operator,
+	// non-authority = instructor. Matches how LAN clients connect -
+	// JoinLANSession appends ?role=instructor which the server sees on
+	// its side; the client-side non-authority check confirms it. Combined
+	// session uses two separate processes on localhost (see
+	// OpenCombinedSessionSolo), so the role dispatch here is identical to
+	// HOST LAN / JOIN LAN and doesn't need a special combined branch. - TripleA
 	bool bIsInstructor = false;
 	if (GetLocalRole() == ROLE_Authority)
 	{
@@ -102,8 +109,12 @@ void AClearanceOperatorPC::BeginPlay()
 	UClass* PanelClass = InstructorPanelClass.LoadSynchronous();
 	if (!PanelClass) { return; }
 
-	// The instructor client doesn't need a pawn — destroy it so its input
-	// bindings can't recapture the mouse from the UI. - TripleA
+	// Instructor-side clients (pure instructor client, LAN instructor peer,
+	// or combined-mode Player 1) don't need a pawn - destroy it so its
+	// input bindings can't recapture the mouse from the UI. Reaching this
+	// point already means bIsInstructor is true, which for combined mode
+	// implies LocalPlayerIndex >= 1 (Player 1, the flat-monitor instructor).
+	// Player 0 in combined mode returned earlier and kept its VR pawn. - TripleA
 	if (APawn* P = GetPawn())
 	{
 		UnPossess();
@@ -115,11 +126,15 @@ void AClearanceOperatorPC::BeginPlay()
 	{
 		InstructorPanel->AddToViewport();
 
-		// Lock input to UI-only on desktop so clicks hit buttons/combos not
-		// the game world. In VR, use GameAndUI so motion-controller axes
-		// (locomotion, snap turn) reach the possessed VR pawn while the
-		// scope UI still receives WidgetInteractionComponent clicks. UIOnly
-		// blocks all axis input from reaching the pawn. - TripleA
+		// Input mode selection:
+		//  - VR + instructor client peer: GameAndUI. Motion controllers
+		//    reach the pawn while WidgetInteractionComponent clicks reach
+		//    the scope UI overlays.
+		//  - Instructor-only desktop client / combined-mode Player 1:
+		//    UIOnly. No pawn to talk to, lock clicks to the panel.
+		// Combined mode's Player 0 is the operator side and returned above
+		// before this input-mode block runs, so we don't need a special
+		// GameAndUI case for combined here. - TripleA
 		const bool bIsInVR = GEngine && GEngine->XRSystem.IsValid()
 			&& GEngine->XRSystem->GetHMDDevice() != nullptr
 			&& GEngine->XRSystem->GetHMDDevice()->IsHMDConnected();
@@ -136,6 +151,8 @@ void AClearanceOperatorPC::BeginPlay()
 			UIMode.SetWidgetToFocus(InstructorPanel->TakeWidget());
 			SetInputMode(UIMode);
 		}
+		// Show the cursor whenever we're on desktop (not in VR). Combined
+		// mode is always desktop so cursor stays visible. - TripleA
 		SetShowMouseCursor(!bIsInVR);
 	}
 }

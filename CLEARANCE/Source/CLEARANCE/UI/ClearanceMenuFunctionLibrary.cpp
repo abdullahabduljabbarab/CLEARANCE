@@ -7,7 +7,9 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/PlatformProcess.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
+#include "Misc/Paths.h"
 #include "IHeadMountedDisplay.h"
 #include "IHeadMountedDisplayModule.h"
 #include "IXRTrackingSystem.h"
@@ -187,6 +189,78 @@ void UClearanceMenuFunctionLibrary::OpenOperatorSessionSolo(UObject* WorldContex
 		FName(kMainSimLevel),
 		/*bAbsolute=*/true,
 		TEXT("role=operator?autonomous=1"));
+}
+
+void UClearanceMenuFunctionLibrary::OpenCombinedSessionSolo(UObject* WorldContextObject)
+{
+	if (!WorldContextObject) { return; }
+
+	// Combined = 2 humans on 1 PC. Same architecture as HOST LAN + JOIN LAN
+	// with two physical machines, except the "other PC" is 127.0.0.1 and
+	// the second process launches automatically. UE local multiplayer via
+	// UGameplayStatics::CreatePlayer doesn't give the two players separate
+	// windows in a packaged build (they share one viewport, split-screen,
+	// which VR takes exclusive control over), so we use two OS-level
+	// processes instead - the same way PIE with "Number of Players: 2"
+	// actually works under the hood. - TripleA
+
+	// This process becomes the VR operator, hosting on localhost.
+	SetHMDForSession(true);
+	UGameplayStatics::OpenLevel(
+		WorldContextObject,
+		FName(kMainSimLevel),
+		/*bAbsolute=*/true,
+		TEXT("listen?role=operator"));
+
+	// Skip the shell-launch when running inside the editor - it would spawn
+	// another instance of the editor.exe which is huge, slow, and not what
+	// the tester wants. For in-editor combined-mode testing, use PIE's
+	// "Number of Players: 2 / Play as Listen Server" instead. In a
+	// packaged shipping build this branch fires and spawns the instructor
+	// client alongside the VR host. - TripleA
+	if (GIsEditor)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[CombinedSession] Skipping second-process launch: running in editor. "
+			     "Combined session only spawns the instructor client in a packaged build. "
+			     "For editor testing use PIE > Number of Players: 2 > Play as Listen Server."));
+		return;
+	}
+
+	const FString ExePath = FPlatformProcess::ExecutablePath();
+	// Args: the URL is the first positional argument, then any engine
+	// flags. `-windowed -resx=1600 -resy=900` keeps the instructor window
+	// non-fullscreen so the VR mirror can also be visible on the desktop
+	// if the user wants. - TripleA
+	const FString Args = TEXT("127.0.0.1?role=instructor -windowed -resx=1600 -resy=900");
+
+	uint32 SpawnedPID = 0;
+	FProcHandle Proc = FPlatformProcess::CreateProc(
+		*ExePath,
+		*Args,
+		/*bLaunchDetached=*/true,
+		/*bLaunchHidden=*/false,
+		/*bLaunchReallyHidden=*/false,
+		&SpawnedPID,
+		/*PriorityModifier=*/0,
+		/*OptionalWorkingDirectory=*/nullptr,
+		/*PipeWriteChild=*/nullptr,
+		/*PipeReadChild=*/nullptr);
+
+	if (Proc.IsValid())
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("[CombinedSession] Launched second process PID=%u as instructor client "
+			     "connecting to 127.0.0.1. Exe: %s"),
+			SpawnedPID, *ExePath);
+		FPlatformProcess::CloseProc(Proc);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("[CombinedSession] Failed to launch second process at '%s'. "
+			     "Instructor client will not appear."), *ExePath);
+	}
 }
 
 void UClearanceMenuFunctionLibrary::HostLANSession(UObject* WorldContextObject)

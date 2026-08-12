@@ -43,7 +43,9 @@ void ACLEARANCEGameMode::InitGame(const FString& MapName, const FString& Options
 
 	UE_LOG(LogTemp, Log,
 		TEXT("[ClearanceGameMode] InitGame Options='%s' role='%s' bLaunchedAsInstructor=%s OptionsString='%s'"),
-		*Options, *RoleOption, bLaunchedAsInstructor ? TEXT("true") : TEXT("false"), *OptionsString);
+		*Options, *RoleOption,
+		bLaunchedAsInstructor ? TEXT("true") : TEXT("false"),
+		*OptionsString);
 }
 
 void ACLEARANCEGameMode::RestartPlayer(AController* NewPlayer)
@@ -56,12 +58,11 @@ void ACLEARANCEGameMode::RestartPlayer(AController* NewPlayer)
 
 	UWorld* World = GetWorld();
 
-	// Instructor players must NOT possess the level-placed VR pawn - that
-	// pawn owns the tower-desk hand meshes, subsystem hooks, and motion-
-	// controller delegates. Possessing then destroying it mid-BeginPlay
-	// crashes. Give the instructor a bare ASpectatorPawn instead, leave the
-	// VR pawn alone in the level. Role comes from bLaunchedAsInstructor,
-	// captured in InitGame from the URL query string. - TripleA
+	// Instructor-only players must NOT possess the level-placed VR pawn -
+	// that pawn owns the tower-desk hand meshes, subsystem hooks, and
+	// motion-controller delegates. Possessing then destroying it mid-
+	// BeginPlay crashes. Give them a bare ASpectatorPawn instead, leave
+	// the VR pawn alone in the level. - TripleA
 	if (bLaunchedAsInstructor)
 	{
 		FActorSpawnParameters Params;

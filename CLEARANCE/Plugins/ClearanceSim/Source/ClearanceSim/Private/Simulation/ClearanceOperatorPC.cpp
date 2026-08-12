@@ -18,6 +18,8 @@
 #include "EngineUtils.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
+#include "Kismet/GameplayStatics.h"
+#include "GameFramework/GameModeBase.h"
 
 // Compact labels for instructor transcript lines - chosen for terseness so the
 // AAR scroll list stays readable. Each inject handler logs a System line so the
@@ -52,11 +54,50 @@ void AClearanceOperatorPC::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Instructor panel only spawns on the client peer (the instructor's window).
-	// The listen-server / authority window is the operator and gets the normal
-	// readout HUD instead. - TripleA
-	if (!IsLocalController() || GetLocalRole() == ROLE_Authority) { return; }
-	if (InstructorPanelClass.IsNull()) { return; }
+	if (!IsLocalController()) { return; }
+
+	// Role selection. Server side (listen-server host or standalone) reads
+	// the URL query string that InitGame received - lives on the base
+	// AGameModeBase::OptionsString UPROPERTY, so we can pull it without
+	// casting to CLEARANCE's derived game mode (that class lives in the
+	// main game module and this plugin can't include from it - circular
+	// dep). Client side has no game mode instance (game mode is server-
+	// only), so falls back to the authority convention: authority =
+	// operator, non-authority = instructor. Matches how LAN clients
+	// connect - JoinLANSession appends ?role=instructor which the server
+	// sees on its side; the client-side non-authority check confirms it. - TripleA
+	bool bIsInstructor = false;
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		if (UWorld* W = GetWorld())
+		{
+			if (const AGameModeBase* GM = W->GetAuthGameMode())
+			{
+				const FString RoleOption = UGameplayStatics::ParseOption(GM->OptionsString, TEXT("role"));
+				bIsInstructor = RoleOption.Equals(TEXT("instructor"), ESearchCase::IgnoreCase);
+			}
+		}
+	}
+	else
+	{
+		// Non-authority client peer: always instructor per network convention.
+		bIsInstructor = true;
+	}
+
+	UE_LOG(LogTemp, Log,
+		TEXT("[ClearanceOperatorPC] BeginPlay LocalRole=%s bIsInstructor=%s"),
+		(GetLocalRole() == ROLE_Authority ? TEXT("Authority") : TEXT("Non-Authority")),
+		bIsInstructor ? TEXT("true") : TEXT("false"));
+
+	if (!bIsInstructor) { return; }
+
+	if (InstructorPanelClass.IsNull())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[ClearanceOperatorPC] Instructor role selected but InstructorPanelClass is null "
+			     "- panel will not spawn. Set it on the BP subclass of AClearanceOperatorPC."));
+		return;
+	}
 
 	UClass* PanelClass = InstructorPanelClass.LoadSynchronous();
 	if (!PanelClass) { return; }

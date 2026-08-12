@@ -258,6 +258,20 @@ void AClearanceSimulationController::BeginPlay()
 	SetNetUpdateFrequency(100.f);
 	SetMinNetUpdateFrequency(60.f);
 
+	// Main menu bakes ?autonomous=1 into the OpenLevel URL for solo
+	// OPERATOR SESSION. Read it here so bAutonomousMode reflects the
+	// launch mode from the very first tick, before the emergency
+	// injector runs. Absent option leaves whatever the level-placed
+	// actor was serialised with (usually false). - TripleA
+	if (UWorld* W = GetWorld())
+	{
+		const FString UrlOption = UGameplayStatics::ParseOption(W->URL.ToString(false), TEXT("autonomous"));
+		if (!UrlOption.IsEmpty())
+		{
+			bAutonomousMode = (UrlOption == TEXT("1") || UrlOption.Equals(TEXT("true"), ESearchCase::IgnoreCase));
+		}
+	}
+
 	// Force the PIP capture's quality settings here regardless of what got
 	// serialised on the level-placed component. The constructor sets sensible
 	// defaults but the level keeps whatever was saved when the actor was

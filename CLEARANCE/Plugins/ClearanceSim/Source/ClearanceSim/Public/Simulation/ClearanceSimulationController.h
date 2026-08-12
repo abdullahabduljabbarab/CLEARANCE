@@ -682,6 +682,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
 	bool bAutoStartRadar = false;
 
+	// Set at level load time when the main menu chose OPERATOR SESSION solo:
+	// the URL carries `?autonomous=1`, BeginPlay parses it and flips this on.
+	// While true the sim runs its own probabilistic emergency injector at a
+	// slow trickle so a solo operator has events to react to without an
+	// instructor at the panel. Instructor-led / LAN-host sessions leave this
+	// false and rely on manual injection. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart")
+	bool bAutonomousMode = false;
+
+	// Mean seconds between autonomous emergency injections when
+	// bAutonomousMode is on. Exponential distribution: actual gap on each
+	// roll is -mean * ln(1 - rand()), so occasional back-to-back events
+	// and occasional long lulls, average tracks this value. Long enough
+	// that the operator isn't drowning, short enough that a demo session
+	// sees meaningful action inside a few minutes. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation|AutoStart", meta = (ClampMin = "30.0"))
+	float AutonomousEmergencyMeanSeconds = 180.f;
+
 	// Auto-flip GCI mode (threat tags, IFF lockouts) the moment any aircraft with
 	// IFF off OR a non-friendly threat class enters the sector. When the sector
 	// returns to clean civilian traffic, flip it off. Off = leave it manual. - TripleA

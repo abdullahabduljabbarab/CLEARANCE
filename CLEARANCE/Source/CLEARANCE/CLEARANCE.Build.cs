@@ -19,6 +19,15 @@ public class CLEARANCE : ModuleRules
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
+			"SlateCore",
+			"HeadMountedDisplay",
+			"XRBase",
+			"Voice",
+			"AudioCapture",
+			"AudioCaptureCore",
+			"Sockets",
+			"Networking",
+			"CesiumRuntime",
 			"ClearanceSim"
 		});
 
@@ -26,6 +35,7 @@ public class CLEARANCE : ModuleRules
 
 		PublicIncludePaths.AddRange(new string[] {
 			"CLEARANCE",
+			"CLEARANCE/UI",
 			"CLEARANCE/Variant_Horror",
 			"CLEARANCE/Variant_Horror/UI",
 			"CLEARANCE/Variant_Shooter",

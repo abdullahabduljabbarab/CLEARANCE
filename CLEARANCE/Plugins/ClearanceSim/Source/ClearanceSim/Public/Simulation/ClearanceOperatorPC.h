@@ -12,6 +12,16 @@
 class UUserWidget;
 class UClearanceInstructorPanel;
 
+// Broadcast when Server_EndSessionAndReport completes and the server has
+// RPC'd the report data back to the calling instructor client. Params:
+// full absolute path of the exported AAR Markdown file, operator's total
+// score at end-of-session, session elapsed time in seconds.
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FClearanceEndSessionReportDelegate,
+	const FString&, FilePath,
+	int32,          Score,
+	float,          SessionTimeSeconds);
+
 UCLASS(Blueprintable)
 class CLEARANCESIM_API AClearanceOperatorPC : public APlayerController
 {
@@ -180,6 +190,25 @@ public:
 	// transcript so the instructor sees where the file landed. - TripleA
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
 	void Server_InjectExportAAR();
+
+	// Instructor clicks "End Session" on the panel. Server exports the AAR,
+	// snapshots the current operator score + session elapsed time, then
+	// client-RPCs the report data back to the calling instructor PC which
+	// broadcasts OnEndSessionReport for the modal widget to bind to.
+	// Distinct from Server_InjectExportAAR (which just writes the file and
+	// pushes a notification) because End Session is a session-ending flow
+	// with follow-up UI (RESTART / EXIT TO MAIN MENU). - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor|AAR")
+	void Server_EndSessionAndReport();
+
+	UFUNCTION(Client, Reliable)
+	void Client_ReceiveEndSessionReport(const FString& FilePath, int32 Score, float SessionTimeSeconds);
+
+	// BP-assignable event fired on the instructor client after the end-session
+	// export completes. WBP_EndSessionReport modal binds to this to populate
+	// the exported-path / score / session-time fields. - TripleA
+	UPROPERTY(BlueprintAssignable, Category = "Instructor|AAR")
+	FClearanceEndSessionReportDelegate OnEndSessionReport;
 
 	// Session checkpoint controls - save the live world state under a name,
 	// reload it later to reset for a trainee retry. Defence training rigs

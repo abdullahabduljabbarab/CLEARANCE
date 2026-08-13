@@ -83,6 +83,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Clearance|Menu")
 	static void QuitToDesktop(APlayerController* PlayerController);
 
+	// Return to the launch-time main menu level. Disables the HMD first so a
+	// player who was in a VR session lands on the flat desktop menu, not a
+	// stereo view of it. Called by the End Session modal's EXIT button and
+	// by any other "back to menu" flow. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "Clearance|Menu", meta = (WorldContext = "WorldContextObject"))
+	static void ExitToMainMenu(UObject* WorldContextObject);
+
 	// ----- Options persistence -----------------------------------------
 	// All writes go through GConfig to GGameUserSettingsIni so they persist
 	// across sessions the same way UE's built-in graphics settings do. No

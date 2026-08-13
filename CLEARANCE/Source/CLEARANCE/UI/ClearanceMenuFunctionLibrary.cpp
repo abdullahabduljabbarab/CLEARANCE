@@ -301,6 +301,19 @@ void UClearanceMenuFunctionLibrary::QuitToDesktop(APlayerController* PlayerContr
 		/*bIgnorePlatformRestrictions=*/false);
 }
 
+void UClearanceMenuFunctionLibrary::ExitToMainMenu(UObject* WorldContextObject)
+{
+	if (!WorldContextObject) { return; }
+	// Disable HMD before opening the flat menu level so a returning VR
+	// operator lands on a proper desktop menu, not a stereo one. Safe
+	// no-op if HMD wasn't active. - TripleA
+	SetHMDForSession(false);
+	UGameplayStatics::OpenLevel(
+		WorldContextObject,
+		FName(TEXT("/Game/LVL_MainMenu.LVL_MainMenu")),
+		/*bAbsolute=*/true);
+}
+
 // ---------------------------------------------------------------------
 // Options persistence + audio device enumeration
 // ---------------------------------------------------------------------

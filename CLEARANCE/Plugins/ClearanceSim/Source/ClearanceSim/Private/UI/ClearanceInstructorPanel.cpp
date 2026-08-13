@@ -95,7 +95,12 @@ FReply UClearanceInstructorPanel::NativeOnMouseButtonDown(const FGeometry& InGeo
 		SetCursor(EMouseCursor::GrabHandClosed);
 		return FReply::Handled().CaptureMouse(TakeWidget());
 	}
-	return Super::NativeOnMouseButtonDown(InGeometry, InMouseEvent);
+	// Unconditionally consume clicks on the panel background. Falling through
+	// to Super lets the click propagate to the game viewport, which flips
+	// input focus and hides the OS cursor - the trainee ends up clicking
+	// buttons blind. There is no game-world interaction behind the panel to
+	// preserve, so consuming every click here is safe. - TripleA
+	return FReply::Handled();
 }
 
 FReply UClearanceInstructorPanel::NativeOnMouseMove(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
@@ -125,7 +130,7 @@ FReply UClearanceInstructorPanel::NativeOnMouseButtonUp(const FGeometry& InGeome
 		SetCursor(EMouseCursor::Default);
 		return FReply::Handled().ReleaseMouseCapture();
 	}
-	return Super::NativeOnMouseButtonUp(InGeometry, InMouseEvent);
+	return FReply::Handled();
 }
 
 FReply UClearanceInstructorPanel::NativeOnMouseWheel(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
@@ -135,7 +140,7 @@ FReply UClearanceInstructorPanel::NativeOnMouseWheel(const FGeometry& InGeometry
 		CachedController->AddOverviewZoom(InMouseEvent.GetWheelDelta() * 0.1f);
 		return FReply::Handled();
 	}
-	return Super::NativeOnMouseWheel(InGeometry, InMouseEvent);
+	return FReply::Handled();
 }
 
 FReply UClearanceInstructorPanel::NativeOnMouseButtonDoubleClick(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
@@ -145,7 +150,7 @@ FReply UClearanceInstructorPanel::NativeOnMouseButtonDoubleClick(const FGeometry
 		CachedController->ResetOverviewView();
 		return FReply::Handled();
 	}
-	return Super::NativeOnMouseButtonDoubleClick(InGeometry, InMouseEvent);
+	return FReply::Handled();
 }
 
 int32 UClearanceInstructorPanel::NativePaint(const FPaintArgs& Args,

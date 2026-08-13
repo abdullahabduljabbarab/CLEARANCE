@@ -723,6 +723,53 @@ void AClearanceOperatorPC::Server_InjectExportAAR_Implementation()
 	}
 }
 
+bool AClearanceOperatorPC::Server_EndSessionAndReport_Validate() { return true; }
+void AClearanceOperatorPC::Server_EndSessionAndReport_Implementation()
+{
+	// Server-side end-session bundle: snapshot score + session time BEFORE
+	// stopping the sim (so the numbers reflect the moment the button was
+	// hit, not any subsequent teardown drift), export the AAR, call
+	// EndSession to actually halt the sim (freezes aircraft, halts scoring
+	// tick, closes the session out), then RPC the report back to the
+	// calling client so its WBP_EndSessionReport modal can display it.
+	// The modal's Restart / Exit buttons wire into the existing
+	// Server_InjectResetScenario RPC and ExitToMainMenu function library
+	// helper respectively. - TripleA
+	AClearanceSimulationController* C = FindSimController(GetWorld());
+	if (!C)
+	{
+		Client_ReceiveEndSessionReport(TEXT("(no SimController)"), 0, 0.f);
+		return;
+	}
+
+	int32 Score = 0;
+	if (UClearanceScoring* Sc = C->GetScoring())
+	{
+		Score = Sc->GetCurrentScore();
+	}
+	const float SessionSeconds = C->GetSessionTime();
+
+	FString Path;
+	const bool bOk = C->ExportAARReport(Path);
+	if (!bOk)
+	{
+		Path = TEXT("(export failed - see Output Log for details)");
+	}
+
+	// Actually stop the sim after the snapshot + export. Aircraft freeze,
+	// scoring tick halts, session flag flips to inactive. Restart button
+	// on the modal reverses this via Server_InjectResetScenario. - TripleA
+	C->EndSession();
+
+	Client_ReceiveEndSessionReport(Path, Score, SessionSeconds);
+}
+
+void AClearanceOperatorPC::Client_ReceiveEndSessionReport_Implementation(
+	const FString& FilePath, int32 Score, float SessionTimeSeconds)
+{
+	OnEndSessionReport.Broadcast(FilePath, Score, SessionTimeSeconds);
+}
+
 bool AClearanceOperatorPC::Server_InjectSaveCheckpoint_Validate(FName Name) { return true; }
 void AClearanceOperatorPC::Server_InjectSaveCheckpoint_Implementation(FName Name)
 {

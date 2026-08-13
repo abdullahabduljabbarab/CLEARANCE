@@ -3894,11 +3894,39 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 			&& Target.bIsValid
 			&& Target.AssignedFrequency != Instruction.SourceFrequency)
 		{
+			// Speak a helpful "wrong frequency, try X" system response so the
+			// operator learns which channel to switch to instead of chasing
+			// a silent NORDO. Real training tools do this; production ATC
+			// doesn't but this is a training sim. The response goes through
+			// the SYSTEM voice (not the aircraft's) because the aircraft
+			// literally didn't hear the call. - TripleA
+			auto FreqName = [](ECommsFrequency F) -> const TCHAR*
+			{
+				switch (F)
+				{
+				case ECommsFrequency::Tower:     return TEXT("TOWER");
+				case ECommsFrequency::Approach:  return TEXT("APPROACH");
+				case ECommsFrequency::Emergency: return TEXT("EMERGENCY");
+				case ECommsFrequency::Guard:     return TEXT("GUARD");
+				default:                         return TEXT("UNKNOWN");
+				}
+			};
+			const FString SysMsg = FString::Printf(
+				TEXT("%s is on %s, switch frequency"),
+				*Instruction.TargetCallsign.ToString(),
+				FreqName(Target.AssignedFrequency));
+
+			// TTS via the SimController's own multicast TTS pipe using the
+			// controller voice ("en-US-EricNeural") - the aircraft literally
+			// didn't hear the call, so this comes from SYSTEM, not the pilot.
+			// Also logs to transcript so the AAR shows the training aid
+			// intervention. - TripleA
+			Multicast_PlayTTS(NAME_None, SysMsg, TEXT("en-US-EricNeural"), /*bPanic=*/ false);
+			LogTranscriptLine(EClearanceCommsRole::System, Instruction.TargetCallsign, SysMsg);
+
 			if (GEngine)
 			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
-					FString::Printf(TEXT("%s not on this frequency"),
-						*Instruction.TargetCallsign.ToString()));
+				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow, SysMsg);
 			}
 			return EInstructionResult::Rejected_NoResponse;
 		}

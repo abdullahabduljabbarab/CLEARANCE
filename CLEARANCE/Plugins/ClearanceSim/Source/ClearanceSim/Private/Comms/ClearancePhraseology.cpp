@@ -2,6 +2,8 @@
 #include "Comms/ClearanceVoiceOutput.h"
 #include "Simulation/ClearanceSimulationController.h"
 #include "Simulation/ClearanceOperatorPC.h"
+#include "Simulation/ClearanceMissile.h"
+#include "Scoring/ClearanceScoring.h"
 #include "UI/ClearanceInstructorPanel.h"
 #include "Airspace/ClearanceAirspaceManager.h"
 #include "Comms/ClearanceCommsRouter.h"
@@ -193,11 +195,28 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 	//   ALERT FLIGHT SCRAMBLE BANDIT <cs> -> same
 	{
 		int32 GCI = 0;
-		// Eat optional leading filler ("alpha flight ...", "alert flight ...", "alert five ...")
+		// Eat optional leading filler. Standard GCI filler ("alpha flight ...",
+		// "alert flight ...", "alert five ..."), plus SAM battery prefix
+		// ("sam_01 engage ...", "sam 01 engage ...", "sam zero one engage
+		// ...") so "SAM_01, engage <callsign>" resolves cleanly regardless of
+		// whether STT gives us one token or three. - TripleA
 		while (GCI < Tokens.Num() && (Tokens[GCI] == TEXT("alpha") || Tokens[GCI] == TEXT("alert") ||
-		       Tokens[GCI] == TEXT("flight") || Tokens[GCI] == TEXT("five") || Tokens[GCI] == TEXT("the")))
+		       Tokens[GCI] == TEXT("flight") || Tokens[GCI] == TEXT("five") || Tokens[GCI] == TEXT("the") ||
+		       Tokens[GCI] == TEXT("sam") || Tokens[GCI].StartsWith(TEXT("sam_"))))
 		{
+			const bool bAteBareSam = (Tokens[GCI] == TEXT("sam"));
 			++GCI;
+			if (bAteBareSam)
+			{
+				// After bare "sam", eat up to two digit-like tokens ("01",
+				// "zero", "one") so both "sam 01" and "sam zero one" work.
+				for (int32 EatDigits = 0; EatDigits < 2 && GCI < Tokens.Num(); ++EatDigits)
+				{
+					const FString& T = Tokens[GCI];
+					if (T.IsNumeric() || T == TEXT("zero") || T == TEXT("one")) { ++GCI; }
+					else { break; }
+				}
+			}
 		}
 		if (GCI < Tokens.Num())
 		{
@@ -268,7 +287,25 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			if (Verb == TEXT("shadow") || Verb == TEXT("intercept"))
 			{
 				// "shadow <cs>", "intercept <cs>", "intercept visual <cs>" - all
-				// launch a tailing escort on a 7500 / 7600 aircraft.
+				// launch a tailing escort on a 7500 / 7600 aircraft. Fighter
+				// tasking is military action, gated to Guard freq (matches
+				// SAM engage). - TripleA
+				{
+					ECommsFrequency OpFreq = ECommsFrequency::None;
+					if (UWorld* World = Controller ? Controller->GetWorld() : nullptr)
+					{
+						for (TActorIterator<AClearanceOperatorPC> It(World); It; ++It)
+						{
+							if (AClearanceOperatorPC* PC = *It) { OpFreq = PC->CurrentTxFrequency; break; }
+						}
+					}
+					if (OpFreq != ECommsFrequency::Guard)
+					{
+						const FString R = TEXT("Negative, fighter tasking requires guard frequency");
+						SpeakAsController(Controller, R);
+						return R;
+					}
+				}
 				if (Verb == TEXT("intercept") && After < Tokens.Num() && Tokens[After] == TEXT("visual"))
 				{
 					++After;
@@ -293,7 +330,24 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 			}
 			if (Verb == TEXT("scramble"))
 			{
-				// "scramble bandit <cs>" or "scramble <cs>"
+				// "scramble bandit <cs>" or "scramble <cs>". Fighter tasking =
+				// military action, Guard freq only. - TripleA
+				{
+					ECommsFrequency OpFreq = ECommsFrequency::None;
+					if (UWorld* World = Controller ? Controller->GetWorld() : nullptr)
+					{
+						for (TActorIterator<AClearanceOperatorPC> It(World); It; ++It)
+						{
+							if (AClearanceOperatorPC* PC = *It) { OpFreq = PC->CurrentTxFrequency; break; }
+						}
+					}
+					if (OpFreq != ECommsFrequency::Guard)
+					{
+						const FString R = TEXT("Negative, fighter tasking requires guard frequency");
+						SpeakAsController(Controller, R);
+						return R;
+					}
+				}
 				if (After < Tokens.Num() && (Tokens[After] == TEXT("bandit") || Tokens[After] == TEXT("bogey"))) { ++After; }
 				const FName Cs = ResolveCallsign(Controller, Tokens, After);
 				if (Cs.IsNone())
@@ -312,6 +366,113 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 				const FString R = FString::Printf(TEXT("ALPHA FLIGHT SCRAMBLED, %d-SHIP INBOUND %s"), N, *Cs.ToString());
 				SpeakOut(Controller, FName(TEXT("VIPER01")), R);
 				return R;
+			}
+			if (Verb == TEXT("engage"))
+			{
+				// Weapons commit phraseology: "SAM_01, engage <callsign>".
+				// Fires a missile at the target via the existing SAM launch
+				// pipeline. Gated to Guard freq (real air-defence weapons
+				// commit lives on a dedicated tactical channel, and Guard
+				// is CLEARANCE's closest equivalent). Non-hostile targets
+				// get a refusal on the guard freq and the operator eats a
+				// MisidentifiedCivilian incident - shooting a friendly is
+				// catastrophic even when the safety refusal prevents the
+				// actual launch, because it exposes bad ID discipline.
+				// Optional "bandit" softener between "engage" and the
+				// callsign matches the scramble path's ergonomics. - TripleA
+
+				if (After < Tokens.Num() && (Tokens[After] == TEXT("bandit") || Tokens[After] == TEXT("bogey")))
+				{
+					++After;
+				}
+
+				// Freq gate: read the operator PC's current tx freq.
+				ECommsFrequency OpFreq = ECommsFrequency::None;
+				if (UWorld* World = Controller ? Controller->GetWorld() : nullptr)
+				{
+					for (TActorIterator<AClearanceOperatorPC> It(World); It; ++It)
+					{
+						if (AClearanceOperatorPC* PC = *It)
+						{
+							OpFreq = PC->CurrentTxFrequency;
+							break;
+						}
+					}
+				}
+				if (OpFreq != ECommsFrequency::Guard)
+				{
+					const FString R = TEXT("Negative, weapons commit requires guard frequency");
+					SpeakAsController(Controller, R);
+					return R;
+				}
+
+				const FName Cs = ResolveCallsign(Controller, Tokens, After);
+				if (Cs.IsNone())
+				{
+					const FString R = TEXT("SAM 01 - say again target");
+					SpeakAsController(Controller, R);
+					return R;
+				}
+
+				AClearanceAirspaceManager* Mgr = Controller ? Controller->GetAirspaceManager() : nullptr;
+				FAircraftState Target = Mgr ? Mgr->GetAircraftState(Cs) : FAircraftState();
+				if (!Target.bIsValid)
+				{
+					const FString R = FString::Printf(TEXT("SAM 01 - unable, no track on %s"), *Cs.ToString());
+					SpeakAsController(Controller, R);
+					return R;
+				}
+
+				switch (Target.ThreatClass)
+				{
+				case EThreatClass::Hostile:
+				{
+					AClearanceMissile* M = Controller->Server_InjectFireMissile(Cs);
+					if (!M)
+					{
+						const FString R = FString::Printf(TEXT("SAM 01 - unable, %s"), *Cs.ToString());
+						SpeakAsController(Controller, R);
+						return R;
+					}
+					const FString R = FString::Printf(TEXT("SAM 01, ENGAGING %s"), *Cs.ToString());
+					SpeakOut(Controller, FName(TEXT("SAM_01")), R);
+					return R;
+				}
+				case EThreatClass::Friendly:
+				{
+					if (UClearanceScoring* Sc = Controller->GetScoring())
+					{
+						Sc->LogIncident(EIncidentType::MisidentifiedCivilian, Cs, NAME_None,
+							TEXT("Attempted engagement on FRIENDLY target - weapons cold refusal"));
+					}
+					const FString R = FString::Printf(TEXT("Negative, %s identified friendly, weapons cold"), *Cs.ToString());
+					SpeakAsController(Controller, R);
+					return R;
+				}
+				case EThreatClass::Neutral:
+				{
+					if (UClearanceScoring* Sc = Controller->GetScoring())
+					{
+						Sc->LogIncident(EIncidentType::MisidentifiedCivilian, Cs, NAME_None,
+							TEXT("Attempted engagement on CIVILIAN target - weapons cold refusal"));
+					}
+					const FString R = FString::Printf(TEXT("Negative, %s civilian traffic, weapons cold"), *Cs.ToString());
+					SpeakAsController(Controller, R);
+					return R;
+				}
+				case EThreatClass::Unknown:
+				default:
+				{
+					if (UClearanceScoring* Sc = Controller->GetScoring())
+					{
+						Sc->LogIncident(EIncidentType::MisidentifiedCivilian, Cs, NAME_None,
+							TEXT("Attempted engagement on UNIDENTIFIED target - request positive ID"));
+					}
+					const FString R = FString::Printf(TEXT("Negative, %s unidentified, request positive ID"), *Cs.ToString());
+					SpeakAsController(Controller, R);
+					return R;
+				}
+				}
 			}
 		}
 	}

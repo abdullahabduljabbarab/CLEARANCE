@@ -26,6 +26,7 @@ public class ClearanceSim : ModuleRules
 			"UMG",                // UUserWidget base class for the instructor panel
 			"Slate",              // FSlateApplication for the renderer resource handle (coverage gradients)
 			"SlateCore",          // FCanvasItem / FGeometry types the widget uses
+			"RenderCore",         // BeginCleanup + FWidgetRenderer deferred-cleanup path
 			"HeadMountedDisplay", // MotionControllerComponent + IXRTrackingSystem for the VR operator pawn
 			"ClearanceDIS",       // Pure-C++ wire format for DIS PDU serialisation / parsing
 			"ClearanceDDS",       // Fast DDS pub/sub middleware for real-time telemetry

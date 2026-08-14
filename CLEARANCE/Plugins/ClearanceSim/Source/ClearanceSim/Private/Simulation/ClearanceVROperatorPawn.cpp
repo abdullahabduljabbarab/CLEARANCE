@@ -11,8 +11,14 @@
 #include "InputMappingContext.h"
 #include "GameFramework/PlayerController.h"
 #include "MotionControllerComponent.h"
+#include "Components/WidgetComponent.h"
+#include "DrawDebugHelpers.h"
+#include "Engine/StaticMesh.h"
+#include "Kismet/GameplayStatics.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Simulation/ClearanceOperatorButton.h"
 #include "Simulation/ClearanceOperatorPC.h"
+#include "Simulation/ClearanceSimulationController.h"
 #include "UI/ClearanceInstructorPanel.h"
 #include "Blueprint/UserWidget.h"
 #include "Framework/Application/SlateApplication.h"
@@ -20,6 +26,14 @@
 #include "Engine/GameViewportClient.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
+#include "Components/StereoLayerComponent.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Slate/WidgetRenderer.h"
+#include "Kismet/KismetRenderingLibrary.h"
+#include "IHeadMountedDisplay.h"
+#include "IXRTrackingSystem.h"
+#include "Components/Button.h"
+#include "Styling/SlateTypes.h"
 
 // Meta XR Interaction SDK is shipped separately by Meta and lives outside
 // git.  Auto-detected at build time by ClearanceSim.Build.cs: when the
@@ -133,6 +147,100 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	LeftFingertip->OnComponentEndOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnLeftFingertipEndOverlap);
 	RightFingertip->OnComponentBeginOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnRightFingertipBeginOverlap);
 	RightFingertip->OnComponentEndOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnRightFingertipEndOverlap);
+
+	// Laser meshes for the pause menu. Hidden by default; TogglePauseMenu
+	// flips them visible + stretches them per tick to terminate at the
+	// widget hit point. Auto-assigns the engine's default cylinder mesh
+	// as a working placeholder so the lasers are visible without needing
+	// Neo to override a C++-owned StaticMesh property in the BP subclass
+	// (which MCP tools can't do for native components). Default cylinder
+	// is Z-up 100cm tall x 100cm diameter - we rotate it Pitch=90 so its
+	// Z-axis becomes the actor's forward +X, then scale to (LengthPerTick,
+	// 0.005, 0.005) making a thin 0.5cm-radius beam that stretches in
+	// world along the aim direction. Neo can override the mesh + material
+	// later; the default gets us a visible laser today. - TripleA
+	LeftLaser = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("LeftLaser"));
+	LeftLaser->SetupAttachment(LeftController);
+	LeftLaser->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	LeftLaser->SetVisibility(false);
+	LeftLaser->SetGenerateOverlapEvents(false);
+	LeftLaser->SetRelativeRotation(FRotator(90.f, 0.f, 0.f));
+	LeftLaser->SetRelativeScale3D(FVector(1.f, 0.005f, 0.005f));
+
+	RightLaser = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("RightLaser"));
+	RightLaser->SetupAttachment(RightController);
+	RightLaser->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RightLaser->SetVisibility(false);
+	RightLaser->SetGenerateOverlapEvents(false);
+	RightLaser->SetRelativeRotation(FRotator(90.f, 0.f, 0.f));
+	RightLaser->SetRelativeScale3D(FVector(1.f, 0.005f, 0.005f));
+
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> CylinderMesh(TEXT("/Engine/BasicShapes/Cylinder"));
+	if (CylinderMesh.Succeeded())
+	{
+		LeftLaser ->SetStaticMesh(CylinderMesh.Object);
+		RightLaser->SetStaticMesh(CylinderMesh.Object);
+	}
+	// EmissiveMeshMaterial is the shipped unlit-with-emissive-vertex-color
+	// material - works at runtime (unlike /Engine/EditorMaterials/ paths
+	// which are cooked out in packaged builds and often missing at PIE
+	// time too). Neo can override with a proper thin cyan tube material
+	// later; this at least makes the lasers visibly cyan-ish now. - TripleA
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> LaserMat(
+		TEXT("/Engine/EngineMaterials/EmissiveMeshMaterial"));
+	if (LaserMat.Succeeded())
+	{
+		LeftLaser ->SetMaterial(0, LaserMat.Object);
+		RightLaser->SetMaterial(0, LaserMat.Object);
+	}
+
+	// Pause menu draws via a face-locked UStereoLayerComponent so the HMD
+	// compositor renders it at real depth (not glued to the near-plane the
+	// way AddToViewport HUD does in stereo). The stereo layer is attached
+	// to Camera so it follows the HMD, hidden by default. Its texture
+	// comes from a hidden UWidgetComponent's render target - see below.
+	//
+	// This bypasses the Substrate / Lumen / scene-shading path entirely -
+	// the compositor writes the texture straight into the eye buffers. - TripleA
+	PauseMenuStereoLayer = CreateDefaultSubobject<UStereoLayerComponent>(TEXT("PauseMenuStereoLayer"));
+	PauseMenuStereoLayer->SetupAttachment(Camera);
+	PauseMenuStereoLayer->SetRelativeLocation(FVector(PauseMenuDistanceCm, 0.f, 0.f));
+	// StereoLayerType defaults to SLT_FaceLocked in the parent constructor -
+	// no setter is exposed so the default is what we want anyway. - TripleA
+	PauseMenuStereoLayer->SetPriority(100);
+	PauseMenuStereoLayer->SetQuadSize(PauseMenuWorldSizeCm);
+	PauseMenuStereoLayer->SetVisibility(false);
+
+	// Hidden WidgetComponent that hosts the pause menu UUserWidget and
+	// keeps its Slate render target updated every frame. Not rendered in
+	// the scene - only its texture is used, fed straight to the stereo
+	// layer above. The previous approach (FWidgetRenderer + SVirtualWindow)
+	// painted an orphaned Slate tree that never received the normal
+	// invalidation broadcasts, so per-tick style mutations (highlight
+	// tinting, render scale) failed to reach the actual draw. Routing
+	// through a WidgetComponent puts the widget back on the standard
+	// Slate lifecycle where invalidations, prepass and paint all work
+	// as designed. - TripleA
+	PauseMenuWidgetComp = CreateDefaultSubobject<UWidgetComponent>(TEXT("PauseMenuWidgetComp"));
+	PauseMenuWidgetComp->SetupAttachment(VROrigin);
+	PauseMenuWidgetComp->SetWidgetSpace(EWidgetSpace::World);
+	PauseMenuWidgetComp->SetDrawSize(PauseMenuDrawSizePx);
+	PauseMenuWidgetComp->SetTickMode(ETickMode::Enabled);
+	PauseMenuWidgetComp->SetTickWhenOffscreen(true);
+	// Must stay visible AND not hidden-in-game so the RT actually updates
+	// (both flags gate WidgetComponent::ShouldDrawWidget). Hiding it any
+	// way we tried killed the render target, which killed the stereo
+	// layer texture, which killed the menu. Instead we shove the world-
+	// space quad 100m below the pawn's floor - it still renders and
+	// updates its RT normally, but no camera ever sees it because it's
+	// buried underground. The stereo layer picks up the RT and shows it
+	// at proper depth in front of the operator. - TripleA
+	PauseMenuWidgetComp->SetVisibility(true);
+	PauseMenuWidgetComp->SetHiddenInGame(false);
+	PauseMenuWidgetComp->SetRelativeLocation(FVector(0.f, 0.f, -10000.f));
+	PauseMenuWidgetComp->SetRelativeScale3D(FVector(0.1f));
+	PauseMenuWidgetComp->SetTwoSided(true);
+	PauseMenuWidgetComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 }
 
 void AClearanceVROperatorPawn::BeginPlay()
@@ -171,6 +279,9 @@ void AClearanceVROperatorPawn::BeginPlay()
 			}
 		}
 	}
+
+	// (World-space pause menu Substrate workaround removed - the pause
+	// menu is now a HUD overlay, no WidgetComponent involved.) - TripleA
 
 	// The parent OperatorPC forces FInputModeUIOnly at HUD setup which
 	// silently drops all gameplay axis input from motion controllers. Flip
@@ -290,6 +401,11 @@ void AClearanceVROperatorPawn::SetupPlayerInputComponent(UInputComponent* Player
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Completed, this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
 			EIC->BindAction(TriggerRightAction, ETriggerEvent::Canceled,  this, &AClearanceVROperatorPawn::HandleTriggerRightReleased);
 		}
+		if (PauseMenuAction)
+		{
+			// Started only - Toggle should fire once per press, not per hold. - TripleA
+			EIC->BindAction(PauseMenuAction, ETriggerEvent::Started, this, &AClearanceVROperatorPawn::HandlePauseMenuPressed);
+		}
 	}
 }
 
@@ -333,6 +449,11 @@ void AClearanceVROperatorPawn::HandleMove(const FInputActionValue& Value)
 
 void AClearanceVROperatorPawn::HandleSnapTurn(const FInputActionValue& Value)
 {
+	// Suppress snap-turn while the pause menu is up - right stick is
+	// repurposed for menu selection during that window (see the poll
+	// block in Tick). Otherwise a scroll would also spin the player. - TripleA
+	if (IsPauseMenuShowing()) { return; }
+
 	const float StickX = Value.Get<FVector2D>().X;
 
 	// Re-arm when the stick returns to centre.
@@ -500,6 +621,191 @@ void AClearanceVROperatorPawn::HandleTriggerRightReleased(const FInputActionValu
 	RightPressedButton = nullptr;
 }
 
+void AClearanceVROperatorPawn::HandlePauseMenuPressed(const FInputActionValue&)
+{
+	TogglePauseMenu();
+}
+
+void AClearanceVROperatorPawn::TogglePauseMenu()
+{
+	// HUD overlay path. World-space WidgetComponent under Substrate + VR
+	// rendered as black / grid checker despite the widget being authored
+	// with bright content in the WBP designer. Switched to AddToViewport
+	// which uses the same Slate-to-framebuffer path as the working main
+	// menu - proven to render in VR. Tradeoff: menu is head-locked HUD
+	// rather than a floating panel in the world, but it actually appears
+	// and matches the pattern every commercial VR title uses for pause
+	// menus (Half-Life: Alyx, Beat Saber, Boneworks). - TripleA
+
+	if (PauseMenuInstance)
+	{
+		HidePauseMenu();
+		return;
+	}
+
+	if (!PauseMenuWidgetClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PAUSE] PauseMenuWidgetClass is NULL - assign WBP_VRPauseMenu on BP_VROperatorPawn Details."));
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World || !Camera) { return; }
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC) { return; }
+
+	if (!PauseMenuWidgetComp)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PAUSE] PauseMenuWidgetComp null"));
+		return;
+	}
+
+	// Bind the widget class + resolve the UUserWidget instance. WidgetComponent
+	// lazily constructs the widget the first time InitWidget runs; on
+	// subsequent shows we just reuse it. - TripleA
+	if (PauseMenuWidgetComp->GetWidgetClass() != PauseMenuWidgetClass)
+	{
+		PauseMenuWidgetComp->SetWidgetClass(PauseMenuWidgetClass);
+	}
+	PauseMenuWidgetComp->SetDrawSize(PauseMenuDrawSizePx);
+	PauseMenuWidgetComp->InitWidget();
+	PauseMenuInstance = Cast<UUserWidget>(PauseMenuWidgetComp->GetWidget());
+	if (!PauseMenuInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PAUSE] PauseMenuWidgetComp->GetWidget() returned null"));
+		return;
+	}
+
+	// Reset selection so the menu always opens with row 0 highlighted.
+	PauseMenuSelectedIndex = 0;
+
+	if (PauseMenuStereoLayer)
+	{
+		// GetRenderTarget only becomes non-null after the WidgetComponent
+		// has ticked at least once (its RT is created lazily in tick).
+		// The stereo layer picks the current texture up next frame if
+		// it's null now - safe either way. - TripleA
+		PauseMenuStereoLayer->SetTexture(PauseMenuWidgetComp->GetRenderTarget());
+		PauseMenuStereoLayer->SetQuadSize(PauseMenuWorldSizeCm);
+		PauseMenuStereoLayer->SetRelativeLocation(FVector(PauseMenuDistanceCm, 0.f, 0.f));
+		PauseMenuStereoLayer->SetVisibility(true);
+	}
+
+	if (AClearanceSimulationController* SC = Cast<AClearanceSimulationController>(
+			UGameplayStatics::GetActorOfClass(World, AClearanceSimulationController::StaticClass())))
+	{
+		SC->PauseSession();
+	}
+}
+
+void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedIndex)
+{
+	// Widget row order (set PauseMenuOptionCount = 4 on the BP subclass):
+	//   0 = RESUME          -> HidePauseMenu
+	//   1 = OPTIONS         -> not implemented in VR yet, no-op with warn
+	//   2 = END SESSION     -> Server_EndSessionAndReport on the operator PC
+	//   3 = EXIT TO MENU    -> disable HMD + OpenLevel(LVL_MainMenu)
+	// Neo can override this event on BP_VROperatorPawn to change any row's
+	// action without a C++ change. - TripleA
+	switch (SelectedIndex)
+	{
+	case 0:
+	{
+		HidePauseMenu();
+		return;
+	}
+
+	case 1:
+	{
+		// Options in VR needs its own stereo-layer widget - the desktop
+		// WBP_Options doesn't render through the compositor path. Leaving
+		// this as a diagnostic no-op so an accidental confirm doesn't
+		// nuke the session. Override on BP if you wire an in-VR options
+		// screen. - TripleA
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PAUSE] OPTIONS row confirmed but no VR options screen wired yet."));
+		return;
+	}
+
+	case 2:
+	{
+		// End the session cleanly through the OperatorPC RPC - same call
+		// path as the desktop End Session button on the instructor panel.
+		// Server writes the AAR, halts the sim, and RPCs back a report
+		// which the instructor panel modal already handles on the desktop
+		// side. In VR this just dismisses the pause menu; the desktop
+		// twin (if any) surfaces the modal. - TripleA
+		if (APlayerController* PC = Cast<APlayerController>(GetController()))
+		{
+			if (AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(PC))
+			{
+				OpPC->Server_EndSessionAndReport();
+			}
+		}
+		HidePauseMenu();
+		return;
+	}
+
+	case 3:
+	default:
+	{
+		// Exit: disable HMD so the flat menu isn't rendered stereoscopically,
+		// then OpenLevel to the main menu map. Safe no-op if HMD wasn't
+		// already enabled. Mirrors UClearanceMenuFunctionLibrary::ExitToMainMenu
+		// without pulling the game module in as a plugin dependency. - TripleA
+		if (GEngine && GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice())
+		{
+			GEngine->XRSystem->GetHMDDevice()->EnableHMD(false);
+		}
+		HidePauseMenu();
+		UGameplayStatics::OpenLevel(
+			this,
+			FName(TEXT("/Game/LVL_MainMenu.LVL_MainMenu")),
+			/*bAbsolute=*/true);
+		return;
+	}
+	}
+}
+
+void AClearanceVROperatorPawn::EndPlay(const EEndPlayReason::Type Reason)
+{
+	// FWidgetRenderer routes its own deletion through the Slate deferred
+	// cleanup queue (safe for pending render commands referencing it),
+	// so BeginCleanup is the correct release call, not plain delete. - TripleA
+	if (PauseMenuRenderer)
+	{
+		BeginCleanup(PauseMenuRenderer);
+		PauseMenuRenderer = nullptr;
+	}
+	Super::EndPlay(Reason);
+}
+
+void AClearanceVROperatorPawn::HidePauseMenu()
+{
+	if (PauseMenuStereoLayer)
+	{
+		PauseMenuStereoLayer->SetVisibility(false);
+		PauseMenuStereoLayer->SetTexture(nullptr);
+	}
+
+	// PauseMenuInstance is owned by PauseMenuWidgetComp - do NOT call
+	// RemoveFromParent (would strip it out of the WidgetComponent tree).
+	// Just clear our cached pointer; the WidgetComponent holds the widget
+	// itself for the next TogglePauseMenu. - TripleA
+	PauseMenuInstance = nullptr;
+
+	if (UWorld* World = GetWorld())
+	{
+		if (AClearanceSimulationController* SC = Cast<AClearanceSimulationController>(
+				UGameplayStatics::GetActorOfClass(World, AClearanceSimulationController::StaticClass())))
+		{
+			SC->ResumeSession();
+		}
+	}
+}
+
 void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -516,6 +822,140 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 	}
 
 	UpdateHandAnimInputs();
+
+	// Highlight the selected row from C++. The UWidgetComponent path
+	// ticks its child UUserWidget the normal way, so per-frame style
+	// mutations reach the SButton paint via the standard Slate
+	// invalidation graph. - TripleA
+	if (PauseMenuInstance && PauseMenuWidgetComp && PauseMenuWidgetComp->GetWidget())
+	{
+		// Highlight the selected row directly from C++ by rewriting each
+		// button's WidgetStyle every frame. BP Event Tick + SetColorAndOpacity
+		// / SetBackgroundColor on UButton was not showing through in the
+		// stereo-layer render path because the buttons' custom WidgetStyle
+		// overrides the runtime tint multiplier. SetStyle replaces the whole
+		// FButtonStyle struct, so a fresh Normal/Hovered/Pressed TintColor
+		// wins outright and Neo's authored padding / brush / border settings
+		// are preserved via the GetStyle() copy. - TripleA
+		static const FName ButtonNames[] = {
+			TEXT("Btn_Resume"),
+			TEXT("Btn_Options"),
+			TEXT("Btn_EndSession"),
+			TEXT("Btn_ExitToMenu")
+		};
+		// Regular selected background = amber (ATC caution) - contrasts
+		// with cyan button text. Destructive rows (END SESSION + EXIT
+		// TO MENU) use a deep crimson so their bright-red text stays
+		// readable on top - bright-red-on-bright-red collapses. - TripleA
+		const FLinearColor SelectedTint          (1.00f, 0.65f, 0.00f, 1.f);
+		const FLinearColor DestructiveSelectedTint(0.40f, 0.05f, 0.05f, 1.f);
+		const FLinearColor DimTint               (0.08f, 0.15f, 0.20f, 1.f);
+
+		// Log-once flags so we can tell whether the loop is even seeing
+		// the buttons on the first tick after the menu opens. - TripleA
+		static bool bLoggedButtonScan = false;
+
+		for (int32 i = 0; i < UE_ARRAY_COUNT(ButtonNames); ++i)
+		{
+			UWidget* Found = PauseMenuInstance->GetWidgetFromName(ButtonNames[i]);
+			UButton* Btn   = Cast<UButton>(Found);
+
+			if (!bLoggedButtonScan)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[PAUSE] Scan '%s' -> found=%s cast=%s"),
+					*ButtonNames[i].ToString(),
+					Found ? *Found->GetClass()->GetName() : TEXT("NULL"),
+					Btn   ? TEXT("UButton OK") : TEXT("NOT A BUTTON"));
+			}
+
+			if (!Btn) { continue; }
+
+			const bool  bSelected    = (i == PauseMenuSelectedIndex);
+			const bool  bDestructive = (i >= 2);   // 2 = END SESSION, 3 = EXIT TO MENU
+			const FLinearColor Tint = bSelected
+				? (bDestructive ? DestructiveSelectedTint : SelectedTint)
+				: DimTint;
+
+			// Nuclear tint: rebuild each brush from scratch as a plain box
+			// with our tint, no source texture / material. Neo's authored
+			// brushes may have a dark-baked resource that would multiply
+			// our TintColor down to invisible; clearing ResourceObject
+			// forces the brush to draw as a pure solid-colour box using
+			// only TintColor. Loses any rounded-corner / custom-image
+			// styling, but a flat coloured highlight is the goal here
+			// anyway. Padding / hover behaviour / press behaviour from
+			// GetStyle() are preserved. - TripleA
+			FButtonStyle NewStyle = Btn->GetStyle();
+			auto Retint = [Tint](FSlateBrush& B)
+			{
+				B.DrawAs    = ESlateBrushDrawType::Box;
+				B.SetResourceObject(nullptr);
+				B.TintColor = FSlateColor(Tint);
+			};
+			Retint(NewStyle.Normal);
+			Retint(NewStyle.Hovered);
+			Retint(NewStyle.Pressed);
+			Btn->SetStyle(NewStyle);
+
+			// Belt-and-braces: also poke the whole-button ColorAndOpacity
+			// multiplier white and the deprecated BackgroundColor to white,
+			// so any style-multiplier path that could tint our clean
+			// brush a second time stays neutral. - TripleA
+			Btn->SetColorAndOpacity(FLinearColor::White);
+			Btn->SetBackgroundColor(FLinearColor::White);
+
+			// (Scale + visibility diagnostics removed - proven the
+			// paint pipeline updates now that the stereo layer is
+			// marked bLiveTexture + MarkTextureForUpdate every frame.
+			// The SetStyle tint above is now the sole highlight
+			// mechanism.) - TripleA
+
+			// Style mutation alone marks the widget dirty. The
+			// WidgetComponent's own tick + Slate application invalidation
+			// pipeline handle the actual repaint, so no manual Prepass /
+			// DrawWidget calls are needed here. - TripleA
+			Btn->InvalidateLayoutAndVolatility();
+		}
+
+		bLoggedButtonScan = true;
+
+		// Keep the stereo layer's texture pointer live in case the
+		// WidgetComponent recreated its render target (happens if
+		// SetDrawSize changed or the widget was rebuilt). Cheap no-op
+		// when the pointer is stable. - TripleA
+		if (PauseMenuStereoLayer)
+		{
+			UTextureRenderTarget2D* RT = PauseMenuWidgetComp->GetRenderTarget();
+
+			static bool bLoggedRT = false;
+			if (!bLoggedRT)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("[PAUSE] WidgetComp RT=%s  StereoLayer Texture=%s  StereoLayer Vis=%d"),
+					RT ? *RT->GetName() : TEXT("NULL"),
+					PauseMenuStereoLayer->GetTexture() ? *PauseMenuStereoLayer->GetTexture()->GetName() : TEXT("NULL"),
+					PauseMenuStereoLayer->IsVisible() ? 1 : 0);
+				if (RT) { bLoggedRT = true; }
+			}
+
+			if (RT && PauseMenuStereoLayer->GetTexture() != RT)
+			{
+				PauseMenuStereoLayer->SetTexture(RT);
+			}
+
+			// Force the HMD compositor to re-sample the RT every frame.
+			// Without this the stereo layer holds onto its first-frame
+			// snapshot of the texture and never picks up subsequent
+			// widget updates - even though the RT itself IS being
+			// redrawn correctly by the WidgetComponent. - TripleA
+			if (PauseMenuStereoLayer->bLiveTexture == false)
+			{
+				PauseMenuStereoLayer->bLiveTexture = true;
+			}
+			PauseMenuStereoLayer->MarkTextureForUpdate();
+		}
+	}
 
 	// --- Trigger edge detection ---------------------------------------------
 	//
@@ -537,7 +977,14 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 	// weak ptr key survives a hot patch and safely coexists with future
 	// split-screen / pawn swaps: entries for dead pawns quietly return
 	// default false. - TripleA
-	struct FTriggerEdgeState { bool bLeftDown = false; bool bRightDown = false; };
+	struct FTriggerEdgeState
+	{
+		bool  bLeftDown         = false;
+		bool  bRightDown        = false;
+		float PauseGripHoldSecs = 0.f;   // accumulator for left-grip long-press
+		bool  bPauseMenuFired   = false; // set true after the hold-fire event to prevent auto-repeat
+		bool  bMenuScrollReady  = true;  // re-arm gate for right-stick menu scroll
+	};
 	static TMap<TWeakObjectPtr<AClearanceVROperatorPawn>, FTriggerEdgeState> EdgeStateByPawn;
 	FTriggerEdgeState& Edge = EdgeStateByPawn.FindOrAdd(TWeakObjectPtr<AClearanceVROperatorPawn>(this));
 
@@ -577,8 +1024,108 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 	if (bRightNow != Edge.bRightDown)
 	{
 		Edge.bRightDown = bRightNow;
-		if (bRightNow) { HandleTriggerRightPressed(Dummy); }
-		else           { HandleTriggerRightReleased(Dummy); }
+		if (bRightNow)
+		{
+			// Right trigger PRESS while the pause menu is up = CONFIRM the
+			// currently-highlighted option instead of firing the hovered
+			// console button. Console-button dispatch is suppressed for the
+			// press edge; release edge still runs so any button that was
+			// already held stays consistent (rare - the menu is modal and
+			// suppresses press below). - TripleA
+			if (IsPauseMenuShowing())
+			{
+				OnPauseMenuConfirm(PauseMenuSelectedIndex);
+			}
+			else
+			{
+				HandleTriggerRightPressed(Dummy);
+			}
+		}
+		else
+		{
+			HandleTriggerRightReleased(Dummy);
+		}
+	}
+
+	// Right-stick Y drives menu scroll while the pause menu is showing.
+	// SnapTurnAction is an Axis2D on the right thumbstick - Y drives
+	// vertical option selection (up = previous, down = next), and
+	// HandleSnapTurn early-outs while the menu is up so the player doesn't
+	// spin at the same time. Same threshold + re-arm pattern as snap
+	// turning: cross threshold once to tick, release to centre to re-arm. - TripleA
+	if (IsPauseMenuShowing() && SnapTurnAction)
+	{
+		float StickY = 0.f;
+		if (ULocalPlayer* LPS = PC->GetLocalPlayer())
+		{
+			if (UEnhancedInputLocalPlayerSubsystem* SubS = LPS->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+			{
+				if (UEnhancedPlayerInput* EPIS = SubS->GetPlayerInput())
+				{
+					StickY = EPIS->GetActionValue(SnapTurnAction).Get<FVector2D>().Y;
+				}
+			}
+		}
+
+		if (FMath::Abs(StickY) < SnapTurnThreshold)
+		{
+			Edge.bMenuScrollReady = true;
+		}
+		else if (Edge.bMenuScrollReady && PauseMenuOptionCount > 0)
+		{
+			Edge.bMenuScrollReady = false;
+			// Stick UP (positive Y) = previous option, DOWN = next option.
+			// If it feels inverted in the headset just flip the sign here. - TripleA
+			const int32 Dir = (StickY > 0.f) ? -1 : +1;
+			PauseMenuSelectedIndex =
+				(PauseMenuSelectedIndex + Dir + PauseMenuOptionCount) % PauseMenuOptionCount;
+			UE_LOG(LogTemp, Log,
+				TEXT("[PAUSE] stick=%.2f dir=%d -> selected=%d/%d"),
+				StickY, Dir, PauseMenuSelectedIndex, PauseMenuOptionCount);
+		}
+	}
+
+	// Pause menu = LEFT-GRIP LONG-PRESS (~1s). Read via the SAME EI
+	// GetActionValue<float> path the triggers use above - that path is
+	// the only input read pattern confirmed working in this project's
+	// OpenXR / EI setup. Legacy GetInputAnalogKeyState and IsInputKeyDown
+	// both silently return zero for OpenXR-routed inputs. Grip axis is
+	// analog so Value Type = Axis1D on the IA gives a 0-1 float via
+	// Get<float>. Grip is unused elsewhere in CLEARANCE (no grabbables),
+	// so a deliberate 1s hold is a clean menu-commit gesture with no
+	// accidental-fire path. - TripleA
+	if (GripLeftAction)
+	{
+		constexpr float kGripHeldThreshold = 0.90f;
+		constexpr float kHoldSecondsToFire = 1.0f;
+
+		float GripVal = 0.f;
+		if (ULocalPlayer* LPG = PC->GetLocalPlayer())
+		{
+			if (UEnhancedInputLocalPlayerSubsystem* SubG = LPG->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+			{
+				if (UEnhancedPlayerInput* EPIG = SubG->GetPlayerInput())
+				{
+					GripVal = EPIG->GetActionValue(GripLeftAction).Get<float>();
+				}
+			}
+		}
+		const bool bGripDown = GripVal >= kGripHeldThreshold;
+
+		if (bGripDown)
+		{
+			Edge.PauseGripHoldSecs += DeltaSeconds;
+			if (!Edge.bPauseMenuFired && Edge.PauseGripHoldSecs >= kHoldSecondsToFire)
+			{
+				Edge.bPauseMenuFired = true;
+				HandlePauseMenuPressed(Dummy);
+			}
+		}
+		else
+		{
+			Edge.PauseGripHoldSecs = 0.f;
+			Edge.bPauseMenuFired   = false;
+		}
 	}
 }
 

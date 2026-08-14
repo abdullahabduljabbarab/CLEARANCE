@@ -181,6 +181,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Pause Menu")
 	TSubclassOf<UUserWidget> VROptionsWidgetClass;
 
+	// Widget class for the in-VR end-session report shown after the
+	// server finishes writing the AAR. Set to WBP_VREndSessionReport
+	// on the BP subclass. Two rows: Restart / Exit. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Pause Menu")
+	TSubclassOf<UUserWidget> VREndSessionReportWidgetClass;
+
 	// Distance in front of the HMD where the pause menu WidgetComponent
 	// spawns. Default 150 = comfortable arm's length. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Pause Menu")
@@ -246,10 +252,25 @@ public:
 
 	// Which screen the pause pipeline is currently displaying. Drives the
 	// button-name array used by the highlight loop and the confirm
-	// dispatch. Both screens share the same UWidgetComponent + stereo
+	// dispatch. All screens share the same UWidgetComponent + stereo
 	// layer; only the widget class swaps. - TripleA
-	enum class EPauseScreen : uint8 { PauseMenu, Options };
+	enum class EPauseScreen : uint8 { PauseMenu, Options, EndSessionReport };
 	EPauseScreen CurrentScreen = EPauseScreen::PauseMenu;
+
+	// End-session report data snapshot for the widget to read via
+	// BlueprintReadOnly. Populated by HandleEndSessionReport when the
+	// server RPC lands. - TripleA
+	UPROPERTY(BlueprintReadOnly, Transient, Category = "VR|Pause Menu")
+	int32 EndSessionReportScore = 0;
+
+	UPROPERTY(BlueprintReadOnly, Transient, Category = "VR|Pause Menu")
+	float EndSessionReportSessionSeconds = 0.f;
+
+	UPROPERTY(BlueprintReadOnly, Transient, Category = "VR|Pause Menu")
+	FString EndSessionReportPath;
+
+	UFUNCTION()
+	void HandleEndSessionReport(const FString& FilePath, int32 Score, float SessionTimeSeconds);
 
 	// Discrete-step state for cyclable options. Snap turn steps through
 	// 30 / 45 / 90 deg, radio volume steps Low / Med / High. Widget
@@ -270,8 +291,10 @@ public:
 private:
 	void ShowPauseMenuScreen();
 	void ShowOptionsScreen();
+	void ShowEndSessionReportScreen();
 	void ApplySnapTurnStep();
 	void ApplyRadioVolumeStep();
+	int32 GetCurrentScreenOptionCount() const;
 
 public:
 

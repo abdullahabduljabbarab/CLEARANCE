@@ -33,6 +33,7 @@
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
 #include "Components/Button.h"
+#include "Components/TextBlock.h"
 #include "Styling/SlateTypes.h"
 
 // Meta XR Interaction SDK is shipped separately by Meta and lives outside
@@ -298,6 +299,13 @@ void AClearanceVROperatorPawn::BeginPlay()
 		{
 			Panel->RemoveFromParent();
 		}
+
+		// Subscribe to the end-session report the OperatorPC broadcasts
+		// after Server_EndSessionAndReport finishes writing the AAR. The
+		// callback swaps the stereo layer to WBP_VREndSessionReport so
+		// the operator sees the score + time + restart / exit choices
+		// without leaving VR. - TripleA
+		OpPC->OnEndSessionReport.AddDynamic(this, &AClearanceVROperatorPawn::HandleEndSessionReport);
 	}
 
 	FInputModeGameOnly GameMode;
@@ -702,9 +710,45 @@ void AClearanceVROperatorPawn::TogglePauseMenu()
 
 void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedIndex)
 {
+	// End-session report screen: two rows, both terminal.
+	//   0 = RESTART SESSION   -> Server_InjectResetScenario, dismiss
+	//   1 = EXIT TO MENU      -> disable HMD + OpenLevel(LVL_MainMenu)
+	if (CurrentScreen == EPauseScreen::EndSessionReport)
+	{
+		switch (SelectedIndex)
+		{
+		case 0:
+		{
+			if (APlayerController* PC = Cast<APlayerController>(GetController()))
+			{
+				if (AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(PC))
+				{
+					OpPC->Server_InjectResetScenario();
+				}
+			}
+			HidePauseMenu();
+			return;
+		}
+		case 1:
+		default:
+		{
+			if (GEngine && GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice())
+			{
+				GEngine->XRSystem->GetHMDDevice()->EnableHMD(false);
+			}
+			HidePauseMenu();
+			UGameplayStatics::OpenLevel(
+				this,
+				FName(TEXT("/Game/LVL_MainMenu.LVL_MainMenu")),
+				/*bAbsolute=*/true);
+			return;
+		}
+		}
+	}
+
 	// Dispatch routes through the CurrentScreen state - trigger presses
 	// on the pause menu do one thing, trigger presses on the options
-	// screen do another. Both screens share the same stereo layer +
+	// screen do another. All screens share the same stereo layer +
 	// WidgetComponent, so the only visible difference is which widget
 	// class is bound. - TripleA
 	if (CurrentScreen == EPauseScreen::Options)
@@ -782,14 +826,30 @@ void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedI
 		// which the instructor panel modal already handles on the desktop
 		// side. In VR this just dismisses the pause menu; the desktop
 		// twin (if any) surfaces the modal. - TripleA
-		if (APlayerController* PC = Cast<APlayerController>(GetController()))
+		APlayerController* PC = Cast<APlayerController>(GetController());
+		AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(PC);
+		UE_LOG(LogTemp, Log,
+			TEXT("[PAUSE] END SESSION confirmed. PC=%s OpPC=%s Role=%d NetMode=%d"),
+			PC   ? *PC->GetClass()->GetName() : TEXT("NULL"),
+			OpPC ? TEXT("OK") : TEXT("CAST FAILED"),
+			(int32)GetLocalRole(),
+			(int32)GetNetMode());
+		// Order matters. Server RPC on listen-server host invokes
+		// synchronously - HandleEndSessionReport runs INSIDE the
+		// Server_EndSessionAndReport call. If we set placeholders after
+		// the RPC, the placeholder assignment clobbers the real values
+		// the callback just wrote. So: show placeholders + swap the
+		// widget FIRST, then fire the RPC and let its callback overwrite
+		// the fields in place. The tick loop will push the real text
+		// on the very next frame. - TripleA
+		EndSessionReportScore          = 0;
+		EndSessionReportSessionSeconds = 0.f;
+		EndSessionReportPath           = TEXT("(saving...)");
+		ShowEndSessionReportScreen();
+		if (OpPC)
 		{
-			if (AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(PC))
-			{
-				OpPC->Server_EndSessionAndReport();
-			}
+			OpPC->Server_EndSessionAndReport();
 		}
-		HidePauseMenu();
 		return;
 	}
 
@@ -835,6 +895,62 @@ void AClearanceVROperatorPawn::ShowOptionsScreen()
 	}
 }
 
+void AClearanceVROperatorPawn::ShowEndSessionReportScreen()
+{
+	UE_LOG(LogTemp, Log,
+		TEXT("[END-SESSION] ShowEndSessionReportScreen. WidgetClass=%s WidgetComp=%s StereoLayer=%s"),
+		VREndSessionReportWidgetClass ? *VREndSessionReportWidgetClass->GetName() : TEXT("NULL"),
+		PauseMenuWidgetComp   ? TEXT("OK") : TEXT("NULL"),
+		PauseMenuStereoLayer  ? TEXT("OK") : TEXT("NULL"));
+	if (!VREndSessionReportWidgetClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[PAUSE] End-session report ready but VREndSessionReportWidgetClass is not set on BP_VROperatorPawn."));
+		return;
+	}
+	CurrentScreen = EPauseScreen::EndSessionReport;
+	PauseMenuSelectedIndex = 0;
+
+	// Swap the widget class in place. The stereo layer is already
+	// showing the pause menu at this point (End Session dispatch skips
+	// HidePauseMenu specifically so the compositor keeps the layer
+	// alive), so the operator just sees the panel contents change from
+	// the pause menu to the report - no visibility toggle, no compositor
+	// tear-down. - TripleA
+	if (PauseMenuWidgetComp)
+	{
+		PauseMenuWidgetComp->SetWidgetClass(VREndSessionReportWidgetClass);
+		PauseMenuInstance = Cast<UUserWidget>(PauseMenuWidgetComp->GetWidget());
+	}
+
+	// Belt-and-braces: if we somehow got here with the layer hidden
+	// (edge cases outside the End Session path, e.g. BP calls this
+	// helper directly), re-show it. Cheap no-op when already visible. - TripleA
+	if (PauseMenuStereoLayer && !PauseMenuStereoLayer->IsVisible())
+	{
+		PauseMenuStereoLayer->SetTexture(PauseMenuWidgetComp ? PauseMenuWidgetComp->GetRenderTarget() : nullptr);
+		PauseMenuStereoLayer->bLiveTexture = true;
+		PauseMenuStereoLayer->SetVisibility(true);
+		PauseMenuStereoLayer->MarkTextureForUpdate();
+	}
+}
+
+void AClearanceVROperatorPawn::HandleEndSessionReport(const FString& FilePath, int32 Score, float SessionTimeSeconds)
+{
+	UE_LOG(LogTemp, Log,
+		TEXT("[END-SESSION] HandleEndSessionReport fired. Score=%d Time=%.1f Path=%s"),
+		Score, SessionTimeSeconds, *FilePath);
+	EndSessionReportPath           = FilePath;
+	EndSessionReportScore          = Score;
+	EndSessionReportSessionSeconds = SessionTimeSeconds;
+	ShowEndSessionReportScreen();
+}
+
+int32 AClearanceVROperatorPawn::GetCurrentScreenOptionCount() const
+{
+	return (CurrentScreen == EPauseScreen::EndSessionReport) ? 2 : PauseMenuOptionCount;
+}
+
 void AClearanceVROperatorPawn::ApplySnapTurnStep()
 {
 	static const float Steps[] = { 30.f, 45.f, 90.f };
@@ -872,8 +988,13 @@ void AClearanceVROperatorPawn::HidePauseMenu()
 {
 	if (PauseMenuStereoLayer)
 	{
+		// Hide the layer but keep its texture reference alive - clearing
+		// the texture caused the HMD compositor to fully deactivate the
+		// layer, and it wouldn't reliably re-register on a subsequent
+		// SetVisibility(true) when the end-session report screen tried
+		// to show. Keeping the texture pointer live lets the compositor
+		// just toggle the layer visibility instead of tearing it down. - TripleA
 		PauseMenuStereoLayer->SetVisibility(false);
-		PauseMenuStereoLayer->SetTexture(nullptr);
 	}
 
 	// PauseMenuInstance is owned by PauseMenuWidgetComp - do NOT call
@@ -923,9 +1044,10 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		// FButtonStyle struct, so a fresh Normal/Hovered/Pressed TintColor
 		// wins outright and Neo's authored padding / brush / border settings
 		// are preserved via the GetStyle() copy. - TripleA
-		// Button names differ per screen. Both widgets are authored with
-		// exactly four buttons following the same top-to-bottom row order
-		// so the highlight logic below stays identical for both. - TripleA
+		// Button names differ per screen. Pause menu + options have four
+		// rows; end-session report has two (Restart / Exit). Highlight
+		// logic below iterates GetCurrentScreenOptionCount so the same
+		// loop drives all three screens. - TripleA
 		static const FName PauseMenuButtonNames[] = {
 			TEXT("Btn_Resume"),
 			TEXT("Btn_Options"),
@@ -938,9 +1060,20 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 			TEXT("Btn_RadioVolume"),
 			TEXT("Btn_Back")
 		};
-		const FName* ButtonNames = (CurrentScreen == EPauseScreen::Options)
-			? OptionsButtonNames
-			: PauseMenuButtonNames;
+		static const FName ReportButtonNames[] = {
+			TEXT("Btn_Restart"),
+			TEXT("Btn_ReportExit"),
+			NAME_None,
+			NAME_None
+		};
+		const FName* ButtonNames = nullptr;
+		switch (CurrentScreen)
+		{
+		case EPauseScreen::Options:          ButtonNames = OptionsButtonNames;   break;
+		case EPauseScreen::EndSessionReport: ButtonNames = ReportButtonNames;    break;
+		case EPauseScreen::PauseMenu:
+		default:                             ButtonNames = PauseMenuButtonNames; break;
+		}
 		// Regular selected background = amber (ATC caution) - contrasts
 		// with cyan button text. Destructive rows (END SESSION + EXIT
 		// TO MENU) use a deep crimson so their bright-red text stays
@@ -949,11 +1082,18 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		const FLinearColor DestructiveSelectedTint(0.40f, 0.05f, 0.05f, 1.f);
 		const FLinearColor DimTint               (0.08f, 0.15f, 0.20f, 1.f);
 
-		// Log-once flags so we can tell whether the loop is even seeing
-		// the buttons on the first tick after the menu opens. - TripleA
+		// Log-once-per-screen flag so we get a fresh scan output each
+		// time we swap between PauseMenu / Options / EndSessionReport,
+		// not just once for the very first screen. - TripleA
+		static EPauseScreen LastScannedScreen = EPauseScreen::PauseMenu;
 		static bool bLoggedButtonScan = false;
+		if (LastScannedScreen != CurrentScreen)
+		{
+			LastScannedScreen  = CurrentScreen;
+			bLoggedButtonScan  = false;
+		}
 
-		const int32 NumButtons = 4;
+		const int32 NumButtons = GetCurrentScreenOptionCount();
 		for (int32 i = 0; i < NumButtons; ++i)
 		{
 			UWidget* Found = PauseMenuInstance->GetWidgetFromName(ButtonNames[i]);
@@ -1021,6 +1161,50 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		}
 
 		bLoggedButtonScan = true;
+
+		// Push end-session report text straight to the widget's TextBlocks
+		// by name, instead of relying on a BP property binding on the
+		// Text field. The direct-push path makes C++ the single source
+		// of truth for these values and avoids the paint refresh
+		// depending on Slate binding re-evaluation timing under the
+		// stereo-layer render path. Neo can leave the TextBlocks with
+		// no binding at all - we overwrite the text every frame while
+		// the report screen is up. - TripleA
+		if (CurrentScreen == EPauseScreen::EndSessionReport)
+		{
+			// Fires ONCE per screen swap so we see whether the TextBlocks
+			// are even findable by name. If any log "NOT FOUND", Neo
+			// forgot to mark that TextBlock as a variable in the WBP. - TripleA
+			static EPauseScreen LastTextScanScreen = EPauseScreen::PauseMenu;
+			const bool bLogThisScan = (LastTextScanScreen != CurrentScreen);
+			LastTextScanScreen = CurrentScreen;
+
+			auto SetText = [this, bLogThisScan](const TCHAR* Name, const FString& Value)
+			{
+				UWidget* Found = PauseMenuInstance->GetWidgetFromName(FName(Name));
+				UTextBlock* T  = Cast<UTextBlock>(Found);
+				if (bLogThisScan)
+				{
+					UE_LOG(LogTemp, Log,
+						TEXT("[END-SESSION] TextScan '%s' -> found=%s cast=%s"),
+						Name,
+						Found ? *Found->GetClass()->GetName() : TEXT("NULL - widget not marked [var]?"),
+						T ? TEXT("UTextBlock OK") : TEXT("NOT A TEXTBLOCK"));
+				}
+				if (T) { T->SetText(FText::FromString(Value)); }
+			};
+
+			SetText(TEXT("Text_Score"),
+				FString::Printf(TEXT("SCORE: %d"), EndSessionReportScore));
+
+			const int32 Mins = FMath::FloorToInt(EndSessionReportSessionSeconds / 60.f);
+			const int32 Secs = FMath::FloorToInt(EndSessionReportSessionSeconds - Mins * 60.f);
+			SetText(TEXT("Text_Time"),
+				FString::Printf(TEXT("TIME: %d:%02d"), Mins, Secs));
+
+			SetText(TEXT("Text_AARPath"),
+				FString::Printf(TEXT("AAR: %s"), *EndSessionReportPath));
+		}
 
 		// Keep the stereo layer's texture pointer live in case the
 		// WidgetComponent recreated its render target (happens if
@@ -1173,17 +1357,17 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		{
 			Edge.bMenuScrollReady = true;
 		}
-		else if (Edge.bMenuScrollReady && PauseMenuOptionCount > 0)
+		else if (Edge.bMenuScrollReady && GetCurrentScreenOptionCount() > 0)
 		{
 			Edge.bMenuScrollReady = false;
 			// Stick UP (positive Y) = previous option, DOWN = next option.
 			// If it feels inverted in the headset just flip the sign here. - TripleA
+			const int32 Count = GetCurrentScreenOptionCount();
 			const int32 Dir = (StickY > 0.f) ? -1 : +1;
-			PauseMenuSelectedIndex =
-				(PauseMenuSelectedIndex + Dir + PauseMenuOptionCount) % PauseMenuOptionCount;
+			PauseMenuSelectedIndex = (PauseMenuSelectedIndex + Dir + Count) % Count;
 			UE_LOG(LogTemp, Log,
 				TEXT("[PAUSE] stick=%.2f dir=%d -> selected=%d/%d"),
-				StickY, Dir, PauseMenuSelectedIndex, PauseMenuOptionCount);
+				StickY, Dir, PauseMenuSelectedIndex, Count);
 		}
 	}
 

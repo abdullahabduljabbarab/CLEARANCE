@@ -736,6 +736,9 @@ void AClearanceOperatorPC::Server_EndSessionAndReport_Implementation()
 	// Server_InjectResetScenario RPC and ExitToMainMenu function library
 	// helper respectively. - TripleA
 	AClearanceSimulationController* C = FindSimController(GetWorld());
+	UE_LOG(LogTemp, Log,
+		TEXT("[END-SESSION] Server_EndSessionAndReport fired. SimController=%s"),
+		C ? *C->GetName() : TEXT("NULL"));
 	if (!C)
 	{
 		Client_ReceiveEndSessionReport(TEXT("(no SimController)"), 0, 0.f);
@@ -761,12 +764,28 @@ void AClearanceOperatorPC::Server_EndSessionAndReport_Implementation()
 	// on the modal reverses this via Server_InjectResetScenario. - TripleA
 	C->EndSession();
 
-	Client_ReceiveEndSessionReport(Path, Score, SessionSeconds);
+	// Deliver the report. If this PC is the local player (listen-server
+	// host / standalone), broadcast the delegate directly - Client_ RPCs
+	// aimed at a locally-owned controller can silently drop under some
+	// net configurations, whereas a plain Broadcast always fires. Remote
+	// clients still get the Client_ RPC path, which invokes Implementation
+	// -> Broadcast on their end. - TripleA
+	if (IsLocalController())
+	{
+		OnEndSessionReport.Broadcast(Path, Score, SessionSeconds);
+	}
+	else
+	{
+		Client_ReceiveEndSessionReport(Path, Score, SessionSeconds);
+	}
 }
 
 void AClearanceOperatorPC::Client_ReceiveEndSessionReport_Implementation(
 	const FString& FilePath, int32 Score, float SessionTimeSeconds)
 {
+	UE_LOG(LogTemp, Log,
+		TEXT("[END-SESSION] Client_ReceiveEndSessionReport landed. Score=%d Time=%.1f Path=%s BoundListeners=%d"),
+		Score, SessionTimeSeconds, *FilePath, OnEndSessionReport.IsBound() ? 1 : 0);
 	OnEndSessionReport.Broadcast(FilePath, Score, SessionTimeSeconds);
 }
 

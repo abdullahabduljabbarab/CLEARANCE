@@ -662,9 +662,9 @@ void AClearanceVROperatorPawn::TogglePauseMenu()
 		return;
 	}
 
-	// Bind the widget class + resolve the UUserWidget instance. WidgetComponent
-	// lazily constructs the widget the first time InitWidget runs; on
-	// subsequent shows we just reuse it. - TripleA
+	// Always open on the pause-menu screen, regardless of what was
+	// showing when the menu was last hidden. - TripleA
+	CurrentScreen = EPauseScreen::PauseMenu;
 	if (PauseMenuWidgetComp->GetWidgetClass() != PauseMenuWidgetClass)
 	{
 		PauseMenuWidgetComp->SetWidgetClass(PauseMenuWidgetClass);
@@ -702,13 +702,58 @@ void AClearanceVROperatorPawn::TogglePauseMenu()
 
 void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedIndex)
 {
-	// Widget row order (set PauseMenuOptionCount = 4 on the BP subclass):
+	// Dispatch routes through the CurrentScreen state - trigger presses
+	// on the pause menu do one thing, trigger presses on the options
+	// screen do another. Both screens share the same stereo layer +
+	// WidgetComponent, so the only visible difference is which widget
+	// class is bound. - TripleA
+	if (CurrentScreen == EPauseScreen::Options)
+	{
+		// Options widget row order:
+		//   0 = RECENTER VIEW    -> IXRTrackingSystem::ResetOrientationAndPosition
+		//   1 = SNAP TURN        -> cycle 30 / 45 / 90 deg
+		//   2 = RADIO VOLUME     -> cycle Low / Med / High
+		//   3 = BACK             -> return to pause menu screen
+		switch (SelectedIndex)
+		{
+		case 0:
+		{
+			if (GEngine && GEngine->XRSystem.IsValid())
+			{
+				GEngine->XRSystem->ResetOrientationAndPosition(0.f);
+			}
+			return;
+		}
+		case 1:
+		{
+			SnapTurnStepIndex = (SnapTurnStepIndex + 1) % 3;
+			ApplySnapTurnStep();
+			return;
+		}
+		case 2:
+		{
+			RadioVolumeStepIndex = (RadioVolumeStepIndex + 1) % 3;
+			ApplyRadioVolumeStep();
+			return;
+		}
+		case 3:
+		default:
+		{
+			// Back to the pause menu, land the highlight on OPTIONS row
+			// (index 1) so a second trigger press re-enters options
+			// without wading past Resume. - TripleA
+			ShowPauseMenuScreen();
+			PauseMenuSelectedIndex = 1;
+			return;
+		}
+		}
+	}
+
+	// PauseMenu screen row order:
 	//   0 = RESUME          -> HidePauseMenu
-	//   1 = OPTIONS         -> not implemented in VR yet, no-op with warn
+	//   1 = OPTIONS         -> swap widget to VROptions, land on row 0
 	//   2 = END SESSION     -> Server_EndSessionAndReport on the operator PC
 	//   3 = EXIT TO MENU    -> disable HMD + OpenLevel(LVL_MainMenu)
-	// Neo can override this event on BP_VROperatorPawn to change any row's
-	// action without a C++ change. - TripleA
 	switch (SelectedIndex)
 	{
 	case 0:
@@ -719,13 +764,13 @@ void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedI
 
 	case 1:
 	{
-		// Options in VR needs its own stereo-layer widget - the desktop
-		// WBP_Options doesn't render through the compositor path. Leaving
-		// this as a diagnostic no-op so an accidental confirm doesn't
-		// nuke the session. Override on BP if you wire an in-VR options
-		// screen. - TripleA
-		UE_LOG(LogTemp, Warning,
-			TEXT("[PAUSE] OPTIONS row confirmed but no VR options screen wired yet."));
+		if (!VROptionsWidgetClass)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[PAUSE] OPTIONS confirmed but VROptionsWidgetClass is not set on BP_VROperatorPawn."));
+			return;
+		}
+		ShowOptionsScreen();
 		return;
 	}
 
@@ -766,6 +811,47 @@ void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedI
 			/*bAbsolute=*/true);
 		return;
 	}
+	}
+}
+
+void AClearanceVROperatorPawn::ShowPauseMenuScreen()
+{
+	CurrentScreen = EPauseScreen::PauseMenu;
+	if (PauseMenuWidgetComp && PauseMenuWidgetClass)
+	{
+		PauseMenuWidgetComp->SetWidgetClass(PauseMenuWidgetClass);
+		PauseMenuInstance = Cast<UUserWidget>(PauseMenuWidgetComp->GetWidget());
+	}
+}
+
+void AClearanceVROperatorPawn::ShowOptionsScreen()
+{
+	CurrentScreen = EPauseScreen::Options;
+	PauseMenuSelectedIndex = 0;
+	if (PauseMenuWidgetComp && VROptionsWidgetClass)
+	{
+		PauseMenuWidgetComp->SetWidgetClass(VROptionsWidgetClass);
+		PauseMenuInstance = Cast<UUserWidget>(PauseMenuWidgetComp->GetWidget());
+	}
+}
+
+void AClearanceVROperatorPawn::ApplySnapTurnStep()
+{
+	static const float Steps[] = { 30.f, 45.f, 90.f };
+	const int32 Idx = FMath::Clamp(SnapTurnStepIndex, 0, 2);
+	SnapTurnDegrees = Steps[Idx];
+}
+
+void AClearanceVROperatorPawn::ApplyRadioVolumeStep()
+{
+	// au.MasterVolume is the same console variable the desktop options
+	// widget writes to - keeping the two options screens on the same
+	// underlying knob so a change made in one persists in the other. - TripleA
+	static const float Steps[] = { 0.3f, 0.6f, 1.0f };
+	const int32 Idx = FMath::Clamp(RadioVolumeStepIndex, 0, 2);
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		PC->ConsoleCommand(FString::Printf(TEXT("au.MasterVolume %.2f"), Steps[Idx]), /*bWriteToLog=*/false);
 	}
 }
 
@@ -837,12 +923,24 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		// FButtonStyle struct, so a fresh Normal/Hovered/Pressed TintColor
 		// wins outright and Neo's authored padding / brush / border settings
 		// are preserved via the GetStyle() copy. - TripleA
-		static const FName ButtonNames[] = {
+		// Button names differ per screen. Both widgets are authored with
+		// exactly four buttons following the same top-to-bottom row order
+		// so the highlight logic below stays identical for both. - TripleA
+		static const FName PauseMenuButtonNames[] = {
 			TEXT("Btn_Resume"),
 			TEXT("Btn_Options"),
 			TEXT("Btn_EndSession"),
 			TEXT("Btn_ExitToMenu")
 		};
+		static const FName OptionsButtonNames[] = {
+			TEXT("Btn_Recenter"),
+			TEXT("Btn_SnapTurn"),
+			TEXT("Btn_RadioVolume"),
+			TEXT("Btn_Back")
+		};
+		const FName* ButtonNames = (CurrentScreen == EPauseScreen::Options)
+			? OptionsButtonNames
+			: PauseMenuButtonNames;
 		// Regular selected background = amber (ATC caution) - contrasts
 		// with cyan button text. Destructive rows (END SESSION + EXIT
 		// TO MENU) use a deep crimson so their bright-red text stays
@@ -855,7 +953,8 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		// the buttons on the first tick after the menu opens. - TripleA
 		static bool bLoggedButtonScan = false;
 
-		for (int32 i = 0; i < UE_ARRAY_COUNT(ButtonNames); ++i)
+		const int32 NumButtons = 4;
+		for (int32 i = 0; i < NumButtons; ++i)
 		{
 			UWidget* Found = PauseMenuInstance->GetWidgetFromName(ButtonNames[i]);
 			UButton* Btn   = Cast<UButton>(Found);
@@ -871,8 +970,11 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 
 			if (!Btn) { continue; }
 
-			const bool  bSelected    = (i == PauseMenuSelectedIndex);
-			const bool  bDestructive = (i >= 2);   // 2 = END SESSION, 3 = EXIT TO MENU
+			// Only the pause menu has destructive rows (End Session, Exit).
+			// Options screen rows are all non-destructive - even Back just
+			// pops the menu state, doesn't destroy anything. - TripleA
+			const bool bSelected    = (i == PauseMenuSelectedIndex);
+			const bool bDestructive = (CurrentScreen == EPauseScreen::PauseMenu) && (i >= 2);
 			const FLinearColor Tint = bSelected
 				? (bDestructive ? DestructiveSelectedTint : SelectedTint)
 				: DimTint;

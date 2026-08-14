@@ -174,6 +174,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Pause Menu")
 	TSubclassOf<UUserWidget> PauseMenuWidgetClass;
 
+	// Widget class for the in-VR options screen shown when the OPTIONS
+	// row is confirmed. Set to WBP_VROptions on the BP subclass. Same
+	// stereo-layer pipeline as the main pause menu - we just swap the
+	// UWidgetComponent's widget class in place. - TripleA
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Pause Menu")
+	TSubclassOf<UUserWidget> VROptionsWidgetClass;
+
 	// Distance in front of the HMD where the pause menu WidgetComponent
 	// spawns. Default 150 = comfortable arm's length. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Pause Menu")
@@ -236,6 +243,37 @@ public:
 	UFUNCTION(BlueprintNativeEvent, Category = "VR|Pause Menu")
 	void OnPauseMenuConfirm(int32 SelectedIndex);
 	virtual void OnPauseMenuConfirm_Implementation(int32 SelectedIndex);
+
+	// Which screen the pause pipeline is currently displaying. Drives the
+	// button-name array used by the highlight loop and the confirm
+	// dispatch. Both screens share the same UWidgetComponent + stereo
+	// layer; only the widget class swaps. - TripleA
+	enum class EPauseScreen : uint8 { PauseMenu, Options };
+	EPauseScreen CurrentScreen = EPauseScreen::PauseMenu;
+
+	// Discrete-step state for cyclable options. Snap turn steps through
+	// 30 / 45 / 90 deg, radio volume steps Low / Med / High. Widget
+	// binds each row's text/label to the getters below via a Switch on
+	// Int to display the current value. - TripleA
+	UPROPERTY(BlueprintReadOnly, Transient, Category = "VR|Pause Menu")
+	int32 SnapTurnStepIndex = 1;   // default 45 deg
+
+	UPROPERTY(BlueprintReadOnly, Transient, Category = "VR|Pause Menu")
+	int32 RadioVolumeStepIndex = 2; // default High
+
+	UFUNCTION(BlueprintPure, Category = "VR|Pause Menu")
+	int32 GetSnapTurnStepIndex() const { return SnapTurnStepIndex; }
+
+	UFUNCTION(BlueprintPure, Category = "VR|Pause Menu")
+	int32 GetRadioVolumeStepIndex() const { return RadioVolumeStepIndex; }
+
+private:
+	void ShowPauseMenuScreen();
+	void ShowOptionsScreen();
+	void ApplySnapTurnStep();
+	void ApplyRadioVolumeStep();
+
+public:
 
 	// Optional visual laser mesh slots. Neo assigns a thin cyan cylinder
 	// mesh in the BP subclass. Auto-scale-Z per tick to end at the widget

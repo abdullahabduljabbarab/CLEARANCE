@@ -32,6 +32,7 @@
 #include "Kismet/KismetRenderingLibrary.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
+#include "HeadMountedDisplayFunctionLibrary.h"
 #include "Components/Button.h"
 #include "Components/TextBlock.h"
 #include "Styling/SlateTypes.h"
@@ -860,10 +861,15 @@ void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedI
 		// then OpenLevel to the main menu map. Safe no-op if HMD wasn't
 		// already enabled. Mirrors UClearanceMenuFunctionLibrary::ExitToMainMenu
 		// without pulling the game module in as a plugin dependency. - TripleA
-		if (GEngine && GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice())
-		{
-			GEngine->XRSystem->GetHMDDevice()->EnableHMD(false);
-		}
+		// Force the HMD off before OpenLevel so the flat main menu renders
+		// on the desktop monitor, not stereoscopically. Same call the
+		// desktop UClearanceMenuFunctionLibrary::ExitToMainMenu uses -
+		// UHeadMountedDisplayFunctionLibrary::EnableHMD is the high-level
+		// path that also stops stereo rendering, drops OpenXR session
+		// focus and returns spectator screen control to the monitor.
+		// A raw GetHMDDevice()->EnableHMD(false) call skipped some of
+		// those steps and left the main menu stuck in stereo. - TripleA
+		UHeadMountedDisplayFunctionLibrary::EnableHMD(false);
 		HidePauseMenu();
 		UGameplayStatics::OpenLevel(
 			this,

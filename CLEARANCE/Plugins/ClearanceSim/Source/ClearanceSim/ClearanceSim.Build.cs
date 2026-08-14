@@ -28,6 +28,7 @@ public class ClearanceSim : ModuleRules
 			"SlateCore",          // FCanvasItem / FGeometry types the widget uses
 			"RenderCore",         // BeginCleanup + FWidgetRenderer deferred-cleanup path
 			"HeadMountedDisplay", // MotionControllerComponent + IXRTrackingSystem for the VR operator pawn
+			"XRBase",             // UHeadMountedDisplayFunctionLibrary::EnableHMD (moved out of HeadMountedDisplay in UE 5.7)
 			"ClearanceDIS",       // Pure-C++ wire format for DIS PDU serialisation / parsing
 			"ClearanceDDS",       // Fast DDS pub/sub middleware for real-time telemetry
 			"ClearanceRTI",       // RTI Connext DDS pub/sub middleware - third wire alongside DDS

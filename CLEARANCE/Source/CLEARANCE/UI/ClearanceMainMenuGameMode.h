@@ -16,4 +16,6 @@ class CLEARANCE_API AClearanceMainMenuGameMode : public AGameModeBase
 
 public:
 	AClearanceMainMenuGameMode();
+
+	virtual void BeginPlay() override;
 };

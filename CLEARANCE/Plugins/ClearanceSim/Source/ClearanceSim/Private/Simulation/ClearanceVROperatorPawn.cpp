@@ -829,12 +829,6 @@ void AClearanceVROperatorPawn::OnPauseMenuConfirm_Implementation(int32 SelectedI
 		// twin (if any) surfaces the modal. - TripleA
 		APlayerController* PC = Cast<APlayerController>(GetController());
 		AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(PC);
-		UE_LOG(LogTemp, Log,
-			TEXT("[PAUSE] END SESSION confirmed. PC=%s OpPC=%s Role=%d NetMode=%d"),
-			PC   ? *PC->GetClass()->GetName() : TEXT("NULL"),
-			OpPC ? TEXT("OK") : TEXT("CAST FAILED"),
-			(int32)GetLocalRole(),
-			(int32)GetNetMode());
 		// Order matters. Server RPC on listen-server host invokes
 		// synchronously - HandleEndSessionReport runs INSIDE the
 		// Server_EndSessionAndReport call. If we set placeholders after
@@ -903,11 +897,6 @@ void AClearanceVROperatorPawn::ShowOptionsScreen()
 
 void AClearanceVROperatorPawn::ShowEndSessionReportScreen()
 {
-	UE_LOG(LogTemp, Log,
-		TEXT("[END-SESSION] ShowEndSessionReportScreen. WidgetClass=%s WidgetComp=%s StereoLayer=%s"),
-		VREndSessionReportWidgetClass ? *VREndSessionReportWidgetClass->GetName() : TEXT("NULL"),
-		PauseMenuWidgetComp   ? TEXT("OK") : TEXT("NULL"),
-		PauseMenuStereoLayer  ? TEXT("OK") : TEXT("NULL"));
 	if (!VREndSessionReportWidgetClass)
 	{
 		UE_LOG(LogTemp, Warning,
@@ -943,9 +932,6 @@ void AClearanceVROperatorPawn::ShowEndSessionReportScreen()
 
 void AClearanceVROperatorPawn::HandleEndSessionReport(const FString& FilePath, int32 Score, float SessionTimeSeconds)
 {
-	UE_LOG(LogTemp, Log,
-		TEXT("[END-SESSION] HandleEndSessionReport fired. Score=%d Time=%.1f Path=%s"),
-		Score, SessionTimeSeconds, *FilePath);
 	EndSessionReportPath           = FilePath;
 	EndSessionReportScore          = Score;
 	EndSessionReportSessionSeconds = SessionTimeSeconds;
@@ -1088,32 +1074,10 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		const FLinearColor DestructiveSelectedTint(0.40f, 0.05f, 0.05f, 1.f);
 		const FLinearColor DimTint               (0.08f, 0.15f, 0.20f, 1.f);
 
-		// Log-once-per-screen flag so we get a fresh scan output each
-		// time we swap between PauseMenu / Options / EndSessionReport,
-		// not just once for the very first screen. - TripleA
-		static EPauseScreen LastScannedScreen = EPauseScreen::PauseMenu;
-		static bool bLoggedButtonScan = false;
-		if (LastScannedScreen != CurrentScreen)
-		{
-			LastScannedScreen  = CurrentScreen;
-			bLoggedButtonScan  = false;
-		}
-
 		const int32 NumButtons = GetCurrentScreenOptionCount();
 		for (int32 i = 0; i < NumButtons; ++i)
 		{
-			UWidget* Found = PauseMenuInstance->GetWidgetFromName(ButtonNames[i]);
-			UButton* Btn   = Cast<UButton>(Found);
-
-			if (!bLoggedButtonScan)
-			{
-				UE_LOG(LogTemp, Log,
-					TEXT("[PAUSE] Scan '%s' -> found=%s cast=%s"),
-					*ButtonNames[i].ToString(),
-					Found ? *Found->GetClass()->GetName() : TEXT("NULL"),
-					Btn   ? TEXT("UButton OK") : TEXT("NOT A BUTTON"));
-			}
-
+			UButton* Btn = Cast<UButton>(PauseMenuInstance->GetWidgetFromName(ButtonNames[i]));
 			if (!Btn) { continue; }
 
 			// Only the pause menu has destructive rows (End Session, Exit).
@@ -1166,8 +1130,6 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 			Btn->InvalidateLayoutAndVolatility();
 		}
 
-		bLoggedButtonScan = true;
-
 		// Push end-session report text straight to the widget's TextBlocks
 		// by name, instead of relying on a BP property binding on the
 		// Text field. The direct-push path makes C++ the single source
@@ -1178,26 +1140,12 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		// the report screen is up. - TripleA
 		if (CurrentScreen == EPauseScreen::EndSessionReport)
 		{
-			// Fires ONCE per screen swap so we see whether the TextBlocks
-			// are even findable by name. If any log "NOT FOUND", Neo
-			// forgot to mark that TextBlock as a variable in the WBP. - TripleA
-			static EPauseScreen LastTextScanScreen = EPauseScreen::PauseMenu;
-			const bool bLogThisScan = (LastTextScanScreen != CurrentScreen);
-			LastTextScanScreen = CurrentScreen;
-
-			auto SetText = [this, bLogThisScan](const TCHAR* Name, const FString& Value)
+			auto SetText = [this](const TCHAR* Name, const FString& Value)
 			{
-				UWidget* Found = PauseMenuInstance->GetWidgetFromName(FName(Name));
-				UTextBlock* T  = Cast<UTextBlock>(Found);
-				if (bLogThisScan)
+				if (UTextBlock* T = Cast<UTextBlock>(PauseMenuInstance->GetWidgetFromName(FName(Name))))
 				{
-					UE_LOG(LogTemp, Log,
-						TEXT("[END-SESSION] TextScan '%s' -> found=%s cast=%s"),
-						Name,
-						Found ? *Found->GetClass()->GetName() : TEXT("NULL - widget not marked [var]?"),
-						T ? TEXT("UTextBlock OK") : TEXT("NOT A TEXTBLOCK"));
+					T->SetText(FText::FromString(Value));
 				}
-				if (T) { T->SetText(FText::FromString(Value)); }
 			};
 
 			SetText(TEXT("Text_Score"),
@@ -1219,18 +1167,6 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		if (PauseMenuStereoLayer)
 		{
 			UTextureRenderTarget2D* RT = PauseMenuWidgetComp->GetRenderTarget();
-
-			static bool bLoggedRT = false;
-			if (!bLoggedRT)
-			{
-				UE_LOG(LogTemp, Log,
-					TEXT("[PAUSE] WidgetComp RT=%s  StereoLayer Texture=%s  StereoLayer Vis=%d"),
-					RT ? *RT->GetName() : TEXT("NULL"),
-					PauseMenuStereoLayer->GetTexture() ? *PauseMenuStereoLayer->GetTexture()->GetName() : TEXT("NULL"),
-					PauseMenuStereoLayer->IsVisible() ? 1 : 0);
-				if (RT) { bLoggedRT = true; }
-			}
-
 			if (RT && PauseMenuStereoLayer->GetTexture() != RT)
 			{
 				PauseMenuStereoLayer->SetTexture(RT);
@@ -1371,9 +1307,6 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 			const int32 Count = GetCurrentScreenOptionCount();
 			const int32 Dir = (StickY > 0.f) ? -1 : +1;
 			PauseMenuSelectedIndex = (PauseMenuSelectedIndex + Dir + Count) % Count;
-			UE_LOG(LogTemp, Log,
-				TEXT("[PAUSE] stick=%.2f dir=%d -> selected=%d/%d"),
-				StickY, Dir, PauseMenuSelectedIndex, Count);
 		}
 	}
 

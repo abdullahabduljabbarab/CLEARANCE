@@ -44,6 +44,7 @@ struct CLEARANCESIM_API FInstructorAircraftRow
 	UPROPERTY(BlueprintReadOnly) float Speed = 0.f;
 	UPROPERTY(BlueprintReadOnly) float TargetSpeed = 0.f;
 	UPROPERTY(BlueprintReadOnly) int32 SquawkCode = 0;
+	UPROPERTY(BlueprintReadOnly) ECommsFrequency AssignedFrequency = ECommsFrequency::Approach;
 
 	UPROPERTY(BlueprintReadOnly) bool bJammingOn = false;
 	UPROPERTY(BlueprintReadOnly) bool bUnderGCIControl = false;

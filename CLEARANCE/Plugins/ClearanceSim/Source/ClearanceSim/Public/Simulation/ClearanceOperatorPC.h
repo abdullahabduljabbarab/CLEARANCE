@@ -63,6 +63,14 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectClassify(FName Callsign, EThreatClass NewClass);
 
+	// IFF-style interrogate: fires an aircraft-voice TTS reading the
+	// track's squawk + emergency state. Diegetic response the operator
+	// hears over the radio, same channel as normal aircraft chatter.
+	// Wired to the VR strip monitor's INT button and available as a
+	// clearance.* console command for desktop testing. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
+	void Server_InjectInterrogate(FName Callsign);
+
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectScramble(FName BanditCallsign);
 

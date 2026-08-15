@@ -96,18 +96,32 @@ void AClearanceOperatorPC::BeginPlay()
 		(GetLocalRole() == ROLE_Authority ? TEXT("Authority") : TEXT("Non-Authority")),
 		bIsInstructor ? TEXT("true") : TEXT("false"));
 
-	if (!bIsInstructor) { return; }
-
+	// Always construct the InstructorPanel object, regardless of role.
+	// It's the single source of truth for the FInstructorAircraftRow data
+	// that any consumer needs (desktop instructor UI, VR operator strip
+	// monitor, replay viewer, etc). VR operator mode just skips the
+	// viewport add + input mode + pawn destruction below - the object
+	// still exists off-screen so callers can pull GetAircraftRows() from
+	// it without a live UI. - TripleA
 	if (InstructorPanelClass.IsNull())
 	{
 		UE_LOG(LogTemp, Warning,
-			TEXT("[ClearanceOperatorPC] Instructor role selected but InstructorPanelClass is null "
-			     "- panel will not spawn. Set it on the BP subclass of AClearanceOperatorPC."));
+			TEXT("[ClearanceOperatorPC] InstructorPanelClass is null - panel will not spawn. "
+			     "Set it on the BP subclass of AClearanceOperatorPC."));
 		return;
 	}
 
 	UClass* PanelClass = InstructorPanelClass.LoadSynchronous();
 	if (!PanelClass) { return; }
+
+	InstructorPanel = CreateWidget<UClearanceInstructorPanel>(this, PanelClass);
+	if (!InstructorPanel) { return; }
+
+	// VR operator: keep the panel object alive for its data helpers
+	// (GetAircraftRows for the strip monitor) but don't add it to the
+	// viewport or repossess anything. Skip the rest of the instructor
+	// UI setup entirely. - TripleA
+	if (!bIsInstructor) { return; }
 
 	// Instructor-side clients (pure instructor client, LAN instructor peer,
 	// or combined-mode Player 1) don't need a pawn - destroy it so its
@@ -121,8 +135,6 @@ void AClearanceOperatorPC::BeginPlay()
 		P->Destroy();
 	}
 
-	InstructorPanel = CreateWidget<UClearanceInstructorPanel>(this, PanelClass);
-	if (InstructorPanel)
 	{
 		InstructorPanel->AddToViewport();
 
@@ -273,6 +285,53 @@ void AClearanceOperatorPC::Server_InjectClassify_Implementation(FName Callsign, 
 		// bAsInstructor=false and DO score. - TripleA
 		C->ClassifyAircraft(Callsign, NewClass, /*bAsInstructor=*/true);
 	}
+}
+
+// --- Interrogate (IFF-style read of squawk + emergency state) --------------
+
+bool AClearanceOperatorPC::Server_InjectInterrogate_Validate(FName Callsign)
+{
+	return true;
+}
+void AClearanceOperatorPC::Server_InjectInterrogate_Implementation(FName Callsign)
+{
+	if (Callsign == NAME_None) { return; }
+	AClearanceSimulationController* C = FindSimController(GetWorld());
+	if (!C || !C->GetAirspaceManager()) { return; }
+
+	const FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
+	if (S.Callsign == NAME_None) { return; }   // aircraft no longer exists
+
+	// Build a compact IFF response: squawk code + emergency posture. Real
+	// interrogation returns mode-3 identity + mode-C altitude; the strip's
+	// alt column already covers mode-C so this line focuses on the mode-3
+	// identity + any active emergency squawk. - TripleA
+	FString Response;
+	switch (S.ActiveEmergency)
+	{
+	case EEmergencyType::GeneralMayday:
+		Response = FString::Printf(TEXT("SQUAWK 7700, MAYDAY, MAYDAY, MAYDAY"));
+		break;
+	case EEmergencyType::CommsFailure:
+		Response = FString::Printf(TEXT("SQUAWK 7600, COMMS FAILURE"));
+		break;
+	case EEmergencyType::Hijack:
+		Response = FString::Printf(TEXT("SQUAWK 7500, UNLAWFUL INTERFERENCE"));
+		break;
+	case EEmergencyType::FuelLow:
+		Response = FString::Printf(TEXT("SQUAWK %d, FUEL EMERGENCY, %.1f MINUTES REMAINING"),
+			S.SquawkCode, FMath::Max(0.f, S.FuelRemainingMinutes));
+		break;
+	default:
+		Response = FString::Printf(TEXT("SQUAWK %d, MODE 3 %s, NO EMERGENCY"),
+			S.SquawkCode, ThreatClassLabel(S.TrueAffiliation));
+		break;
+	}
+
+	C->LogTranscriptLine(EClearanceCommsRole::Instructor, Callsign,
+		FString::Printf(TEXT("Interrogated %s"), *Callsign.ToString()));
+	C->LogTranscriptLine(EClearanceCommsRole::Pilot, Callsign, Response);
+	C->Multicast_PlayTTS(Callsign, Response, /*VoiceTag=*/TEXT(""), /*bPanic=*/false);
 }
 
 // --- Scramble --------------------------------------------------------------

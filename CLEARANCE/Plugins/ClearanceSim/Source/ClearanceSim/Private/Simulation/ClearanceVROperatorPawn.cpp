@@ -20,6 +20,11 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Simulation/ClearanceSimulationController.h"
 #include "UI/ClearanceInstructorPanel.h"
+#include "Components/PanelWidget.h"
+#include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
+#include "Components/Border.h"
+#include "Blueprint/WidgetTree.h"
 #include "Blueprint/UserWidget.h"
 #include "Framework/Application/SlateApplication.h"
 #include "TimerManager.h"
@@ -243,6 +248,12 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	PauseMenuWidgetComp->SetRelativeScale3D(FVector(0.1f));
 	PauseMenuWidgetComp->SetTwoSided(true);
 	PauseMenuWidgetComp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	// Operator strip monitor: lives on a diegetic BP_Monitor actor in the
+	// tower level (replaces the original emergency monitor). No pawn-side
+	// components needed - the monitor's own WidgetComponent hosts the
+	// strip widget, and the widget calls back into the pawn helpers
+	// (GetAircraftRowsForStrip / Strip*) for data + button dispatch. - TripleA
 }
 
 void AClearanceVROperatorPawn::BeginPlay()
@@ -308,6 +319,10 @@ void AClearanceVROperatorPawn::BeginPlay()
 		// without leaving VR. - TripleA
 		OpPC->OnEndSessionReport.AddDynamic(this, &AClearanceVROperatorPawn::HandleEndSessionReport);
 	}
+
+	// (Operator strip monitor is a BP_Monitor actor in the level, not a
+	// pawn component - no init needed here. Widget calls the pawn's
+	// Strip* helpers directly via BP.) - TripleA
 
 	FInputModeGameOnly GameMode;
 	PC->SetInputMode(GameMode);
@@ -1001,6 +1016,329 @@ void AClearanceVROperatorPawn::HidePauseMenu()
 				UGameplayStatics::GetActorOfClass(World, AClearanceSimulationController::StaticClass())))
 		{
 			SC->ResumeSession();
+		}
+	}
+}
+
+// --- Operator strip monitor helpers ----------------------------------------
+
+TArray<FInstructorAircraftRow> AClearanceVROperatorPawn::GetAircraftRowsForStrip() const
+{
+	TArray<FInstructorAircraftRow> Rows;
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC) { return Rows; }
+	AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(PC);
+	if (!OpPC) { return Rows; }
+	UClearanceInstructorPanel* Panel = OpPC->GetInstructorPanel();
+	if (!Panel) { return Rows; }
+	return Panel->GetAircraftRows();
+}
+
+void AClearanceVROperatorPawn::StripCycleThreatClass(FName Callsign)
+{
+	if (Callsign == NAME_None) { return; }
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC) { return; }
+	AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(PC);
+	if (!OpPC) { return; }
+	UClearanceInstructorPanel* Panel = OpPC->GetInstructorPanel();
+	if (!Panel) { return; }
+
+	// Find the current classification so we can advance to the next one.
+	// Row build already resolves the operator-side classification (which
+	// respects Hijack -> Hostile view override), so no separate live-state
+	// lookup is needed. Cycle order F -> H -> N -> U -> F. - TripleA
+	const TArray<FInstructorAircraftRow> Rows = Panel->GetAircraftRows();
+	EThreatClass Cur = EThreatClass::Unknown;
+	for (const FInstructorAircraftRow& R : Rows)
+	{
+		if (R.Callsign == Callsign) { Cur = R.OperatorClassification; break; }
+	}
+	EThreatClass Next = EThreatClass::Friendly;
+	switch (Cur)
+	{
+	case EThreatClass::Friendly: Next = EThreatClass::Hostile;  break;
+	case EThreatClass::Hostile:  Next = EThreatClass::Neutral;  break;
+	case EThreatClass::Neutral:  Next = EThreatClass::Unknown;  break;
+	case EThreatClass::Unknown:  Next = EThreatClass::Friendly; break;
+	default:                     Next = EThreatClass::Friendly; break;
+	}
+	OpPC->Server_InjectClassify(Callsign, Next);
+}
+
+void AClearanceVROperatorPawn::StripInterrogate(FName Callsign)
+{
+	if (Callsign == NAME_None) { return; }
+	if (AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(GetController()))
+	{
+		OpPC->Server_InjectInterrogate(Callsign);
+	}
+}
+
+void AClearanceVROperatorPawn::StripAckEmergency(FName Callsign)
+{
+	if (Callsign == NAME_None) { return; }
+	if (AClearanceOperatorPC* OpPC = Cast<AClearanceOperatorPC>(GetController()))
+	{
+		OpPC->Server_InjectClearEmergency(Callsign);
+	}
+}
+
+static constexpr int32 kStripRowPoolSize = 20;
+
+// Colour palette shared across all strip rows. - TripleA
+static const FLinearColor kStripBgNormal   (0.03f, 0.06f, 0.08f, 0.85f);
+static const FLinearColor kStripBgEmergency(0.40f, 0.05f, 0.05f, 0.95f);
+static const FLinearColor kStripTextDefault(0.85f, 0.90f, 0.95f, 1.f);
+static const FLinearColor kStripTextEmergency(1.f, 0.35f, 0.35f, 1.f);
+static const FLinearColor kStripTextAmber    (1.f, 0.65f, 0.f,   1.f);
+static const FLinearColor kStripTextCyan     (0.20f, 0.85f, 1.0f, 1.f);
+static const FLinearColor kStripTextGreen    (0.20f, 0.90f, 0.30f, 1.f);
+static const FLinearColor kStripTextRed      (0.95f, 0.25f, 0.25f, 1.f);
+
+static const TCHAR* StripFreqLabel(ECommsFrequency F)
+{
+	switch (F)
+	{
+	case ECommsFrequency::Tower:     return TEXT("TWR");
+	case ECommsFrequency::Approach:  return TEXT("APP");
+	case ECommsFrequency::Emergency: return TEXT("EMRG");
+	case ECommsFrequency::Guard:     return TEXT("GRD");
+	default:                         return TEXT("---");
+	}
+}
+
+static const TCHAR* StripThreatSymbol(EThreatClass T)
+{
+	switch (T)
+	{
+	case EThreatClass::Friendly: return TEXT("▭");   // rectangle
+	case EThreatClass::Hostile:  return TEXT("◆");   // diamond
+	case EThreatClass::Unknown:  return TEXT("⬡");   // hexagon
+	case EThreatClass::Neutral:  return TEXT("◻");   // square
+	default:                     return TEXT("?");
+	}
+}
+
+static FLinearColor StripThreatColor(EThreatClass T)
+{
+	switch (T)
+	{
+	case EThreatClass::Friendly: return kStripTextCyan;
+	case EThreatClass::Hostile:  return kStripTextRed;
+	case EThreatClass::Unknown:  return kStripTextAmber;
+	case EThreatClass::Neutral:  return kStripTextGreen;
+	default:                     return kStripTextDefault;
+	}
+}
+
+FStripRowRefs AClearanceVROperatorPawn::BuildStripRow(UPanelWidget* Container, int32 RowIndex)
+{
+	FStripRowRefs Refs;
+	if (!Container) { return Refs; }
+
+	// WidgetTree ownership: use the widget hosting the Container so the
+	// new widgets are properly parented in the WBP's tree and rendered
+	// by the same WidgetComponent. - TripleA
+	UUserWidget* HostWidget = Container->GetTypedOuter<UUserWidget>();
+	if (!HostWidget) { return Refs; }
+
+	auto MakeName = [RowIndex](const TCHAR* Suffix)
+	{
+		return FName(*FString::Printf(TEXT("Strip_Row%d_%s"), RowIndex, Suffix));
+	};
+
+	// NewObject with the host UUserWidget as outer, not WidgetTree->
+	// ConstructWidget: the latter is the design-time construction path
+	// UMG uses when compiling a WBP, and in UE 5.7 with Substrate the
+	// resulting widgets don't get picked up by the live Slate hierarchy
+	// the world-space WidgetComponent rasterizes. Plain NewObject +
+	// AddChild is the correct runtime path. - TripleA
+	Refs.Bg = NewObject<UBorder>(HostWidget, MakeName(TEXT("Bg")));
+	Refs.Bg->SetPadding(FMargin(6.f, 3.f));
+	Refs.Bg->SetBrushColor(kStripBgNormal);
+
+	Refs.Root = NewObject<UHorizontalBox>(HostWidget, MakeName(TEXT("HBox")));
+	Refs.Bg->SetContent(Refs.Root);
+
+	auto MakeText = [&](const TCHAR* Suffix, float FillWidth)
+	{
+		UTextBlock* T = NewObject<UTextBlock>(HostWidget, MakeName(Suffix));
+		T->SetColorAndOpacity(FSlateColor(kStripTextDefault));
+		UHorizontalBoxSlot* Slot = Refs.Root->AddChildToHorizontalBox(T);
+		if (Slot)
+		{
+			FSlateChildSize Size;
+			Size.SizeRule = ESlateSizeRule::Fill;
+			Size.Value    = FillWidth;
+			Slot->SetSize(Size);
+			Slot->SetPadding(FMargin(4.f, 0.f));
+			Slot->SetVerticalAlignment(VAlign_Center);
+		}
+		return T;
+	};
+
+	auto MakeButton = [&](const TCHAR* Suffix, const FString& Label)
+	{
+		UButton* B = NewObject<UButton>(HostWidget, MakeName(Suffix));
+		UTextBlock* LabelTxt = NewObject<UTextBlock>(HostWidget,
+			MakeName(*FString::Printf(TEXT("%sLbl"), Suffix)));
+		LabelTxt->SetText(FText::FromString(Label));
+		LabelTxt->SetColorAndOpacity(FSlateColor(kStripTextDefault));
+		B->AddChild(LabelTxt);
+		UHorizontalBoxSlot* Slot = Refs.Root->AddChildToHorizontalBox(B);
+		if (Slot)
+		{
+			Slot->SetPadding(FMargin(2.f, 0.f));
+			Slot->SetVerticalAlignment(VAlign_Center);
+		}
+		return B;
+	};
+
+	// Fill-widths tuned so callsign + alt + hdg get the most space,
+	// codes and buttons stay compact. - TripleA
+	Refs.Text_Callsign  = MakeText(TEXT("Callsign"),  2.0f);
+	Refs.Text_Freq      = MakeText(TEXT("Freq"),      0.8f);
+	Refs.Text_Emergency = MakeText(TEXT("Emergency"), 1.5f);
+	Refs.Text_Timer     = MakeText(TEXT("Timer"),     1.0f);
+	Refs.Text_Alt       = MakeText(TEXT("Alt"),       1.2f);
+	Refs.Text_Hdg       = MakeText(TEXT("Hdg"),       1.2f);
+	Refs.Btn_Threat     = MakeButton(TEXT("Threat"), TEXT("T"));
+	Refs.Btn_Int        = MakeButton(TEXT("Int"),    TEXT("I"));
+	Refs.Btn_Ack        = MakeButton(TEXT("Ack"),    TEXT("A"));
+
+	Container->AddChild(Refs.Bg);
+	Refs.Bg->SetVisibility(ESlateVisibility::Collapsed);
+	return Refs;
+}
+
+void AClearanceVROperatorPawn::UpdateStripRow(FStripRowRefs& Refs, const FInstructorAircraftRow& Data)
+{
+	if (!Refs.Bg) { return; }
+	Refs.BoundCallsign = Data.Callsign;
+
+	const bool bEmergency = (Data.ActiveEmergency != EEmergencyType::None);
+	Refs.Bg->SetBrushColor(bEmergency ? kStripBgEmergency : kStripBgNormal);
+
+	if (Refs.Text_Callsign)
+	{
+		Refs.Text_Callsign->SetText(FText::FromString(
+			FString::Printf(TEXT("%s %s"), StripThreatSymbol(Data.OperatorClassification), *Data.Callsign.ToString())));
+		Refs.Text_Callsign->SetColorAndOpacity(FSlateColor(StripThreatColor(Data.OperatorClassification)));
+	}
+
+	if (Refs.Text_Freq)
+	{
+		Refs.Text_Freq->SetText(FText::FromString(StripFreqLabel(Data.AssignedFrequency)));
+	}
+
+	if (Refs.Text_Emergency)
+	{
+		FString Label;
+		switch (Data.ActiveEmergency)
+		{
+		case EEmergencyType::GeneralMayday: Label = TEXT("7700 MAYDAY"); break;
+		case EEmergencyType::CommsFailure:  Label = TEXT("7600 NORDO");  break;
+		case EEmergencyType::Hijack:        Label = TEXT("7500 HIJACK"); break;
+		case EEmergencyType::FuelLow:       Label = TEXT("FUEL");        break;
+		default: break;
+		}
+		Refs.Text_Emergency->SetText(FText::FromString(Label));
+		Refs.Text_Emergency->SetColorAndOpacity(FSlateColor(bEmergency ? kStripTextEmergency : kStripTextDefault));
+	}
+
+	if (Refs.Text_Timer)
+	{
+		if (Data.EmergencyTimerMinutes >= 0.f)
+		{
+			const int32 TotalSecs = FMath::Max(0, FMath::FloorToInt(Data.EmergencyTimerMinutes * 60.f));
+			const int32 Mins = TotalSecs / 60;
+			const int32 Secs = TotalSecs % 60;
+			Refs.Text_Timer->SetText(FText::FromString(FString::Printf(TEXT("%d:%02d"), Mins, Secs)));
+			// Amber < 3 min, red < 1 min. - TripleA
+			FLinearColor C = kStripTextDefault;
+			if      (Data.EmergencyTimerMinutes < 1.f) { C = kStripTextRed; }
+			else if (Data.EmergencyTimerMinutes < 3.f) { C = kStripTextAmber; }
+			Refs.Text_Timer->SetColorAndOpacity(FSlateColor(C));
+		}
+		else
+		{
+			Refs.Text_Timer->SetText(FText::GetEmpty());
+		}
+	}
+
+	if (Refs.Text_Alt)
+	{
+		Refs.Text_Alt->SetText(FText::FromString(FString::Printf(TEXT("FL%03d/FL%03d"),
+			FMath::RoundToInt(Data.Altitude / 100.f), FMath::RoundToInt(Data.TargetAltitude / 100.f))));
+	}
+	if (Refs.Text_Hdg)
+	{
+		Refs.Text_Hdg->SetText(FText::FromString(FString::Printf(TEXT("%03d°/%03d°"),
+			FMath::RoundToInt(Data.Heading), FMath::RoundToInt(Data.TargetHeading))));
+	}
+}
+
+void AClearanceVROperatorPawn::RefreshStripRows(UPanelWidget* Container, UWidgetComponent* HostComponent)
+{
+	if (!Container) { return; }
+
+	// First-call pool build. Constructs 20 rows into the container and
+	// caches their widget refs. Subsequent calls skip this block. - TripleA
+	if (BuiltStripRows.Num() == 0)
+	{
+		BuiltStripRows.Reserve(kStripRowPoolSize);
+		for (int32 i = 0; i < kStripRowPoolSize; ++i)
+		{
+			BuiltStripRows.Add(BuildStripRow(Container, i));
+		}
+
+		// Force the WidgetComponent to fully re-init its SlateWindow so
+		// the runtime-added children appear on the world-space render
+		// target. Its cached Slate tree is a snapshot taken at first
+		// InitWidget, and AddChild after that snapshot doesn't propagate
+		// to the compositor render path. SetWidget(nullptr) tears down
+		// the cached tree; SetWidget(HostWidget) rebuilds it fresh with
+		// the new children included. - TripleA
+		if (HostComponent)
+		{
+			if (UUserWidget* HostWidget = Cast<UUserWidget>(HostComponent->GetWidget()))
+			{
+				HostComponent->SetWidget(nullptr);
+				HostComponent->SetWidget(HostWidget);
+			}
+		}
+	}
+
+	const TArray<FInstructorAircraftRow> Rows = GetAircraftRowsForStrip();
+	const int32 NumRows = Rows.Num();
+
+	for (int32 i = 0; i < BuiltStripRows.Num(); ++i)
+	{
+		FStripRowRefs& Refs = BuiltStripRows[i];
+		if (!Refs.Bg) { continue; }
+
+		if (i < NumRows)
+		{
+			Refs.Bg->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+			UpdateStripRow(Refs, Rows[i]);
+		}
+		else
+		{
+			Refs.Bg->SetVisibility(ESlateVisibility::Collapsed);
+			Refs.BoundCallsign = NAME_None;
+		}
+	}
+
+	if (NumRows > BuiltStripRows.Num())
+	{
+		static bool bLoggedPoolExhausted = false;
+		if (!bLoggedPoolExhausted)
+		{
+			bLoggedPoolExhausted = true;
+			UE_LOG(LogTemp, Warning,
+				TEXT("[STRIP] Aircraft count (%d) exceeded row pool (%d). Bump kStripRowPoolSize."),
+				NumRows, BuiltStripRows.Num());
 		}
 	}
 }

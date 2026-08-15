@@ -453,6 +453,11 @@ void UClearanceInstructorPanel::RefreshLocalRefs()
 bool UClearanceInstructorPanel::BuildAircraftRows(TArray<FInstructorAircraftRow>& Out) const
 {
 	Out.Reset();
+	// Lazy re-resolve for callers that reach the panel before its usual
+	// AddToViewport init runs the local-refs pass (VR operator strip reads
+	// aircraft rows directly off the panel without ever surfacing it in
+	// the viewport, so CachedController would otherwise stay null). - TripleA
+	if (!CachedController) { const_cast<UClearanceInstructorPanel*>(this)->RefreshLocalRefs(); }
 	if (!CachedController || !CachedController->GetAirspaceManager()) { return false; }
 	const TArray<FAircraftState> States = CachedController->GetAirspaceManager()->GetAllAircraftStates();
 	Out.Reserve(States.Num());
@@ -491,6 +496,7 @@ bool UClearanceInstructorPanel::BuildAircraftRows(TArray<FInstructorAircraftRow>
 		R.Speed              = S.Speed;
 		R.TargetSpeed        = S.TargetSpeed;
 		R.SquawkCode         = S.SquawkCode;
+		R.AssignedFrequency  = S.AssignedFrequency;
 		R.bJammingOn         = S.bJammingOn;
 		R.bUnderGCIControl   = S.bUnderGCIControl;
 		R.bIsMilitary        = S.bIsMilitary;

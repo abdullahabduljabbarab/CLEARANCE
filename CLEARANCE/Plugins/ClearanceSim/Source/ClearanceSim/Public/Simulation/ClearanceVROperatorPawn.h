@@ -3,7 +3,37 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 #include "InputActionValue.h"
+#include "UI/ClearanceInstructorTypes.h"
+#include "Components/HorizontalBox.h"
+#include "Components/Border.h"
+#include "Components/TextBlock.h"
+#include "Components/Button.h"
 #include "ClearanceVROperatorPawn.generated.h"
+
+// Per-row widget cache for the operator strip. Nested UUserWidget instances
+// don't render inside a world-space UWidgetComponent under Substrate + VR,
+// so C++ builds each row from primitive Slate widgets (Border / TextBlock /
+// Button inside a HorizontalBox) and stores the child pointers here so the
+// per-tick refresh path can update text + colors in place instead of
+// rebuilding the tree. - TripleA
+USTRUCT()
+struct FStripRowRefs
+{
+	GENERATED_BODY()
+
+	UPROPERTY(Transient) TObjectPtr<UHorizontalBox> Root;
+	UPROPERTY(Transient) TObjectPtr<UBorder>        Bg;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Callsign;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Freq;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Emergency;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Timer;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Alt;
+	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Hdg;
+	UPROPERTY(Transient) TObjectPtr<UButton>        Btn_Threat;
+	UPROPERTY(Transient) TObjectPtr<UButton>        Btn_Int;
+	UPROPERTY(Transient) TObjectPtr<UButton>        Btn_Ack;
+	FName BoundCallsign = NAME_None;
+};
 
 class UCameraComponent;
 class UMotionControllerComponent;
@@ -18,6 +48,7 @@ class UPrimitiveComponent;
 class UStereoLayerComponent;
 class UTextureRenderTarget2D;
 class FWidgetRenderer;
+class UPanelWidget;
 
 // Seated VR pawn for the operator role. HMD drives the camera, motion
 // controllers drive left/right hand transforms, widget-interaction
@@ -346,6 +377,65 @@ public:
 	// created lazily on first show, deleted in EndPlay via the Slate
 	// deferred-cleanup queue. - TripleA
 	FWidgetRenderer* PauseMenuRenderer = nullptr;
+
+	// --- Operator strip monitor helpers ----------------------------------
+	// The strip lives on a diegetic BP_Monitor actor placed in the tower
+	// level (replaces the original emergency monitor). The monitor's own
+	// WidgetComponent hosts WBP_OperatorStrip; C++ side just exposes the
+	// row data + button dispatchers the widget binds to. No pawn-side
+	// stereo layer needed - the scope monitor already proves world-space
+	// WidgetComponent renders correctly under Substrate. - TripleA
+
+	// Called by the strip widget in BP to fetch the current aircraft row
+	// snapshot. Proxies through the always-alive InstructorPanel on the
+	// owning ClearanceOperatorPC. Returns an empty array on missing PC /
+	// panel / controller (safe to iterate blindly). - TripleA
+	UFUNCTION(BlueprintCallable, Category = "VR|Strip")
+	TArray<FInstructorAircraftRow> GetAircraftRowsForStrip() const;
+
+	// Dispatch helpers the strip's per-row buttons bind to. Each just
+	// looks up the OperatorPC and forwards to the appropriate Server RPC
+	// (Classify / ClearEmergency / Interrogate). Widget doesn't need to
+	// know the RPC surface - it just calls these. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "VR|Strip")
+	void StripCycleThreatClass(FName Callsign);
+
+	UFUNCTION(BlueprintCallable, Category = "VR|Strip")
+	void StripInterrogate(FName Callsign);
+
+	UFUNCTION(BlueprintCallable, Category = "VR|Strip")
+	void StripAckEmergency(FName Callsign);
+
+	// Refresh the strip's rows from live aircraft data. Widget passes its
+	// VerticalBox container in as Container; helper builds a pool of
+	// primitive-widget rows on first call (Border + HorizontalBox +
+	// TextBlocks + Buttons - primitives are the ONLY widget kind that
+	// renders on a world-space UWidgetComponent under Substrate + VR;
+	// nested UUserWidget children are silently dropped by the rasterizer),
+	// then per-tick updates text and colors in place. Extra pooled rows
+	// collapse when the live aircraft count is smaller. Neo calls this
+	// from Event Tick on WBP_OperatorStrip. - TripleA
+	UFUNCTION(BlueprintCallable, Category = "VR|Strip")
+	void RefreshStripRows(UPanelWidget* Container, class UWidgetComponent* HostComponent);
+
+private:
+	// Cache of the built primitive-widget rows (first call to
+	// RefreshStripRows constructs 20 rows into the container and stores
+	// the child widget refs here; subsequent calls just update text +
+	// colors on these pointers). - TripleA
+	UPROPERTY(Transient)
+	TArray<FStripRowRefs> BuiltStripRows;
+
+	// Constructs one row's widget tree under Container and returns the
+	// widget refs. Called by RefreshStripRows during pool build. - TripleA
+	FStripRowRefs BuildStripRow(UPanelWidget* Container, int32 RowIndex);
+
+	// Push a fresh FInstructorAircraftRow into the given cached row -
+	// updates all TextBlock contents + background tint + emergency
+	// coloring. Row visibility is toggled by the caller. - TripleA
+	void UpdateStripRow(FStripRowRefs& Refs, const FInstructorAircraftRow& Data);
+
+public:
 
 protected:
 	// EnhancedInput handlers

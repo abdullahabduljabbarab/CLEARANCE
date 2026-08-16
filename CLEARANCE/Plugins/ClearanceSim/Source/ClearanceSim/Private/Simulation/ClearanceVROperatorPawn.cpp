@@ -1161,10 +1161,21 @@ FStripRowRefs AClearanceVROperatorPawn::BuildStripRow(UPanelWidget* Container, i
 	Refs.Root = NewObject<UHorizontalBox>(HostWidget, MakeName(TEXT("HBox")));
 	Refs.Bg->SetContent(Refs.Root);
 
-	auto MakeText = [&](const TCHAR* Suffix, float FillWidth)
+	// Compact sizing so each column fits its expected text width without
+	// bleeding into the next. If everything still looks squished after a
+	// pool rebuild, bump the WidgetComponent's DrawSize on the strip
+	// monitor actor in the level - font size scales with pixel budget. - TripleA
+	FSlateFontInfo RowFont = FCoreStyle::GetDefaultFontStyle("Regular", 14);
+
+	auto MakeText = [&](const TCHAR* Suffix, float FillWidth, ETextJustify::Type Justify)
 	{
 		UTextBlock* T = NewObject<UTextBlock>(HostWidget, MakeName(Suffix));
 		T->SetColorAndOpacity(FSlateColor(kStripTextDefault));
+		T->SetFont(RowFont);
+		T->SetJustification(Justify);
+		// Clip overflow at the slot edge instead of letting long strings
+		// bleed over the next column. - TripleA
+		T->SetClipping(EWidgetClipping::ClipToBounds);
 		UHorizontalBoxSlot* Slot = Refs.Root->AddChildToHorizontalBox(T);
 		if (Slot)
 		{
@@ -1174,38 +1185,49 @@ FStripRowRefs AClearanceVROperatorPawn::BuildStripRow(UPanelWidget* Container, i
 			Slot->SetSize(Size);
 			Slot->SetPadding(FMargin(4.f, 0.f));
 			Slot->SetVerticalAlignment(VAlign_Center);
+			Slot->SetHorizontalAlignment(HAlign_Fill);
 		}
 		return T;
 	};
 
-	auto MakeButton = [&](const TCHAR* Suffix, const FString& Label)
+	auto MakeButton = [&](const TCHAR* Suffix, const FString& Label, float FillWidth)
 	{
 		UButton* B = NewObject<UButton>(HostWidget, MakeName(Suffix));
 		UTextBlock* LabelTxt = NewObject<UTextBlock>(HostWidget,
 			MakeName(*FString::Printf(TEXT("%sLbl"), Suffix)));
 		LabelTxt->SetText(FText::FromString(Label));
 		LabelTxt->SetColorAndOpacity(FSlateColor(kStripTextDefault));
+		LabelTxt->SetFont(RowFont);
+		LabelTxt->SetJustification(ETextJustify::Center);
 		B->AddChild(LabelTxt);
 		UHorizontalBoxSlot* Slot = Refs.Root->AddChildToHorizontalBox(B);
 		if (Slot)
 		{
-			Slot->SetPadding(FMargin(2.f, 0.f));
-			Slot->SetVerticalAlignment(VAlign_Center);
+			FSlateChildSize Size;
+			Size.SizeRule = ESlateSizeRule::Fill;
+			Size.Value    = FillWidth;
+			Slot->SetSize(Size);
+			Slot->SetPadding(FMargin(4.f, 2.f));
+			Slot->SetVerticalAlignment(VAlign_Fill);
+			Slot->SetHorizontalAlignment(HAlign_Fill);
 		}
 		return B;
 	};
 
-	// Fill-widths tuned so callsign + alt + hdg get the most space,
-	// codes and buttons stay compact. - TripleA
-	Refs.Text_Callsign  = MakeText(TEXT("Callsign"),  2.0f);
-	Refs.Text_Freq      = MakeText(TEXT("Freq"),      0.8f);
-	Refs.Text_Emergency = MakeText(TEXT("Emergency"), 1.5f);
-	Refs.Text_Timer     = MakeText(TEXT("Timer"),     1.0f);
-	Refs.Text_Alt       = MakeText(TEXT("Alt"),       1.2f);
-	Refs.Text_Hdg       = MakeText(TEXT("Hdg"),       1.2f);
-	Refs.Btn_Threat     = MakeButton(TEXT("Threat"), TEXT("T"));
-	Refs.Btn_Int        = MakeButton(TEXT("Int"),    TEXT("I"));
-	Refs.Btn_Ack        = MakeButton(TEXT("Ack"),    TEXT("A"));
+	// Fill-widths sum to ~15 so each unit is ~1/15 of row width. Callsign
+	// gets the most space (long strings like "BAW103"), buttons get
+	// explicit fill so they're never zero-width. Alignments: left for
+	// text labels, center for altitude / heading / freq / emergency /
+	// timer so their fixed-width formats sit tidily. - TripleA
+	Refs.Text_Callsign  = MakeText(TEXT("Callsign"),  3.0f, ETextJustify::Left);
+	Refs.Text_Freq      = MakeText(TEXT("Freq"),      1.0f, ETextJustify::Center);
+	Refs.Text_Emergency = MakeText(TEXT("Emergency"), 1.8f, ETextJustify::Center);
+	Refs.Text_Timer     = MakeText(TEXT("Timer"),     1.2f, ETextJustify::Center);
+	Refs.Text_Alt       = MakeText(TEXT("Alt"),       2.6f, ETextJustify::Center);
+	Refs.Text_Hdg       = MakeText(TEXT("Hdg"),       2.0f, ETextJustify::Center);
+	Refs.Btn_Threat     = MakeButton(TEXT("Threat"), TEXT("T"), 0.9f);
+	Refs.Btn_Int        = MakeButton(TEXT("Int"),    TEXT("I"), 0.9f);
+	Refs.Btn_Ack        = MakeButton(TEXT("Ack"),    TEXT("A"), 0.9f);
 
 	Container->AddChild(Refs.Bg);
 	Refs.Bg->SetVisibility(ESlateVisibility::Collapsed);
@@ -1234,13 +1256,17 @@ void AClearanceVROperatorPawn::UpdateStripRow(FStripRowRefs& Refs, const FInstru
 
 	if (Refs.Text_Emergency)
 	{
+		// Squawk digits dropped - ATC convention pairs code with type
+		// (7700 <-> MAY, 7600 <-> NRD, 7500 <-> HIJ), operator already
+		// knows the mapping and the strip's per-row real estate is at
+		// a premium. Timer next to the code conveys urgency. - TripleA
 		FString Label;
 		switch (Data.ActiveEmergency)
 		{
-		case EEmergencyType::GeneralMayday: Label = TEXT("7700 MAYDAY"); break;
-		case EEmergencyType::CommsFailure:  Label = TEXT("7600 NORDO");  break;
-		case EEmergencyType::Hijack:        Label = TEXT("7500 HIJACK"); break;
-		case EEmergencyType::FuelLow:       Label = TEXT("FUEL");        break;
+		case EEmergencyType::GeneralMayday: Label = TEXT("MAY");  break;
+		case EEmergencyType::CommsFailure:  Label = TEXT("NRD");  break;
+		case EEmergencyType::Hijack:        Label = TEXT("HIJ");  break;
+		case EEmergencyType::FuelLow:       Label = TEXT("FUEL"); break;
 		default: break;
 		}
 		Refs.Text_Emergency->SetText(FText::FromString(Label));
@@ -1269,13 +1295,24 @@ void AClearanceVROperatorPawn::UpdateStripRow(FStripRowRefs& Refs, const FInstru
 
 	if (Refs.Text_Alt)
 	{
-		Refs.Text_Alt->SetText(FText::FromString(FString::Printf(TEXT("FL%03d/FL%03d"),
-			FMath::RoundToInt(Data.Altitude / 100.f), FMath::RoundToInt(Data.TargetAltitude / 100.f))));
+		// Only show target when it differs from current - reduces clutter
+		// in the common case where the aircraft is on assigned altitude
+		// and leaves more pixels for the text that actually needs them. - TripleA
+		const int32 CurFL = FMath::RoundToInt(Data.Altitude / 100.f);
+		const int32 TgtFL = FMath::RoundToInt(Data.TargetAltitude / 100.f);
+		Refs.Text_Alt->SetText(FText::FromString(
+			(CurFL == TgtFL)
+				? FString::Printf(TEXT("FL%03d"), CurFL)
+				: FString::Printf(TEXT("FL%03d→%03d"), CurFL, TgtFL)));
 	}
 	if (Refs.Text_Hdg)
 	{
-		Refs.Text_Hdg->SetText(FText::FromString(FString::Printf(TEXT("%03d°/%03d°"),
-			FMath::RoundToInt(Data.Heading), FMath::RoundToInt(Data.TargetHeading))));
+		const int32 CurHdg = FMath::RoundToInt(Data.Heading);
+		const int32 TgtHdg = FMath::RoundToInt(Data.TargetHeading);
+		Refs.Text_Hdg->SetText(FText::FromString(
+			(CurHdg == TgtHdg)
+				? FString::Printf(TEXT("%03d"), CurHdg)
+				: FString::Printf(TEXT("%03d→%03d"), CurHdg, TgtHdg)));
 	}
 }
 

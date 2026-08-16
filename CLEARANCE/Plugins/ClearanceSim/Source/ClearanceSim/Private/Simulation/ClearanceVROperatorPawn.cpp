@@ -161,9 +161,8 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	// its OnClicked via the trigger press. Matches the LeftPointer /
 	// RightPointer config that works for the scope monitor - same
 	// defaults, only attachment point and distance differ (fingertip
-	// vs controller, 30 cm vs 500 cm) so this reads as "touch reach"
-	// instead of a laser. bShowDebug=true during bring-up so the trace
-	// is visible in PIE - flip to false once interaction confirmed. - TripleA
+	// vs controller, 60 cm vs 500 cm) so this reads as "touch reach"
+	// instead of a laser. - TripleA
 	LeftFingertipInteraction = CreateDefaultSubobject<UWidgetInteractionComponent>(TEXT("LeftFingertipInteraction"));
 	LeftFingertipInteraction->SetupAttachment(LeftFingertip);
 	LeftFingertipInteraction->InteractionDistance = 60.f;
@@ -339,21 +338,6 @@ void AClearanceVROperatorPawn::BeginPlay()
 		OpPC->OnEndSessionReport.AddDynamic(this, &AClearanceVROperatorPawn::HandleEndSessionReport);
 	}
 
-	// Force the fingertip interaction settings at runtime so Live Coding
-	// patches take effect without a full CDO rebuild - debug lines off
-	// now that interactions are proven to work, distance bumped so the
-	// hover state has approach range to register visually before the
-	// finger reaches the button surface. - TripleA
-	if (LeftFingertipInteraction)
-	{
-		LeftFingertipInteraction->bShowDebug         = false;
-		LeftFingertipInteraction->InteractionDistance = 60.f;
-	}
-	if (RightFingertipInteraction)
-	{
-		RightFingertipInteraction->bShowDebug         = false;
-		RightFingertipInteraction->InteractionDistance = 60.f;
-	}
 
 	// (Operator strip monitor is a BP_Monitor actor in the level, not a
 	// pawn component - no init needed here. Widget calls the pawn's

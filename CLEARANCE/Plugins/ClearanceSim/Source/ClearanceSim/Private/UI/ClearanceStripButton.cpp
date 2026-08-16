@@ -16,12 +16,6 @@ void UClearanceStripButton::Init(AClearanceVROperatorPawn* InOwner, EStripButton
 
 void UClearanceStripButton::HandleClicked()
 {
-	UE_LOG(LogTemp, Log,
-		TEXT("[STRIP-CLICK] Kind=%d Callsign=%s Pawn=%s"),
-		(int32)Kind,
-		BoundCallsign == NAME_None ? TEXT("<none>") : *BoundCallsign.ToString(),
-		OwnerPawn.IsValid() ? TEXT("valid") : TEXT("null"));
-
 	if (!OwnerPawn.IsValid() || BoundCallsign == NAME_None) { return; }
 
 	switch (Kind)

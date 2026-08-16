@@ -2372,13 +2372,33 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 		Multicast_PlayCockpitCue(S.Callsign, 2, 0.f);
 	}
 
+	// SAM kill on a confirmed hostile is a doctrine SUCCESS, not a crash
+	// penalty. Detect via the Reason string (missile pipeline stamps
+	// "Missile intercept ...") plus TrueAffiliation - both required so a
+	// missile stray that hits a mis-ID'd friendly still logs as a crash
+	// and takes the penalty it deserves. - TripleA
+	const bool bMissileKill  = Reason.Contains(TEXT("Missile"));
+	const bool bHostileTarget = (S.TrueAffiliation == EThreatClass::Hostile);
+	const bool bSuccessfulIntercept = bMissileKill && bHostileTarget;
+
 	if (Scoring)
 	{
-		Scoring->LogIncident(EIncidentType::AircraftCrashed, S.Callsign, NAME_None, Reason);
+		if (bSuccessfulIntercept)
+		{
+			Scoring->LogIncident(EIncidentType::SuccessfulIntercept, S.Callsign, NAME_None,
+				FString::Printf(TEXT("SAM kill on confirmed hostile: %s"), *S.Callsign.ToString()));
+		}
+		else
+		{
+			Scoring->LogIncident(EIncidentType::AircraftCrashed, S.Callsign, NAME_None, Reason);
+		}
 	}
 	if (Recorder)
 	{
-		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("CRASH - %s (%s)"), *S.Callsign.ToString(), *Reason));
+		Recorder->LogEvent(SessionTime,
+			bSuccessfulIntercept
+				? FString::Printf(TEXT("INTERCEPT - %s (%s)"), *S.Callsign.ToString(), *Reason)
+				: FString::Printf(TEXT("CRASH - %s (%s)"),     *S.Callsign.ToString(), *Reason));
 	}
 	FCrashSite Site;
 	Site.PositionNm = S.Position;
@@ -2386,13 +2406,25 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 	Site.Callsign = S.Callsign;
 	CrashSites.Add(Site);
 	{
-		const FString NMsg = FString::Printf(TEXT("CRASH: %s - %s (-%d)"),
-			*S.Callsign.ToString(), *Reason,
-			Scoring ? Scoring->PenaltyAircraftCrashed : 500);
-		PushNotification(NMsg, FColor::Red, 30.f);
-		if (GEngine)
+		if (bSuccessfulIntercept)
 		{
-			GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red, NMsg);
+			const FString NMsg = FString::Printf(TEXT("INTERCEPT: %s destroyed"), *S.Callsign.ToString());
+			PushNotification(NMsg, FColor::Green, 30.f);
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Green, NMsg);
+			}
+		}
+		else
+		{
+			const FString NMsg = FString::Printf(TEXT("CRASH: %s - %s (-%d)"),
+				*S.Callsign.ToString(), *Reason,
+				Scoring ? Scoring->PenaltyAircraftCrashed : 500);
+			PushNotification(NMsg, FColor::Red, 30.f);
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red, NMsg);
+			}
 		}
 	}
 

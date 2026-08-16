@@ -246,11 +246,18 @@ void UClearanceAircraftBehaviour::ApplyInstruction(const FAircraftInstruction& I
 	{
 	case EInstructionType::HeadingChange:
 	{
-		// Mirror magnetic input to internal frame. - TripleA
+		// Mirror magnetic input to internal frame. Magnetic bearings run
+		// clockwise (000 N, 090 E, 180 S, 270 W); the sim's internal
+		// frame runs counter-clockwise because the world -> sim rotation
+		// negates yaw. Negating the target value handles the value flip;
+		// TurnDirection needs the same flip - magnetic-left (CCW) means
+		// internal-right (CW) once the frames are mirrored. Without
+		// this negation, saying "left heading 270" would make the pilot
+		// turn right and vice versa. - TripleA
 		float Internal = FMath::Fmod(360.f - Instruction.TargetValue, 360.f);
 		if (Internal < 0.f) Internal += 360.f;
 		State.TargetHeading = Internal;
-		ActiveTurnDirection = Instruction.TurnDirection;
+		ActiveTurnDirection = -Instruction.TurnDirection;
 		break;
 	}
 	case EInstructionType::AltitudeChange:

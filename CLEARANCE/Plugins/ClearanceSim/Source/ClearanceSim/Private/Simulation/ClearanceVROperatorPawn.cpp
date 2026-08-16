@@ -1100,14 +1100,19 @@ void AClearanceVROperatorPawn::StripCycleThreatClass(FName Callsign)
 	{
 		if (R.Callsign == Callsign) { Cur = R.OperatorClassification; break; }
 	}
-	EThreatClass Next = EThreatClass::Friendly;
+	// Cycle order tuned so the common workflow "civilian aircraft turns
+	// out to be a bandit, mark it Hostile" is a single tap. Aircraft
+	// spawn Neutral by default; one T poke escalates straight to
+	// Hostile. Subsequent pokes cycle down through Friendly / Unknown
+	// and back to Neutral for the downgrade / re-ID cases. - TripleA
+	EThreatClass Next = EThreatClass::Hostile;
 	switch (Cur)
 	{
-	case EThreatClass::Friendly: Next = EThreatClass::Hostile;  break;
-	case EThreatClass::Hostile:  Next = EThreatClass::Neutral;  break;
-	case EThreatClass::Neutral:  Next = EThreatClass::Unknown;  break;
-	case EThreatClass::Unknown:  Next = EThreatClass::Friendly; break;
-	default:                     Next = EThreatClass::Friendly; break;
+	case EThreatClass::Neutral:  Next = EThreatClass::Hostile;  break;
+	case EThreatClass::Hostile:  Next = EThreatClass::Friendly; break;
+	case EThreatClass::Friendly: Next = EThreatClass::Unknown;  break;
+	case EThreatClass::Unknown:  Next = EThreatClass::Neutral;  break;
+	default:                     Next = EThreatClass::Hostile;  break;
 	}
 	// Diegetic operator call - updates the operator's view + runs the
 	// mis-ID scoring path if this promotes a civilian to Hostile.

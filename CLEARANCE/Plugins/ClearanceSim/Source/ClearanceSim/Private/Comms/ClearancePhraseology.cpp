@@ -52,6 +52,26 @@ namespace
 		return false;
 	}
 
+	// Compound number words: teens + tens. STT normally converts these to
+	// digits ("60") but some engines / non-ATC dictionaries output the
+	// word form ("sixty"). Without this the parser silently drops the
+	// number and altitude / heading commands look like they ran without
+	// a value ("flight level sixty" -> parses as no altitude change). - TripleA
+	bool NumberWord(const FString& W, int32& Out)
+	{
+		static const TMap<FString, int32> Map = {
+			{TEXT("ten"),10},{TEXT("eleven"),11},{TEXT("twelve"),12},
+			{TEXT("thirteen"),13},{TEXT("fourteen"),14},{TEXT("fifteen"),15},
+			{TEXT("sixteen"),16},{TEXT("seventeen"),17},{TEXT("eighteen"),18},
+			{TEXT("nineteen"),19},
+			{TEXT("twenty"),20},{TEXT("thirty"),30},{TEXT("forty"),40},
+			{TEXT("fifty"),50},{TEXT("sixty"),60},{TEXT("seventy"),70},
+			{TEXT("eighty"),80},{TEXT("ninety"),90}
+		};
+		if (const int32* V = Map.Find(W)) { Out = *V; return true; }
+		return false;
+	}
+
 	// Reads a run of number words/numerals (digit-by-digit, ATC style) starting at
 	// Idx, with an optional hundred/thousand multiplier. "two five zero" -> 250,
 	// "five thousand" -> 5000, "350" -> 350.
@@ -65,11 +85,30 @@ namespace
 		FString Digits;
 		int32 Multiplier = 1;
 		int32 D;
+		int32 N;
 		while (Idx < Tokens.Num())
 		{
 			const FString& T = Tokens[Idx];
 			if (IsAllDigits(T)) { Digits += T; ++Idx; }
 			else if (DigitWord(T, D)) { Digits.AppendChar(TCHAR('0' + D)); ++Idx; }
+			else if (NumberWord(T, N))
+			{
+				// Compound number word (teen or ten): appends the two-digit
+				// value. "sixty" -> "60"; "sixty five" -> "60" then "5" via
+				// the next-iteration DigitWord path drops the trailing 0 by
+				// overwriting last char. Simpler: strip trailing '0' of the
+				// tens value if followed by a units digit word. - TripleA
+				Digits += FString::FromInt(N);
+				++Idx;
+				int32 Peek;
+				if (N >= 20 && (N % 10) == 0 && Idx < Tokens.Num() && DigitWord(Tokens[Idx], Peek))
+				{
+					// Was "sixty five" -> we wrote "60", now overwrite the '0' with '5'.
+					Digits.RemoveAt(Digits.Len() - 1);
+					Digits.AppendChar(TCHAR('0' + Peek));
+					++Idx;
+				}
+			}
 			else if (T == TEXT("thousand")) { Multiplier = 1000; ++Idx; break; }
 			else if (T == TEXT("hundred")) { Multiplier = 100; ++Idx; break; }
 			else break;
@@ -758,16 +797,28 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		}
 		else if (T == TEXT("hold"))
 		{
-			// "hold", "hold left", "hold right" - enter a racetrack at the current
-			// altitude and heading. Player issues a heading / approach / etc. to
-			// exit. Bypasses the normal instruction pipeline because hold isn't a
-			// per-axis target - it's a flight mode. - TripleA
+			// "hold", "hold left", "hold right", "hold present position",
+			// "hold position right", "hold right turns", etc - enter a
+			// racetrack at the current altitude and heading. Player issues
+			// a heading / approach / etc to exit. Bypasses the normal
+			// instruction pipeline because hold isn't a per-axis target
+			// - it's a flight mode. - TripleA
 			++Idx;
 			bool bRightTurns = true;
-			if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("left"))  { bRightTurns = false; ++Idx; }
-			else if (Idx < Tokens.Num() && Tokens[Idx] == TEXT("right")) { bRightTurns = true; ++Idx; }
-			// Eat "turns" / "pattern" filler
-			while (Idx < Tokens.Num() && (Tokens[Idx] == TEXT("turns") || Tokens[Idx] == TEXT("pattern")
+			bool bDirectionSpecified = false;
+			// Scan a small window after "hold" for a direction word - the
+			// operator may say "hold right position", "hold position right"
+			// or "hold present position right". Direction should register
+			// regardless of where in the clause it lands. - TripleA
+			const int32 ScanEnd = FMath::Min(Idx + 6, Tokens.Num());
+			for (int32 Peek = Idx; Peek < ScanEnd; ++Peek)
+			{
+				if (Tokens[Peek] == TEXT("left"))  { bRightTurns = false; bDirectionSpecified = true; break; }
+				if (Tokens[Peek] == TEXT("right")) { bRightTurns = true;  bDirectionSpecified = true; break; }
+			}
+			// Eat filler + the direction word (wherever it landed).
+			while (Idx < Tokens.Num() && (Tokens[Idx] == TEXT("left") || Tokens[Idx] == TEXT("right")
+				|| Tokens[Idx] == TEXT("turns") || Tokens[Idx] == TEXT("pattern")
 				|| Tokens[Idx] == TEXT("present") || Tokens[Idx] == TEXT("position"))) { ++Idx; }
 
 			if (AClearanceAirspaceManager* AM = Controller->GetAirspaceManager())

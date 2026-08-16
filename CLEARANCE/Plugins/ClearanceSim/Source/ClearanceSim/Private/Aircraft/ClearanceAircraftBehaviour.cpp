@@ -533,34 +533,11 @@ void UClearanceAircraftBehaviour::StepWithAutopilot(FAircraftState& State, const
 
 bool UClearanceAircraftBehaviour::IsEstablishedOnApproach(const FAircraftState& State, const FSectorEnvironment& Env) const
 {
-	const float FAC = (Env.ActiveRunwayHeading >= 0.f) ? Env.ActiveRunwayHeading : 270.f;
-	const FVector2D Threshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
-	const FVector2D Rel = FVector2D(State.Position.X, State.Position.Y) - Threshold;
-	const float DistNm = Rel.Size();
-
-	const float FacRad = FMath::DegreesToRadians(FAC);
-	const FVector2D Inbound(FMath::Sin(FacRad), FMath::Cos(FacRad)); // ENU: X=E, Y=N
-	const FVector2D RightOfCourse(Inbound.Y, -Inbound.X);
-
-	const float CrossTrackNm = FMath::Abs(FVector2D::DotProduct(Rel, RightOfCourse));
-	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound); // < 0 = on the approach side (before threshold)
-	const float HeadingErr = FMath::Abs(FMath::FindDeltaAngleDegrees(State.Heading, FAC));
-
-	// Glideslope height at this distance - must be at or just below it (small margin) so
-	// it intercepts the glidepath from BELOW and rides it down, rather than capturing
-	// from way overhead and diving onto the runway. - TripleA
-	const float GlideAlt = FMath::Max(0.f, -AlongTrack) * 318.f; // ~318 ft per nm (3 deg)
-
-	// Capture corridor is a CONE: narrow at the runway, widening with distance (like a
-	// real localiser beam), so it must be precisely lined up close in but is forgiving
-	// far out. Matches the funnel drawn on the debug overlay. - TripleA
-	const float CorridorHalf = FMath::Clamp(-AlongTrack * 0.1f, 0.3f, ClearanceConstants::ApproachCorridorHalfWidthNm);
-
-	return CrossTrackNm <= CorridorHalf                        // inside the capture cone
-		&& HeadingErr <= 40.f                                  // intercepting at a sane angle, not crossing it
-		&& AlongTrack < 0.f                                    // positioned to fly toward the runway, not away
-		&& DistNm <= ClearanceConstants::ApproachCorridorLengthNm // within intercept range (matches the drawn centreline)
-		&& State.Altitude <= GlideAlt + 300.f;                 // at/below the glidepath - intercept from below, no dive
+	// Nuclear-permissive capture. RunApproachGuidance handles any
+	// starting position via a two-mode fly: direct-to-threshold when
+	// far off the localizer, standard localizer alignment once close.
+	// Only sanity gate is a valid active runway. - TripleA
+	return Env.ActiveRunwayHeading >= 0.f;
 }
 
 bool UClearanceAircraftBehaviour::HasMissedApproach(const FAircraftState& State, const FSectorEnvironment& Env) const
@@ -593,9 +570,23 @@ void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, con
 	const float CrossTrackNm = FVector2D::DotProduct(Rel, RightOfCourse);
 	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound); // < 0 before the threshold, 0 at it
 
-	// Localiser: steer back toward the extended centreline; fly the course on it. - TripleA
-	const float Correction = FMath::Clamp(-CrossTrackNm * 3.f, -30.f, 30.f);
-	State.TargetHeading = FMath::Fmod(FAC + Correction + 360.f, 360.f);
+	// Two-mode guidance so nuclear capture (aircraft anywhere in the
+	// sector at clearance time) still delivers to the runway. FAR mode
+	// points straight at the threshold; NEAR mode uses standard
+	// localizer alignment once close enough for that to converge. - TripleA
+	const bool bFarOffLocalizer = FMath::Abs(CrossTrackNm) > 6.f || AlongTrack > -8.f;
+	if (bFarOffLocalizer)
+	{
+		const FVector2D ToThreshold = -Rel;
+		float BearingToTh = FMath::RadiansToDegrees(FMath::Atan2(ToThreshold.X, ToThreshold.Y));
+		if (BearingToTh < 0.f) { BearingToTh += 360.f; }
+		State.TargetHeading = BearingToTh;
+	}
+	else
+	{
+		const float Correction = FMath::Clamp(-CrossTrackNm * 5.f, -45.f, 45.f);
+		State.TargetHeading = FMath::Fmod(FAC + Correction + 360.f, 360.f);
+	}
 	ActiveTurnDirection = 0;
 
 	// Aim point sits a little way INTO the runway (the real touchdown zone is ~300m
@@ -609,11 +600,15 @@ void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, con
 	// Settle onto a final-approach speed.
 	State.TargetSpeed = State.MinOperatingSpeed + 10.f;
 
-	// Touchdown once it has reached the aim point (into the runway) and is low, so it
-	// plants in the touchdown zone, not on the edge. If it came in high it carries past
-	// and lands long - but never short of the aim point. - TripleA
-	if (AimAlong >= 0.f && State.Altitude <= 20.f)
+	// Touchdown at the aim point regardless of altitude. Under nuclear
+	// capture an aircraft may cross the threshold higher than the
+	// glideslope wants; keeping the "must be at 20 ft" gate would then
+	// send it past and FAR-mode guidance would loop it back into a
+	// 360. Force the landing state at the aim point; ground-roll logic
+	// snaps altitude to 0. - TripleA
+	if (AimAlong >= 0.f)
 	{
+		State.Altitude = 0.f;
 		State.FlightPhase = EFlightPhase::Landing;
 	}
 }

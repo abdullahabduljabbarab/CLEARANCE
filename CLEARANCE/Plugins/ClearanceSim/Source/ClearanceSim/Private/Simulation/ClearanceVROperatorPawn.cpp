@@ -1418,7 +1418,28 @@ void AClearanceVROperatorPawn::RefreshStripRows(UPanelWidget* Container, UWidget
 		}
 	}
 
-	const TArray<FInstructorAircraftRow> Rows = GetAircraftRowsForStrip();
+	TArray<FInstructorAircraftRow> Rows = GetAircraftRowsForStrip();
+
+	// Sort emergencies to the top: FuelLow / GeneralMayday first (sorted
+	// by remaining timer, lowest = most urgent), then Hijack / Nordo, then
+	// normal traffic in original order. Operator's eye lands on the top
+	// of the strip so time-critical rows are always the first thing seen.
+	// - TripleA
+	auto EmergencyRank = [](const FInstructorAircraftRow& R)
+	{
+		if (R.ActiveEmergency == EEmergencyType::None) { return 2; }
+		if (R.EmergencyTimerMinutes >= 0.f) { return 0; }
+		return 1;
+	};
+	Rows.StableSort([&EmergencyRank](const FInstructorAircraftRow& A, const FInstructorAircraftRow& B)
+	{
+		const int32 RA = EmergencyRank(A);
+		const int32 RB = EmergencyRank(B);
+		if (RA != RB) { return RA < RB; }
+		if (RA == 0) { return A.EmergencyTimerMinutes < B.EmergencyTimerMinutes; }
+		return false;
+	});
+
 	const int32 NumRows = Rows.Num();
 
 	for (int32 i = 0; i < BuiltStripRows.Num(); ++i)

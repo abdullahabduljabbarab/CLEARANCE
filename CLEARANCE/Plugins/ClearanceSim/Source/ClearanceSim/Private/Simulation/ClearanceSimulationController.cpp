@@ -1631,6 +1631,20 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 					FString::Printf(TEXT("JOIN-UP  %d-ship on %s  %s heading %.0f"),
 						Grp.Value.Num(), *BanditCs.ToString(), Verb, OutHdg));
 			}
+
+			// Lead viper radio call the moment the flight forms up on
+			// the target. Operator hears the successful join over the
+			// radio, matches real GCI convention. - TripleA
+			if (Grp.Value.Num() > 0)
+			{
+				const FName Lead = Grp.Value[0];
+				const TCHAR* CallVerb = bShadow ? TEXT("shadowing") : TEXT("escorting");
+				const FString Call = FString::Printf(
+					TEXT("%s, formation established on %s, %s heading %03d"),
+					*Lead.ToString(), *BanditCs.ToString(), CallVerb, FMath::RoundToInt(OutHdg));
+				Multicast_PlayTTS(Lead, Call, FString(), /*bPanic=*/false);
+				LogTranscriptLine(EClearanceCommsRole::Pilot, Lead, Call);
+			}
 		}
 
 		// Anyone joined? If so, snap each joined fighter into its formation slot.
@@ -5248,6 +5262,29 @@ TArray<FString> AClearanceSimulationController::GetApproachRunwayLabels() const
 		Out.Add(FString::Printf(TEXT("RWY %02d%s"), MyDes, *Suffix));
 	}
 	return Out;
+}
+
+FString AClearanceSimulationController::GetActiveRunwayLabel() const
+{
+	if (!AirspaceManager) { return TEXT("--"); }
+	const float ActiveHdg = AirspaceManager->GetActiveRunway();
+	if (ActiveHdg < 0.f) { return TEXT("--"); }
+	const TArray<FRunwayInfo>& All = AirspaceManager->GetAllRunways();
+	for (const FRunwayInfo& R : All)
+	{
+		if (!FMath::IsNearlyEqual(R.HeadingDeg, ActiveHdg, 0.5f)) { continue; }
+		int32 Des;
+		if (R.DesignatorOverride > 0) { Des = R.DesignatorOverride; }
+		else
+		{
+			const float MagBearing = FMath::Fmod(FMath::Fmod(360.f - R.HeadingDeg, 360.f) + 360.f, 360.f);
+			Des = FMath::RoundToInt(MagBearing / 10.f);
+		}
+		if (Des <= 0)  { Des = 36; }
+		if (Des > 36)  { Des = Des % 36; if (Des == 0) { Des = 36; } }
+		return FString::Printf(TEXT("%02d"), Des);
+	}
+	return TEXT("--");
 }
 
 void AClearanceSimulationController::SetInstructorPipApproachRunway(int32 Index)

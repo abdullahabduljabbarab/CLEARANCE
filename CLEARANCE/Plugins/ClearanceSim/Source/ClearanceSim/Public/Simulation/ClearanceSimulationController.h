@@ -615,6 +615,13 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
 	TArray<FString> GetApproachRunwayLabels() const;
 
+	// Compact label for the currently wind-selected active runway - matches
+	// the format the scope's "RWY N ACTIVE" header wants. Respects
+	// DesignatorOverride on the source runway actor. Returns "--" when no
+	// runway is active. - TripleA
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Simulation|Camera|PIP")
+	FString GetActiveRunwayLabel() const;
+
 	// Switch to Approach view AND select the runway at the given index. The
 	// index matches the order of GetApproachRunwayLabels. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "Simulation|Camera|PIP")

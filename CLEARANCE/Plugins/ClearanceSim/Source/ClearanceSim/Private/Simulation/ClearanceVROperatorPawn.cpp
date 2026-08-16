@@ -31,6 +31,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
+#include "Layout/WidgetPath.h"
 #include "Components/StereoLayerComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Slate/WidgetRenderer.h"
@@ -154,6 +155,24 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	LeftFingertip->OnComponentEndOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnLeftFingertipEndOverlap);
 	RightFingertip->OnComponentBeginOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnRightFingertipBeginOverlap);
 	RightFingertip->OnComponentEndOverlap.AddDynamic(this, &AClearanceVROperatorPawn::OnRightFingertipEndOverlap);
+
+	// Fingertip WidgetInteractionComponents: short-range trace forward
+	// from each fingertip sphere so a poked strip-monitor button fires
+	// its OnClicked via the trigger press. Matches the LeftPointer /
+	// RightPointer config that works for the scope monitor - same
+	// defaults, only attachment point and distance differ (fingertip
+	// vs controller, 30 cm vs 500 cm) so this reads as "touch reach"
+	// instead of a laser. bShowDebug=true during bring-up so the trace
+	// is visible in PIE - flip to false once interaction confirmed. - TripleA
+	LeftFingertipInteraction = CreateDefaultSubobject<UWidgetInteractionComponent>(TEXT("LeftFingertipInteraction"));
+	LeftFingertipInteraction->SetupAttachment(LeftFingertip);
+	LeftFingertipInteraction->InteractionDistance = 60.f;
+	LeftFingertipInteraction->bShowDebug = false;
+
+	RightFingertipInteraction = CreateDefaultSubobject<UWidgetInteractionComponent>(TEXT("RightFingertipInteraction"));
+	RightFingertipInteraction->SetupAttachment(RightFingertip);
+	RightFingertipInteraction->InteractionDistance = 60.f;
+	RightFingertipInteraction->bShowDebug = false;
 
 	// Laser meshes for the pause menu. Hidden by default; TogglePauseMenu
 	// flips them visible + stretches them per tick to terminate at the
@@ -318,6 +337,22 @@ void AClearanceVROperatorPawn::BeginPlay()
 		// the operator sees the score + time + restart / exit choices
 		// without leaving VR. - TripleA
 		OpPC->OnEndSessionReport.AddDynamic(this, &AClearanceVROperatorPawn::HandleEndSessionReport);
+	}
+
+	// Force the fingertip interaction settings at runtime so Live Coding
+	// patches take effect without a full CDO rebuild - debug lines off
+	// now that interactions are proven to work, distance bumped so the
+	// hover state has approach range to register visually before the
+	// finger reaches the button surface. - TripleA
+	if (LeftFingertipInteraction)
+	{
+		LeftFingertipInteraction->bShowDebug         = false;
+		LeftFingertipInteraction->InteractionDistance = 60.f;
+	}
+	if (RightFingertipInteraction)
+	{
+		RightFingertipInteraction->bShowDebug         = false;
+		RightFingertipInteraction->InteractionDistance = 60.f;
 	}
 
 	// (Operator strip monitor is a BP_Monitor actor in the level, not a
@@ -610,6 +645,15 @@ void AClearanceVROperatorPawn::HandleTriggerLeftPressed(const FInputActionValue&
 	ClearanceInteractionDebug(2200, FColor::Blue,
 		FString::Printf(TEXT("L trigger PRESSED (hovered: %s)"),
 			LeftHoveredButton ? *LeftHoveredButton->GetName() : TEXT("<none>")));
+
+	// Also route to the fingertip's WidgetInteractionComponent - if the
+	// fingertip is over a strip button (or any world-space widget), this
+	// fires the UMG click via the standard Slate mouse event pipeline. - TripleA
+	if (LeftFingertipInteraction)
+	{
+		LeftFingertipInteraction->PressPointerKey(EKeys::LeftMouseButton);
+	}
+
 	if (!LeftHoveredButton) { return; }
 	LeftPressedButton = LeftHoveredButton;
 	LeftPressedButton->HandlePress(this, EOperatorButtonHand::Left);
@@ -620,6 +664,12 @@ void AClearanceVROperatorPawn::HandleTriggerLeftReleased(const FInputActionValue
 	ClearanceInteractionDebug(2201, FColor::Blue,
 		FString::Printf(TEXT("L trigger RELEASED (pressed: %s)"),
 			LeftPressedButton ? *LeftPressedButton->GetName() : TEXT("<none>")));
+
+	if (LeftFingertipInteraction)
+	{
+		LeftFingertipInteraction->ReleasePointerKey(EKeys::LeftMouseButton);
+	}
+
 	if (!LeftPressedButton) { return; }
 	LeftPressedButton->HandleRelease(this, EOperatorButtonHand::Left);
 	LeftPressedButton = nullptr;
@@ -630,6 +680,12 @@ void AClearanceVROperatorPawn::HandleTriggerRightPressed(const FInputActionValue
 	ClearanceInteractionDebug(2300, FColor::Blue,
 		FString::Printf(TEXT("R trigger PRESSED (hovered: %s)"),
 			RightHoveredButton ? *RightHoveredButton->GetName() : TEXT("<none>")));
+
+	if (RightFingertipInteraction)
+	{
+		RightFingertipInteraction->PressPointerKey(EKeys::LeftMouseButton);
+	}
+
 	if (!RightHoveredButton) { return; }
 	RightPressedButton = RightHoveredButton;
 	RightPressedButton->HandlePress(this, EOperatorButtonHand::Right);
@@ -640,6 +696,12 @@ void AClearanceVROperatorPawn::HandleTriggerRightReleased(const FInputActionValu
 	ClearanceInteractionDebug(2301, FColor::Blue,
 		FString::Printf(TEXT("R trigger RELEASED (pressed: %s)"),
 			RightPressedButton ? *RightPressedButton->GetName() : TEXT("<none>")));
+
+	if (RightFingertipInteraction)
+	{
+		RightFingertipInteraction->ReleasePointerKey(EKeys::LeftMouseButton);
+	}
+
 	if (!RightPressedButton) { return; }
 	RightPressedButton->HandleRelease(this, EOperatorButtonHand::Right);
 	RightPressedButton = nullptr;
@@ -1063,7 +1125,11 @@ void AClearanceVROperatorPawn::StripCycleThreatClass(FName Callsign)
 	case EThreatClass::Unknown:  Next = EThreatClass::Friendly; break;
 	default:                     Next = EThreatClass::Friendly; break;
 	}
-	OpPC->Server_InjectClassify(Callsign, Next);
+	// Diegetic operator call - updates the operator's view + runs the
+	// mis-ID scoring path if this promotes a civilian to Hostile.
+	// Server_InjectClassify would rewrite TrueAffiliation instead, which
+	// the strip doesn't display (strip shows OperatorClassification). - TripleA
+	OpPC->Server_OperatorClassify(Callsign, Next);
 }
 
 void AClearanceVROperatorPawn::StripInterrogate(FName Callsign)
@@ -1190,9 +1256,19 @@ FStripRowRefs AClearanceVROperatorPawn::BuildStripRow(UPanelWidget* Container, i
 		return T;
 	};
 
-	auto MakeButton = [&](const TCHAR* Suffix, const FString& Label, float FillWidth)
+	auto MakeButton = [&](const TCHAR* Suffix, const FString& Label, float FillWidth, EStripButtonKind Kind)
 	{
-		UButton* B = NewObject<UButton>(HostWidget, MakeName(Suffix));
+		UClearanceStripButton* B = NewObject<UClearanceStripButton>(HostWidget, MakeName(Suffix));
+		B->Init(this, Kind);
+		// Tint the existing default brush structure without replacing it
+		// (replacing DrawAs / ResourceObject broke the SButton hit region
+		// in a prior attempt). Just recolor the built-in Normal / Hovered
+		// / Pressed brushes so the button visibly changes on approach. - TripleA
+		FButtonStyle Style = B->GetStyle();
+		Style.Normal .TintColor = FSlateColor(FLinearColor(0.20f, 0.30f, 0.40f, 1.f));
+		Style.Hovered.TintColor = FSlateColor(FLinearColor(1.00f, 0.65f, 0.00f, 1.f));
+		Style.Pressed.TintColor = FSlateColor(FLinearColor(0.95f, 0.25f, 0.25f, 1.f));
+		B->SetStyle(Style);
 		UTextBlock* LabelTxt = NewObject<UTextBlock>(HostWidget,
 			MakeName(*FString::Printf(TEXT("%sLbl"), Suffix)));
 		LabelTxt->SetText(FText::FromString(Label));
@@ -1225,9 +1301,9 @@ FStripRowRefs AClearanceVROperatorPawn::BuildStripRow(UPanelWidget* Container, i
 	Refs.Text_Timer     = MakeText(TEXT("Timer"),     1.2f, ETextJustify::Center);
 	Refs.Text_Alt       = MakeText(TEXT("Alt"),       2.6f, ETextJustify::Center);
 	Refs.Text_Hdg       = MakeText(TEXT("Hdg"),       2.0f, ETextJustify::Center);
-	Refs.Btn_Threat     = MakeButton(TEXT("Threat"), TEXT("T"), 0.9f);
-	Refs.Btn_Int        = MakeButton(TEXT("Int"),    TEXT("I"), 0.9f);
-	Refs.Btn_Ack        = MakeButton(TEXT("Ack"),    TEXT("A"), 0.9f);
+	Refs.Btn_Threat     = MakeButton(TEXT("Threat"), TEXT("T"), 0.9f, EStripButtonKind::Threat);
+	Refs.Btn_Int        = MakeButton(TEXT("Int"),    TEXT("I"), 0.9f, EStripButtonKind::Interrogate);
+	Refs.Btn_Ack        = MakeButton(TEXT("Ack"),    TEXT("A"), 0.9f, EStripButtonKind::Ack);
 
 	Container->AddChild(Refs.Bg);
 	Refs.Bg->SetVisibility(ESlateVisibility::Collapsed);
@@ -1238,6 +1314,12 @@ void AClearanceVROperatorPawn::UpdateStripRow(FStripRowRefs& Refs, const FInstru
 {
 	if (!Refs.Bg) { return; }
 	Refs.BoundCallsign = Data.Callsign;
+
+	// Rebind every button to the current row's callsign so pool row
+	// reuse still dispatches trigger presses to the right aircraft. - TripleA
+	if (Refs.Btn_Threat) { Refs.Btn_Threat->BoundCallsign = Data.Callsign; }
+	if (Refs.Btn_Int)    { Refs.Btn_Int->BoundCallsign    = Data.Callsign; }
+	if (Refs.Btn_Ack)    { Refs.Btn_Ack->BoundCallsign    = Data.Callsign; }
 
 	const bool bEmergency = (Data.ActiveEmergency != EEmergencyType::None);
 	Refs.Bg->SetBrushColor(bEmergency ? kStripBgEmergency : kStripBgNormal);
@@ -1396,6 +1478,62 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 	}
 
 	UpdateHandAnimInputs();
+
+	// Manual strip-button hover feedback. WIC does hover-state updates
+	// on the slate widget but its hover brush doesn't render on the
+	// world-space WidgetComponent under Substrate for reasons that
+	// aren't worth another day of debugging. Instead: per tick, walk
+	// each fingertip's hovered widget path, find the UClearanceStripButton
+	// whose cached Slate widget is in that path, and paint its Normal
+	// brush amber. When hover ends, revert to the default navy tint.
+	// Cheap - only mutates style when the hovered button actually
+	// changes. - TripleA
+	auto ResolveHoveredStripButton = [this](UWidgetInteractionComponent* WIC) -> UClearanceStripButton*
+	{
+		if (!WIC) { return nullptr; }
+		const FWeakWidgetPath& WeakPath = WIC->GetHoveredWidgetPath();
+		if (!WeakPath.IsValid()) { return nullptr; }
+		FWidgetPath Path = WeakPath.ToWidgetPath(FWeakWidgetPath::EInterruptedPathHandling::Truncate);
+		if (!Path.IsValid()) { return nullptr; }
+
+		for (const FStripRowRefs& Row : BuiltStripRows)
+		{
+			for (UClearanceStripButton* Btn : { Row.Btn_Threat, Row.Btn_Int, Row.Btn_Ack })
+			{
+				if (!Btn) { continue; }
+				TSharedPtr<SWidget> Slate = Btn->GetCachedWidget();
+				if (!Slate.IsValid()) { continue; }
+				for (int32 i = 0; i < Path.Widgets.Num(); ++i)
+				{
+					if (Path.Widgets[i].Widget == Slate)
+					{
+						return Btn;
+					}
+				}
+			}
+		}
+		return nullptr;
+	};
+
+	auto ApplyStripHover = [this](TWeakObjectPtr<UClearanceStripButton>& Prev, UClearanceStripButton* Now)
+	{
+		if (Prev.Get() == Now) { return; }
+		auto TintBrush = [](UClearanceStripButton* Btn, const FLinearColor& Color)
+		{
+			if (!Btn) { return; }
+			FButtonStyle S = Btn->GetStyle();
+			S.Normal.TintColor = FSlateColor(Color);
+			Btn->SetStyle(S);
+		};
+		TintBrush(Prev.Get(), FLinearColor(0.20f, 0.30f, 0.40f, 1.f));  // revert to navy
+		TintBrush(Now,        FLinearColor(1.00f, 0.65f, 0.00f, 1.f));  // amber hover
+		Prev = Now;
+	};
+
+	static TWeakObjectPtr<UClearanceStripButton> LastLeftHover;
+	static TWeakObjectPtr<UClearanceStripButton> LastRightHover;
+	ApplyStripHover(LastLeftHover,  ResolveHoveredStripButton(LeftFingertipInteraction));
+	ApplyStripHover(LastRightHover, ResolveHoveredStripButton(RightFingertipInteraction));
 
 	// Highlight the selected row from C++. The UWidgetComponent path
 	// ticks its child UUserWidget the normal way, so per-frame style

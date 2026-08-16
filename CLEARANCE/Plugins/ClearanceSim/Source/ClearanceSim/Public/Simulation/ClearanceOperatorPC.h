@@ -63,6 +63,15 @@ public:
 	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
 	void Server_InjectClassify(FName Callsign, EThreatClass NewClass);
 
+	// Operator's own classification call - diegetic strip button path.
+	// Unlike Server_InjectClassify (which rewrites TrueAffiliation as a
+	// god-view instructor shape), this updates ThreatClass (the operator's
+	// view) and runs the mis-ID doctrine check - declaring a civilian
+	// hostile logs a MisidentifiedCivilian incident just like a spoken
+	// classification would. - TripleA
+	UFUNCTION(Server, Reliable, WithValidation, BlueprintCallable, Category = "Instructor")
+	void Server_OperatorClassify(FName Callsign, EThreatClass NewClass);
+
 	// IFF-style interrogate: fires an aircraft-voice TTS reading the
 	// track's squawk + emergency state. Diegetic response the operator
 	// hears over the radio, same channel as normal aircraft chatter.

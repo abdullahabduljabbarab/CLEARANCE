@@ -8,6 +8,7 @@
 #include "Components/Border.h"
 #include "Components/TextBlock.h"
 #include "Components/Button.h"
+#include "UI/ClearanceStripButton.h"
 #include "ClearanceVROperatorPawn.generated.h"
 
 // Per-row widget cache for the operator strip. Nested UUserWidget instances
@@ -29,9 +30,9 @@ struct FStripRowRefs
 	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Timer;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Alt;
 	UPROPERTY(Transient) TObjectPtr<UTextBlock>     Text_Hdg;
-	UPROPERTY(Transient) TObjectPtr<UButton>        Btn_Threat;
-	UPROPERTY(Transient) TObjectPtr<UButton>        Btn_Int;
-	UPROPERTY(Transient) TObjectPtr<UButton>        Btn_Ack;
+	UPROPERTY(Transient) TObjectPtr<UClearanceStripButton> Btn_Threat;
+	UPROPERTY(Transient) TObjectPtr<UClearanceStripButton> Btn_Int;
+	UPROPERTY(Transient) TObjectPtr<UClearanceStripButton> Btn_Ack;
 	FName BoundCallsign = NAME_None;
 };
 
@@ -162,6 +163,18 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR|Interaction")
 	TObjectPtr<USphereComponent> RightFingertip;
+
+	// Short-range WidgetInteractionComponents attached to the fingertip
+	// spheres. Trace ~10 cm forward so a fingertip resting on the strip
+	// monitor's screen surface counts as hovering the underlying
+	// UClearanceStripButton; trigger press fires the button's click.
+	// Deliberately short so this is fingertip touch, not a laser
+	// pointer - lasers are banned per the tower's touchscreen convention. - TripleA
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR|Interaction")
+	TObjectPtr<UWidgetInteractionComponent> LeftFingertipInteraction;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR|Interaction")
+	TObjectPtr<UWidgetInteractionComponent> RightFingertipInteraction;
 
 	// Forward offset of the fingertip from the motion-controller origin.
 	// Default (5, 0, -3) puts it just beyond the front of a Meta Quest

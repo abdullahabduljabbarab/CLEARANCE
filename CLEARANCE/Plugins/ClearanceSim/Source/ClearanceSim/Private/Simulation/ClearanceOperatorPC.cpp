@@ -287,6 +287,33 @@ void AClearanceOperatorPC::Server_InjectClassify_Implementation(FName Callsign, 
 	}
 }
 
+// --- Operator classify (mis-ID scored, updates operator view) ---------------
+
+bool AClearanceOperatorPC::Server_OperatorClassify_Validate(FName Callsign, EThreatClass NewClass)
+{
+	return true;
+}
+void AClearanceOperatorPC::Server_OperatorClassify_Implementation(FName Callsign, EThreatClass NewClass)
+{
+	if (Callsign == NAME_None) { return; }
+	if (AClearanceSimulationController* C = FindSimController(GetWorld()))
+	{
+		C->LogTranscriptLine(EClearanceCommsRole::Operator, Callsign,
+			FString::Printf(TEXT("Classified %s as %s"), *Callsign.ToString(), ThreatClassLabel(NewClass)));
+		C->ClassifyAircraft(Callsign, NewClass, /*bAsInstructor=*/false);
+
+		// Tower / system callout so the reclassification is heard on the
+		// radio, matching real GCI convention where classification calls
+		// are announced for the tactical picture. System voice, aircraft
+		// callsign in the addressee slot so the transcript colour-codes
+		// consistently with other track-directed calls. - TripleA
+		const FString Announcement = FString::Printf(TEXT("%s, classified %s"),
+			*Callsign.ToString(), ThreatClassLabel(NewClass));
+		C->LogTranscriptLine(EClearanceCommsRole::System, Callsign, Announcement);
+		C->Multicast_PlayTTS(NAME_None, Announcement, TEXT("en-US-EricNeural"), /*bPanic=*/false);
+	}
+}
+
 // --- Interrogate (IFF-style read of squawk + emergency state) --------------
 
 bool AClearanceOperatorPC::Server_InjectInterrogate_Validate(FName Callsign)

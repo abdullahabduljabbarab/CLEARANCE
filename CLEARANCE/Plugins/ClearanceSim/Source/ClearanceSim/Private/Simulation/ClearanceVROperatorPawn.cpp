@@ -96,10 +96,14 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	LeftControllerMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("LeftControllerMesh"));
 	LeftControllerMesh->SetupAttachment(LeftController);
 	LeftControllerMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	LeftControllerMesh->SetOnlyOwnerSee(false);
+	LeftControllerMesh->SetOwnerNoSee(false);
 
 	RightControllerMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("RightControllerMesh"));
 	RightControllerMesh->SetupAttachment(RightController);
 	RightControllerMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RightControllerMesh->SetOnlyOwnerSee(false);
+	RightControllerMesh->SetOwnerNoSee(false);
 
 	// Widget-interaction lasers. Trace forward from each controller and hit
 	// the WidgetComponent on the diegetic scope; a trigger press then routes
@@ -122,10 +126,18 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	LeftHand = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("LeftHand"));
 	LeftHand->SetupAttachment(LeftController);
 	LeftHand->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	// Explicitly visible to non-owner cameras so the instructor's Operator
+	// PIP scene capture picks up the hands - default OnlyOwnerSee that some
+	// Meta XR / SDK plugins set on hand meshes would hide them from the
+	// SceneCapture (which has no "owner"). - TripleA
+	LeftHand->SetOnlyOwnerSee(false);
+	LeftHand->SetOwnerNoSee(false);
 
 	RightHand = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("RightHand"));
 	RightHand->SetupAttachment(RightController);
 	RightHand->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RightHand->SetOnlyOwnerSee(false);
+	RightHand->SetOwnerNoSee(false);
 
 	// Fingertip collision spheres. Parented to the controller (not to the
 	// hand mesh) so interaction works whether or not the hand mesh is

@@ -1,5 +1,7 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Simulation/ClearanceSimulationController.h"
+#include "Simulation/ClearanceVROperatorPawn.h"
+#include "Camera/CameraComponent.h"
 #include "Comms/ClearanceVoiceInput.h"
 #include "Net/UnrealNetwork.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
@@ -190,16 +192,30 @@ void AClearanceOperatorPC::PlayerTick(float DeltaTime)
 	APawn* P = GetPawn();
 	if (!P) { return; }
 
-	// Push every frame the host renders. The replicated UPROPERTY rate is
-	// capped by NetUpdateFrequency anyway, so this is effectively "as fast as
-	// the network allows" - which is what's needed for the PIP to stream
-	// smoothly instead of catching different rotation values per capture. - TripleA
+	// Push at 60 Hz to match the PIP's capture rate. Under (e.g. 30 Hz) the
+	// scene capture samples a stale transform between pushes and the PIP
+	// swims across the level as the operator turns; over (e.g. 120 Hz) the
+	// RPC layer chokes the Quest 3 link. 60 Hz sits at the sweet spot. - TripleA
 	ViewPushAccumSec += DeltaTime;
-	if (ViewPushAccumSec < (1.f / 120.f)) { return; }
+	if (ViewPushAccumSec < (1.f / 60.f)) { return; }
 	ViewPushAccumSec = 0.f;
 
-	const FRotator Rot = GetControlRotation();
-	const FVector Loc = P->GetPawnViewLocation();
+	// In VR the HMD drives the Camera component directly (bLockToHmd=true)
+	// and never touches ControlRotation. Reading GetControlRotation() gave
+	// us the stationary pawn yaw regardless of where the operator was
+	// actually looking, so the instructor "Operator POV" camera stayed
+	// static. Pull from the camera component itself when the pawn exposes
+	// one. - TripleA
+	FRotator Rot = GetControlRotation();
+	FVector Loc = P->GetPawnViewLocation();
+	if (const AClearanceVROperatorPawn* VP = Cast<AClearanceVROperatorPawn>(P))
+	{
+		if (VP->Camera)
+		{
+			Rot = VP->Camera->GetComponentRotation();
+			Loc = VP->Camera->GetComponentLocation();
+		}
+	}
 
 	if (HasAuthority())
 	{

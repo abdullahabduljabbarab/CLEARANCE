@@ -1285,6 +1285,12 @@ public:
 	UPROPERTY(Replicated)
 	FVector OperatorViewLocation = FVector::ZeroVector;
 
+	// Smoothed PIP transform for Operator mode - low-pass filter of the
+	// pushed headset pose so the instructor sees a stable image-stabilized
+	// feed instead of raw HMD jitter. Not replicated; server-only. - TripleA
+	FVector OperatorPipSmoothLocation = FVector::ZeroVector;
+	FRotator OperatorPipSmoothRotation = FRotator::ZeroRotator;
+
 	void SpawnPresetCameras();
 	// Public so fast-moving actors (missiles) can force a camera refresh
 	// at the end of their own tick. Without this the follow camera sees

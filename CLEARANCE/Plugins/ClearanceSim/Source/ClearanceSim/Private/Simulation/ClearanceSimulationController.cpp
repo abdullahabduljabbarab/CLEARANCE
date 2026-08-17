@@ -6327,9 +6327,21 @@ void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
 		{
 			return; // no data yet - operator PC hasn't ticked
 		}
-		TargetLoc = OperatorViewLocation;
-		TargetRot = OperatorViewRotation;
-		TargetFOV = 90.f;
+		// Low-pass filter the PIP transform toward the operator's current
+		// headset pose. Interp rates chosen so a full head rotation is
+		// picked up in ~200 ms but any single-frame HMD jitter is heavily
+		// damped - the instructor gets a stable image-stabilized feed
+		// instead of a jittery one when the operator turns their head. - TripleA
+		const FVector RawLoc = OperatorViewLocation;
+		const FRotator RawRot = OperatorViewRotation;
+		OperatorPipSmoothLocation = FMath::VInterpTo(OperatorPipSmoothLocation, RawLoc, DeltaSeconds, 12.f);
+		OperatorPipSmoothRotation = FMath::RInterpTo(OperatorPipSmoothRotation, RawRot, DeltaSeconds, 12.f);
+		TargetLoc = OperatorPipSmoothLocation;
+		TargetRot = OperatorPipSmoothRotation;
+		// Quest 3 horizontal FOV per eye is ~110deg. The PIP is monoscopic so
+		// using per-eye HFOV gives the instructor roughly the same field the
+		// operator sees through the headset. - TripleA
+		TargetFOV = 110.f;
 		break;
 	}
 	default:

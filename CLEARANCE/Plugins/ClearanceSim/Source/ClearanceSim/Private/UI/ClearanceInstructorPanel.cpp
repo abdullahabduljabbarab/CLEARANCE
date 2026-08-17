@@ -1378,6 +1378,18 @@ namespace
 		{
 			FSetRowDataParam Param;
 			Param.Row = Row;
+			// Convert heading fields into MAGNETIC just for the BP display.
+			// Sim internal frame is CCW-mirrored from magnetic; every other
+			// display site does this conversion at read time, but Neo's row
+			// widget binds R.Heading raw so the numbers came through in the
+			// sim frame and didn't match the scope. Local-copy conversion
+			// keeps every other consumer of the struct untouched. - TripleA
+			auto SimToMag = [](float H)
+			{
+				return FMath::Fmod(FMath::Fmod(360.f - H, 360.f) + 360.f, 360.f);
+			};
+			Param.Row.Heading       = SimToMag(Param.Row.Heading);
+			Param.Row.TargetHeading = SimToMag(Param.Row.TargetHeading);
 			RowWidget->ProcessEvent(Fn, &Param);
 		}
 	}

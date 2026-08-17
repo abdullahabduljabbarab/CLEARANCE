@@ -59,6 +59,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
 	FSectorEnvironment GetCurrentEnvironment() const;
 
+	// Pushed by SimulationController each tick so behaviour can convert
+	// per-real-second rates (like ground-roll braking) into sim-time. - TripleA
+	void SetSimulationTimeScale(float NewScale) { SectorEnvironment.SimulationTimeScale = FMath::Max(0.001f, NewScale); }
+
 	// Set the wind up front (runways are provided separately via SetRunways).
 	UFUNCTION(BlueprintCallable, Category = "Airspace|Environment")
 	void InitialiseEnvironment(float WindDir, float WindSpeed);

@@ -929,6 +929,9 @@ struct CLEARANCESIM_API FSectorEnvironment
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
 	TArray<float> AvailableRunways;		// selectable runway headings (deg), for display
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
+	float SimulationTimeScale = 1.f;	// >1 = accelerated - used by ground roll to keep brake in real seconds
 };
 
 // ============================================================================

@@ -423,28 +423,26 @@ void AClearanceSimulationController::InitialiseSystems()
 			// thin rectangle at an oblique heading (Warton's 290 is a 50° tilt from world
 			// axes) is nearly square, so projecting it back leaks length into width and
 			// the sim ends up drawing a 1500 m wide runway. - TripleA
-			FVector CentreW = It->GetActorLocation();
+			// Threshold is the actor's root (Threshold component) - that's what
+			// moves when the level designer drags the actor. Mesh is decorative,
+			// used only for length/width; using the mesh's world centre here
+			// leaked mesh-local offsets into the threshold and made the runway
+			// "not move in game" when the actor was repositioned. - TripleA
+			const FVector ActorLoc = It->GetActorLocation();
 			float LengthW = 1600.f; // fallback (~1.6nm) until a mesh is assigned
 			float WidthW  = 4500.f; // fallback ~45m strip
-			float TopZ = CentreW.Z;
+			float TopZ = ActorLoc.Z;
 
 			if (It->OverrideLengthUnits > 0.f && It->OverrideWidthUnits > 0.f)
 			{
 				LengthW = It->OverrideLengthUnits;
 				WidthW  = It->OverrideWidthUnits;
-				FVector MeshCentre, MeshExtent;
-				if (It->GetRunwayBounds(MeshCentre, MeshExtent))
-				{
-					CentreW = MeshCentre;
-					TopZ = MeshCentre.Z + MeshExtent.Z;
-				}
 			}
 			else
 			{
 				FVector MeshCentre, MeshExtent;
 				if (It->GetRunwayBounds(MeshCentre, MeshExtent))
 				{
-					CentreW = MeshCentre;
 					LengthW = 2.f * (MeshExtent.X * FMath::Abs(Inbound.X) + MeshExtent.Y * FMath::Abs(Inbound.Y));
 					// Perpendicular to the heading - swaps the axis the projection
 					// reads. - TripleA
@@ -454,8 +452,12 @@ void AClearanceSimulationController::InitialiseSystems()
 				}
 			}
 
-			const FVector2D CentreNm((CentreW.X - Origin.X) / WorldUnitsPerNm, (CentreW.Y - Origin.Y) / WorldUnitsPerNm);
-			const float HalfNm = (LengthW / WorldUnitsPerNm) * 0.5f;
+			// Actor location IS the near threshold. Reciprocal end sits one
+			// full length inbound down the runway. - TripleA
+			const FVector2D ThresholdNearNm((ActorLoc.X - Origin.X) / WorldUnitsPerNm, (ActorLoc.Y - Origin.Y) / WorldUnitsPerNm);
+			const float FullLenNm = LengthW / WorldUnitsPerNm;
+			const FVector2D CentreNm = ThresholdNearNm + Inbound * (FullLenNm * 0.5f);
+			const float HalfNm = FullLenNm * 0.5f;
 
 			// Landing on H, you cross the near threshold (behind the centre) and roll
 			// through; the reciprocal lands the other way from the far end. - TripleA
@@ -1305,6 +1307,7 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 		if (bThreatPresent != bGCIMode) { SetGCIModeEnabled(bThreatPresent); }
 	}
 
+	if (AirspaceManager) { AirspaceManager->SetSimulationTimeScale(SimulationTimeScale); }
 	StepSimulation(SimDelta);
 
 	// Capture the post-tick state into the recording timeline.
@@ -2674,9 +2677,35 @@ void AClearanceSimulationController::StepSimulation(float DeltaTime)
 FVector AClearanceSimulationController::WorldPositionFor(const FAircraftState& State) const
 {
 	const FVector Origin = GetActorLocation();
-	return FVector(Origin.X + State.Position.X * WorldUnitsPerNm,
-		Origin.Y + State.Position.Y * WorldUnitsPerNm,
-		GroundWorldZ + AltitudeToWorldZOffset(State.Altitude));
+	const double WorldX = Origin.X + State.Position.X * WorldUnitsPerNm;
+	const double WorldY = Origin.Y + State.Position.Y * WorldUnitsPerNm;
+
+	// Ground reference is a downward trace from well above so it picks up
+	// whatever's actually beneath the aircraft - Cesium tile at whatever LOD
+	// streamed in, or a placed collision pad. Fixed GroundWorldZ misses the
+	// streaming height changes and the aircraft ends up underground when
+	// tiles resolve higher than the reference. - TripleA
+	float GroundZ = GroundZAtXY(FVector2D(WorldX, WorldY));
+
+	return FVector(WorldX, WorldY,
+		GroundZ + AltitudeToWorldZOffset(State.Altitude));
+}
+
+float AClearanceSimulationController::GroundZAtXY(const FVector2D& WorldXY) const
+{
+	if (const UWorld* World = GetWorld())
+	{
+		const FVector Start(WorldXY.X, WorldXY.Y, GroundWorldZ + 200000.f);
+		const FVector End  (WorldXY.X, WorldXY.Y, GroundWorldZ - 200000.f);
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(SimGroundTrace), /*bTraceComplex=*/true);
+		Params.bReturnPhysicalMaterial = false;
+		if (World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+		{
+			return Hit.ImpactPoint.Z;
+		}
+	}
+	return GroundWorldZ;
 }
 
 FVector AClearanceSimulationController::WorldToSimMeters(const FVector& WorldLocation) const

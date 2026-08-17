@@ -73,6 +73,7 @@ private:
 	int32 ActiveTurnDirection = 0; // -1 left / +1 right / 0 shortest, for the current turn
 	bool bExpediting = false;      // boosted climb/descent for the current altitude change
 	bool bApproachCaptured = false;// true once established on the localiser (then it flies the ILS)
+	float ApproachSlopeFtPerNm = 212.f; // personal glide gradient snapshotted at clearance so aircraft descends from where cleared, not where the textbook 3deg slope catches
 
 	// Simulink cascade autopilot state - the wrapper owns the model's
 	// internal timekeeping so each aircraft gets its own PID history.

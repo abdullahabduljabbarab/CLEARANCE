@@ -1418,6 +1418,12 @@ public:
 	// Altitude (ft) -> vertical world offset above ground, via the altitude curve.
 	float AltitudeToWorldZOffset(float AltitudeFt) const;
 
+	// Traces down at (X, Y) and returns the hit Z, so ground follows Cesium
+	// tiles at whatever LOD is currently streamed in (and any BlockAll pad
+	// placed by the level designer) rather than a fixed reference. Falls back
+	// to GroundWorldZ when nothing is hit. - TripleA
+	float GroundZAtXY(const FVector2D& WorldXY) const;
+
 	// Inverse of WorldPositionFor for a ground-level placement. Takes a UE
 	// world location (cm) and returns the corresponding sim-frame metres
 	// (X = east metres, Y = north metres, Z = altitude metres above sea).

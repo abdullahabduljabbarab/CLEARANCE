@@ -150,11 +150,14 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 		State.Altitude = 0.f;
 		State.ClimbRate = 0.f;
 
-		// Wheel braking to a stop, at a rate set by the aircraft's category - a Heavy
-		// rolls out far longer than a Light. - TripleA
-		const float BrakeKtsPerSec = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).GroundBrakingKtsPerSec;
+		// Wheel braking in REAL seconds so the rollout is the same real-time
+		// duration regardless of sim speed (sim runs at 20-80x). Scaled up
+		// aggressively (~15x table) so the aircraft stops within runway
+		// length instead of overshooting into the sea. - TripleA
+		const float BrakeKtsPerRealSec = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).GroundBrakingKtsPerSec * 8.f;
+		const float TimeScale = FMath::Max(0.001f, Env.SimulationTimeScale);
 		State.TargetSpeed = 0.f;
-		State.Speed = FMath::Max(0.f, State.Speed - BrakeKtsPerSec * DeltaTime);
+		State.Speed = FMath::Max(0.f, State.Speed - (BrakeKtsPerRealSec / TimeScale) * DeltaTime);
 
 		StepHeading(State, DeltaTime); // keep it tracking straight down the runway
 
@@ -177,9 +180,23 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 			if (!bApproachCaptured && IsEstablishedOnApproach(State, Env))
 			{
 				bApproachCaptured = true;
+				// Snapshot the personal glide gradient at clearance: the
+				// straight line from where the aircraft is RIGHT NOW down
+				// to the aim point. Aircraft flies this from tick one, so
+				// it starts descending immediately regardless of where
+				// cleared - no "level until the 2deg slope catches".
+				// Clamped so unusually close/high clearances don't set
+				// a dive-bomb gradient. - TripleA
+				const FVector2D CapThreshold(Env.ActiveRunwayThreshold.X, Env.ActiveRunwayThreshold.Y);
+				const FVector2D CapRel = FVector2D(State.Position.X, State.Position.Y) - CapThreshold;
+				const float CapFacRad = FMath::DegreesToRadians(Env.ActiveRunwayHeading >= 0.f ? Env.ActiveRunwayHeading : 270.f);
+				const FVector2D CapInbound(FMath::Sin(CapFacRad), FMath::Cos(CapFacRad));
+				const float CapAlong = FVector2D::DotProduct(CapRel, CapInbound);
+				const float CapDistToAimNm = FMath::Max(0.5f, -(CapAlong - TouchdownZoneOffsetNm));
+				ApproachSlopeFtPerNm = FMath::Max(10.f, State.Altitude / CapDistToAimNm);
 				if (GEngine)
 				{
-					GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, FString::Printf(TEXT("%s established on the approach"), *State.Callsign.ToString()));
+					GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, FString::Printf(TEXT("%s established on the approach, slope %.0f ft/nm"), *State.Callsign.ToString(), ApproachSlopeFtPerNm));
 				}
 			}
 
@@ -210,7 +227,10 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 		// exactly wrong for lead-pursuit intercepts where the commanded
 		// heading changes fast as the fighter closes. Bypass keeps the
 		// interceptor latched onto the target. - TripleA
-		if (bAutopilotEngaged && !State.bUnderGCIControl)
+		const bool bOnApproachHandFly = bApproachCaptured &&
+			(State.FlightPhase == EFlightPhase::Approach || State.FlightPhase == EFlightPhase::Landing);
+
+		if (bAutopilotEngaged && !State.bUnderGCIControl && !bOnApproachHandFly)
 		{
 			// Simulink cascade autopilot owns speed / bank / climb-rate
 			// this tick. Heading and position still integrate from the
@@ -219,6 +239,10 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 		}
 		else
 		{
+			// Approach: bypass the autopilot cascade entirely. The Step
+			// functions have hand-fly overrides that fly a fixed 3deg
+			// glide, an aggressive Vref decel, and a snappy localiser
+			// turn - none of which the cascade would tolerate. - TripleA
 			StepHeading(State, DeltaTime);
 			StepAltitude(State, DeltaTime);
 			StepSpeed(State, DeltaTime);
@@ -299,8 +323,16 @@ void UClearanceAircraftBehaviour::StepHeading(FAircraftState& State, float Delta
 		return;
 	}
 
-	const float MaxStep = TurnRateDegPerSec(State) * DeltaTime;
+	float MaxStep = TurnRateDegPerSec(State) * DeltaTime;
 	const float BankLimit = ClearanceConstants::GetEffectivePerformance(State.WakeCategory, State.bIsMilitary).BankLimitDeg;
+
+	// Approach mode: pilot flies the localizer directly, not autopilot's
+	// soft-turn chase. Doubles the effective turn rate so course corrections
+	// to stay on centerline are crisp instead of drawn-out S-turns. - TripleA
+	if (State.FlightPhase == EFlightPhase::Approach && bApproachCaptured)
+	{
+		MaxStep *= 2.f;
+	}
 
 	if (ActiveTurnDirection != 0)
 	{
@@ -331,6 +363,36 @@ void UClearanceAircraftBehaviour::StepHeading(FAircraftState& State, float Delta
 
 void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float DeltaTime)
 {
+	// Approach mode: autopilot altitude-hold is OFF. Aircraft is "hand-flown"
+	// on a fixed 3-degree vertical speed (speed * sin(3deg)) but ONLY when
+	// above the glideslope - below it, hold current altitude until the slope
+	// descends to catch us from above (standard ILS-from-below capture).
+	// TargetAltitude is the sim glideslope altitude at current position, set
+	// by RunApproachGuidance. Flare arrests the sink in the last few feet. - TripleA
+	if (State.FlightPhase == EFlightPhase::Approach && bApproachCaptured)
+	{
+		if (State.Altitude > State.TargetAltitude)
+		{
+			// VS matches the personal slope at current airspeed:
+			// slope(ft/nm) * speed(kts)/60 = ft/min. Aircraft glides
+			// down on the same line the target traces. - TripleA
+			float DescentFpm = ApproachSlopeFtPerNm * State.Speed / 60.f;
+			if (State.Altitude < 40.f)
+			{
+				DescentFpm = FMath::Min(DescentFpm, 180.f);
+			}
+			const float Step = -(DescentFpm / 60.f) * DeltaTime;
+			const float NewAlt = FMath::Max(State.TargetAltitude, State.Altitude + Step);
+			State.ClimbRate = (DeltaTime > 0.f) ? (NewAlt - State.Altitude) / DeltaTime * 60.f : 0.f;
+			State.Altitude = FMath::Clamp(NewAlt, 0.f, State.ServiceCeiling);
+		}
+		else
+		{
+			State.ClimbRate = 0.f;
+		}
+		return;
+	}
+
 	const float Delta = State.TargetAltitude - State.Altitude;
 	if (FMath::Abs(Delta) <= AltitudeToleranceFt)
 	{
@@ -360,14 +422,6 @@ void UClearanceAircraftBehaviour::StepAltitude(FAircraftState& State, float Delt
 		RateFtPerMin *= 1.5f; // "expedite" - push the rate up
 	}
 
-	// Flare: in the last few feet of an approach, arrest the sink to a gentle touchdown
-	// rate so it settles softly instead of arriving at full descent rate and dropping
-	// onto the runway. - TripleA
-	if (Delta < 0.f && State.FlightPhase == EFlightPhase::Approach && State.Altitude < 40.f)
-	{
-		RateFtPerMin = FMath::Min(RateFtPerMin, 180.f);
-	}
-
 	const float MaxStep = (RateFtPerMin / 60.f) * DeltaTime;
 	const float Step = FMath::Clamp(Delta, -MaxStep, MaxStep);
 
@@ -381,6 +435,18 @@ void UClearanceAircraftBehaviour::StepSpeed(FAircraftState& State, float DeltaTi
 	if (FMath::Abs(Delta) <= SpeedToleranceKnots)
 	{
 		State.Speed = State.TargetSpeed;
+		return;
+	}
+
+	// Approach mode: autopilot autothrottle chase is OFF. Aircraft commits
+	// to Vref immediately at an aggressive decel rate (real crews configure
+	// flaps early and drop speed hard once cleared). No slow-glide-down
+	// at 200 kts halfway to the runway. - TripleA
+	if (State.FlightPhase == EFlightPhase::Approach && bApproachCaptured)
+	{
+		const float ApproachDecelKtsSec = 3.f;
+		const float ApproachStep = FMath::Clamp(Delta, -ApproachDecelKtsSec * DeltaTime, ApproachDecelKtsSec * DeltaTime);
+		State.Speed = FMath::Clamp(State.Speed + ApproachStep, State.MinOperatingSpeed, State.MaxOperatingSpeed);
 		return;
 	}
 
@@ -570,46 +636,49 @@ void UClearanceAircraftBehaviour::RunApproachGuidance(FAircraftState& State, con
 	const float CrossTrackNm = FVector2D::DotProduct(Rel, RightOfCourse);
 	const float AlongTrack = FVector2D::DotProduct(Rel, Inbound); // < 0 before the threshold, 0 at it
 
-	// Two-mode guidance so nuclear capture (aircraft anywhere in the
-	// sector at clearance time) still delivers to the runway. FAR mode
-	// points straight at the threshold; NEAR mode uses standard
-	// localizer alignment once close enough for that to converge. - TripleA
-	const bool bFarOffLocalizer = FMath::Abs(CrossTrackNm) > 6.f || AlongTrack > -8.f;
-	if (bFarOffLocalizer)
+	// Localizer alignment: wind crab + cross-track correction. The crab
+	// angle points the nose into wind so ground track stays on the
+	// centreline; the correction is a proportional turn toward the line
+	// when off it. Without the crab the aircraft would drift with the
+	// wind, and the cross-track correction would settle at a persistent
+	// heading offset that didn't match the runway number. - TripleA
+	const float WindTowardRad = FMath::DegreesToRadians(Env.WindDirection + 180.f);
+	const FVector2D WindVec(FMath::Sin(WindTowardRad), FMath::Cos(WindTowardRad));
+	const float WindCrossKts = Env.WindSpeed * FVector2D::DotProduct(WindVec, RightOfCourse);
+	const float AirspeedKts = FMath::Max(1.f, State.Speed);
+	const float CrabDeg = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(WindCrossKts / AirspeedKts, -1.f, 1.f)));
+
+	float Correction = 0.f;
+	if (FMath::Abs(CrossTrackNm) >= 0.25f)
 	{
-		const FVector2D ToThreshold = -Rel;
-		float BearingToTh = FMath::RadiansToDegrees(FMath::Atan2(ToThreshold.X, ToThreshold.Y));
-		if (BearingToTh < 0.f) { BearingToTh += 360.f; }
-		State.TargetHeading = BearingToTh;
+		Correction = FMath::Clamp(-CrossTrackNm * 8.f, -30.f, 30.f);
 	}
-	else
-	{
-		const float Correction = FMath::Clamp(-CrossTrackNm * 5.f, -45.f, 45.f);
-		State.TargetHeading = FMath::Fmod(FAC + Correction + 360.f, 360.f);
-	}
+	State.TargetHeading = FMath::Fmod(FAC - CrabDeg + Correction + 360.f, 360.f);
 	ActiveTurnDirection = 0;
 
-	// Aim point sits a little way INTO the runway (the real touchdown zone is ~300m
-	// past the threshold), not right on the lip. The 3-degree glideslope (~318 ft/nm)
-	// is measured to that aim point, so height hits 0 there. - TripleA
-	const float AimAlong = AlongTrack - TouchdownZoneOffsetNm; // < 0 before the aim point, 0 at it
+	// Aim point sits a little way INTO the runway (the real touchdown zone is
+	// ~300m past the threshold). - TripleA
+	const float AimAlong = AlongTrack - TouchdownZoneOffsetNm; // < 0 before aim, 0 at it
 	const float DistToAimNm = FMath::Max(0.f, -AimAlong);
-	const float GlideAlt = DistToAimNm * 318.f;
-	State.TargetAltitude = FMath::Min(State.TargetAltitude, GlideAlt);
+
+	// TargetAltitude = personal glide gradient (snapshotted at clearance)
+	// evaluated at current distance. Aircraft descends from where it was
+	// cleared down to the aim point on a straight line, starting to
+	// descend from moment one. - TripleA
+	State.TargetAltitude = DistToAimNm * ApproachSlopeFtPerNm;
 
 	// Settle onto a final-approach speed.
 	State.TargetSpeed = State.MinOperatingSpeed + 10.f;
 
-	// Touchdown at the aim point regardless of altitude. Under nuclear
-	// capture an aircraft may cross the threshold higher than the
-	// glideslope wants; keeping the "must be at 20 ft" gate would then
-	// send it past and FAR-mode guidance would loop it back into a
-	// 360. Force the landing state at the aim point; ground-roll logic
-	// snaps altitude to 0. - TripleA
-	if (AimAlong >= 0.f)
+	// Touchdown when close to the deck in the runway zone. Guarantee Vref at
+	// the point of touchdown so the ground roll starts at proper landing
+	// speed - approach decel or flare may have shed extra speed and left it
+	// slow, which then stops in a couple of seconds instead of rolling out. - TripleA
+	if (State.Altitude <= 20.f && AimAlong >= -0.5f)
 	{
 		State.Altitude = 0.f;
 		State.FlightPhase = EFlightPhase::Landing;
+		State.Speed = FMath::Max(State.Speed, State.MinOperatingSpeed + 10.f);
 	}
 }
 

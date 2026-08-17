@@ -405,9 +405,8 @@ void UClearanceMenuFunctionLibrary::SaveStartInVR(bool bStartInVR)
 // ---------------------------------------------------------------------
 // PTT key capture. Registers a global Slate input pre-processor that
 // intercepts the next key down event before any widget sees it, fires
-// the BP delegate, unregisters itself. This dodges the UMG override-a-
-// virtual-function problem the MCP tooling hit - all state lives here
-// in C++, the widget only calls two BlueprintCallable statics. - TripleA
+// the BP delegate, unregisters itself. Keeps state entirely in C++ -
+// the widget only calls two BlueprintCallable statics. - TripleA
 // ---------------------------------------------------------------------
 
 namespace ClearanceMenuFuncLib_Private

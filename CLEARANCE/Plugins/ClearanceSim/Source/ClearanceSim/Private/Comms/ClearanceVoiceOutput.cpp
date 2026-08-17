@@ -765,7 +765,6 @@ void AClearanceVoiceOutput::PlayPCM(FName Callsign, const FString& Text, int32 S
 	}
 
 	OnPilotSpoke.Broadcast(Callsign, Text);
-	UE_LOG(LogTemp, Display, TEXT("[VoiceOut] %s spoke: \"%s\""), *Callsign.ToString(), *Text);
 
 	// Reserve the half-duplex channel for the duration of the audio plus a small
 	// gap. When the timer fires the channel opens for the next transmission. - TripleA

@@ -90,25 +90,6 @@ void UClearanceDDSEmitter::EmitStates(const TArray<FAircraftState>& States, floa
 {
 	if (!Publisher.IsValid()) { return; }
 
-	// Diagnostic: log ONCE PER SECOND showing what THIS instance is publishing.
-	// Time-gated so it doesn't flood. Two instances writing here will produce
-	// two distinguishable log lines with their own SiteId. - TripleA
-	static double LastEmitLogTime = 0.0;
-	const double NowSec = FPlatformTime::Seconds();
-	if (NowSec - LastEmitLogTime > 1.0)
-	{
-		LastEmitLogTime = NowSec;
-		FString Callsigns;
-		for (int32 i = 0; i < FMath::Min(3, States.Num()); ++i)
-		{
-			Callsigns += (i > 0 ? TEXT(",") : TEXT("")) + States[i].Callsign.ToString();
-		}
-		UE_LOG(LogTemp, Display,
-			TEXT("[DDS] EmitStates SiteId=%d NumStates=%d Sample=[%s] PublishedTotal=%llu"),
-			SiteId, States.Num(), *Callsigns,
-			(unsigned long long)Publisher->GetTotalPublishedCount());
-	}
-
 	for (const FAircraftState& S : States)
 	{
 		if (!S.bIsValid) { continue; }

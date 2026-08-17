@@ -11,7 +11,6 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
-#include "DrawDebugHelpers.h"
 
 // -----------------------------------------------------------------------
 // Unit conversions between CLEARANCE (nm / ft / kts) and the missile
@@ -481,32 +480,6 @@ void AClearanceMissile::Tick(float DeltaSeconds)
 		bHasLastWorldLocation = true;
 	}
 
-	// Diagnostic visualisation. Draws a red sphere at the missile's world
-	// position and a yellow line to the target every tick. Persistent for
-	// one tick so the shapes update in place. Visible in editor + PIE by
-	// default; no `Show > Debug` toggle needed. - TripleA
-	if (UWorld* W = GetWorld())
-	{
-		const FVector MissileWorld = GetActorLocation();
-		const FVector TargetWorldCm = TargetPosWorld * 100.0;
-		DrawDebugSphere(W, MissileWorld, 200.f, 8, FColor::Red,   false, -1.f, 0, 2.f);
-		DrawDebugSphere(W, TargetWorldCm, 300.f, 8, FColor::Green, false, -1.f, 0, 2.f);
-		DrawDebugLine(W, MissileWorld, TargetWorldCm, FColor::Yellow, false, -1.f, 0, 1.f);
-	}
-
-	// Log once per second so the console shows convergence progress.
-	// Per-instance state - a `static` here would leak across launches and
-	// silence logs on any missile spawned after the first one finished. - TripleA
-	if (ElapsedSeconds - LastLogSeconds >= 1.0)
-	{
-		LastLogSeconds = ElapsedSeconds;
-		const double RangeMeters = FVector::Dist(MissilePosMeters, TargetPosWorld);
-		UE_LOG(LogTemp, Log,
-			TEXT("[ClearanceMissile] t=%5.2fs range=%6.0fm  missile=(%.0f, %.0f, %.0f) target=(%.0f, %.0f, %.0f)"),
-			ElapsedSeconds, RangeMeters,
-			MissilePosMeters.X, MissilePosMeters.Y, MissilePosMeters.Z,
-			TargetPosWorld.X, TargetPosWorld.Y, TargetPosWorld.Z);
-	}
 
 	// Force the mesh transform to propagate immediately so a same-frame
 	// camera update (below) sees the mesh in its final position. Without

@@ -131,11 +131,6 @@ protected:
 	// Elapsed engagement time in seconds since launch.
 	double ElapsedSeconds = 0.0;
 
-	// Tracks the last ElapsedSeconds we emitted a range/position log at,
-	// so the once-per-second cadence stays per-missile instead of leaking
-	// across launches via a function-local static. - TripleA
-	double LastLogSeconds = -1.0;
-
 	// The guidance wrapper. Owns the RT_MODEL_missile_T for this missile.
 	// Held as a unique_ptr because FMissileWrapper is non-copyable and
 	// UPROPERTY doesn't like raw non-UObject wrappers. - TripleA

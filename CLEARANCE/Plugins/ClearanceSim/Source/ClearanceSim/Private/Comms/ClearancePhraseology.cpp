@@ -914,7 +914,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceSayCmd(
 		{
 			const FString Readback = UClearancePhraseology::Interpret(*It, Transmission);
 			UE_LOG(LogTemp, Display, TEXT("[ATC] \"%s\"  ->  %s"), *Transmission, *Readback);
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Emerald, FString::Printf(TEXT("ATC: %s"), *Readback)); }
 			return;
 		}
 	}));

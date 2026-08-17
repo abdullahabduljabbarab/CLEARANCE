@@ -208,7 +208,7 @@ public:
 
 	// Kept for legacy compatibility - previous button-based pause approach.
 	// Not read anywhere any more; the grip long-press is the current input.
-	// Left as an assignable UPROPERTY in case Neo wants to re-attach it to
+	// Left as an assignable UPROPERTY in case it needs to be re-attached to
 	// a working input path later. - TripleA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "VR|Input")
 	TObjectPtr<UInputAction> PauseMenuAction;
@@ -287,8 +287,8 @@ public:
 
 	// Fires on right-trigger press while the menu is showing. Default C++
 	// implementation dispatches by index: 0 = HidePauseMenu, anything else
-	// = ExitToMainMenu (open LVL_MainMenu with HMD off). Neo can override
-	// in BP_VROperatorPawn to add options / change routing without touching
+	// = ExitToMainMenu (open LVL_MainMenu with HMD off). Overridable in
+	// BP_VROperatorPawn to add options / change routing without touching
 	// C++. - TripleA
 	UFUNCTION(BlueprintNativeEvent, Category = "VR|Pause Menu")
 	void OnPauseMenuConfirm(int32 SelectedIndex);
@@ -342,9 +342,9 @@ private:
 
 public:
 
-	// Optional visual laser mesh slots. Neo assigns a thin cyan cylinder
-	// mesh in the BP subclass. Auto-scale-Z per tick to end at the widget
-	// hit point while the pause menu is showing; hidden otherwise. - TripleA
+	// Optional visual laser mesh slots. Assign a thin cyan cylinder mesh
+	// in the BP subclass. Auto-scale-Z per tick to end at the widget hit
+	// point while the pause menu is showing; hidden otherwise. - TripleA
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "VR|Pause Menu")
 	TObjectPtr<UStaticMeshComponent> LeftLaser;
 
@@ -426,8 +426,8 @@ public:
 	// renders on a world-space UWidgetComponent under Substrate + VR;
 	// nested UUserWidget children are silently dropped by the rasterizer),
 	// then per-tick updates text and colors in place. Extra pooled rows
-	// collapse when the live aircraft count is smaller. Neo calls this
-	// from Event Tick on WBP_OperatorStrip. - TripleA
+	// collapse when the live aircraft count is smaller. Called from
+	// Event Tick on WBP_OperatorStrip. - TripleA
 	UFUNCTION(BlueprintCallable, Category = "VR|Strip")
 	void RefreshStripRows(UPanelWidget* Container, class UWidgetComponent* HostComponent);
 

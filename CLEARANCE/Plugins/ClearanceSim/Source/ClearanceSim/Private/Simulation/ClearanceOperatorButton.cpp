@@ -17,21 +17,17 @@
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
-// Green on-screen prints on the whole console-button chain. Flip to 1 to
-// re-enable if a diegetic button stops firing and you need to trace the
-// press dispatch back through hover / trigger / handler. - TripleA
+// Output-log trace on the whole console-button chain. Flip to 1 to re-enable
+// if a diegetic button stops firing and you need to trace the press dispatch
+// back through hover / trigger / handler. - TripleA
 #ifndef CLEARANCE_LOG_OPERATOR_BUTTONS
 #define CLEARANCE_LOG_OPERATOR_BUTTONS 0
 #endif
 
 #if CLEARANCE_LOG_OPERATOR_BUTTONS
-static void ClearanceButtonDebug(int32 Key, const FColor& C, const FString& Msg)
+static void ClearanceButtonDebug(int32 /*Key*/, const FColor& /*C*/, const FString& Msg)
 {
 	UE_LOG(LogTemp, Warning, TEXT("[OperatorButton] %s"), *Msg);
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(Key, 3.f, C, Msg);
-	}
 }
 #else
 static void ClearanceButtonDebug(int32, const FColor&, const FString&) {}

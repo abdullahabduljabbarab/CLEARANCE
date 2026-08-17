@@ -12,17 +12,9 @@
 #include "EngineUtils.h"
 #include "Comms/ClearanceVoiceOutput.h"
 
-// On-screen + log together so something is visible whether the player has the
-// Output Log open or just the live HUD. Each scenario message gets a fresh slot
-// so it stacks rather than overwriting. - TripleA
-static void ScenarioSay(const FString& Msg, const FColor& Col = FColor(180, 230, 255))
-{
-	UE_LOG(LogTemp, Display, TEXT("[Scenario] %s"), *Msg);
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 8.f, Col, FString::Printf(TEXT("SCENARIO  %s"), *Msg));
-	}
-}
+// Scenario event trace, silent in released builds. On-screen presentation is
+// handled by the instructor / operator UI, not the debug HUD. - TripleA
+static void ScenarioSay(const FString& /*Msg*/, const FColor& /*Col*/ = FColor(180, 230, 255)) {}
 
 // ---------------------------------------------------------------------------
 // JSON helpers - keep parsing tolerant: missing fields fall back to sensible

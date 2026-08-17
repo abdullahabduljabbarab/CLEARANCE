@@ -188,14 +188,13 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	// Laser meshes for the pause menu. Hidden by default; TogglePauseMenu
 	// flips them visible + stretches them per tick to terminate at the
 	// widget hit point. Auto-assigns the engine's default cylinder mesh
-	// as a working placeholder so the lasers are visible without needing
-	// Neo to override a C++-owned StaticMesh property in the BP subclass
-	// (which MCP tools can't do for native components). Default cylinder
-	// is Z-up 100cm tall x 100cm diameter - we rotate it Pitch=90 so its
-	// Z-axis becomes the actor's forward +X, then scale to (LengthPerTick,
-	// 0.005, 0.005) making a thin 0.5cm-radius beam that stretches in
-	// world along the aim direction. Neo can override the mesh + material
-	// later; the default gets us a visible laser today. - TripleA
+	// as a working placeholder so the lasers are visible without a BP
+	// subclass having to override a native-component StaticMesh property.
+	// Default cylinder is Z-up 100cm tall x 100cm diameter - we rotate it
+	// Pitch=90 so its Z-axis becomes the actor's forward +X, then scale to
+	// (LengthPerTick, 0.005, 0.005) making a thin 0.5cm-radius beam that
+	// stretches in world along the aim direction. Mesh + material are
+	// overridable per subclass; the default gets a visible laser today. - TripleA
 	LeftLaser = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("LeftLaser"));
 	LeftLaser->SetupAttachment(LeftController);
 	LeftLaser->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -221,8 +220,8 @@ AClearanceVROperatorPawn::AClearanceVROperatorPawn()
 	// EmissiveMeshMaterial is the shipped unlit-with-emissive-vertex-color
 	// material - works at runtime (unlike /Engine/EditorMaterials/ paths
 	// which are cooked out in packaged builds and often missing at PIE
-	// time too). Neo can override with a proper thin cyan tube material
-	// later; this at least makes the lasers visibly cyan-ish now. - TripleA
+	// time too). Overridable per subclass with a proper thin cyan tube
+	// material later; this at least makes the lasers visibly cyan-ish. - TripleA
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> LaserMat(
 		TEXT("/Engine/EngineMaterials/EmissiveMeshMaterial"));
 	if (LaserMat.Succeeded())
@@ -551,20 +550,16 @@ void AClearanceVROperatorPawn::HandleSnapTurn(const FInputActionValue& Value)
 // pressed button regardless of current overlap (press-and-hold PTT needs
 // the release edge even if the operator has since slid off). - TripleA
 
-// Debug prints for the fingertip + trigger chain. Flip to 1 to re-enable
-// yellow / blue on-screen text tracking hover + press events. - TripleA
+// Output-log trace for the fingertip + trigger chain. Flip to 1 to re-enable
+// hover + press event tracing when a diegetic control stops responding. - TripleA
 #ifndef CLEARANCE_LOG_OPERATOR_INTERACTION
 #define CLEARANCE_LOG_OPERATOR_INTERACTION 0
 #endif
 
 #if CLEARANCE_LOG_OPERATOR_INTERACTION
-static void ClearanceInteractionDebug(int32 Key, const FColor& C, const FString& Msg)
+static void ClearanceInteractionDebug(int32 /*Key*/, const FColor& /*C*/, const FString& Msg)
 {
 	UE_LOG(LogTemp, Warning, TEXT("[VRInteraction] %s"), *Msg);
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(Key, 3.f, C, Msg);
-	}
 }
 #else
 static void ClearanceInteractionDebug(int32, const FColor&, const FString&) {}
@@ -1569,8 +1564,8 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		// stereo-layer render path because the buttons' custom WidgetStyle
 		// overrides the runtime tint multiplier. SetStyle replaces the whole
 		// FButtonStyle struct, so a fresh Normal/Hovered/Pressed TintColor
-		// wins outright and Neo's authored padding / brush / border settings
-		// are preserved via the GetStyle() copy. - TripleA
+		// wins outright and the widget's authored padding / brush / border
+		// settings are preserved via the GetStyle() copy. - TripleA
 		// Button names differ per screen. Pause menu + options have four
 		// rows; end-session report has two (Restart / Exit). Highlight
 		// logic below iterates GetCurrentScreenOptionCount so the same
@@ -1625,8 +1620,8 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 				: DimTint;
 
 			// Nuclear tint: rebuild each brush from scratch as a plain box
-			// with our tint, no source texture / material. Neo's authored
-			// brushes may have a dark-baked resource that would multiply
+			// with our tint, no source texture / material. The widget's
+			// authored brushes may have a dark-baked resource that would multiply
 			// our TintColor down to invisible; clearing ResourceObject
 			// forces the brush to draw as a pure solid-colour box using
 			// only TintColor. Loses any rounded-corner / custom-image
@@ -1670,9 +1665,9 @@ void AClearanceVROperatorPawn::Tick(float DeltaSeconds)
 		// Text field. The direct-push path makes C++ the single source
 		// of truth for these values and avoids the paint refresh
 		// depending on Slate binding re-evaluation timing under the
-		// stereo-layer render path. Neo can leave the TextBlocks with
-		// no binding at all - we overwrite the text every frame while
-		// the report screen is up. - TripleA
+		// stereo-layer render path. The TextBlocks can be left with no
+		// binding at all - we overwrite the text every frame while the
+		// report screen is up. - TripleA
 		if (CurrentScreen == EPauseScreen::EndSessionReport)
 		{
 			auto SetText = [this](const TCHAR* Name, const FString& Value)

@@ -478,9 +478,6 @@ void AClearanceSimulationController::InitialiseSystems()
 			A.LengthUnits = LengthW;
 			A.WidthUnits  = WidthW;
 			A.DesignatorOverride = FMath::Clamp(It->DesignatorNumberOverride, 0, 36);
-			UE_LOG(LogTemp, Warning, TEXT("[Runway] REGISTER actor=%s LandingHeadingDeg=%.1f OverrideProp=%d -> RunwayInfo{HeadingDeg=%.1f, DesignatorOverride=%d}"),
-				*It->GetName(), It->LandingHeadingDeg, It->DesignatorNumberOverride,
-				A.HeadingDeg, A.DesignatorOverride);
 			RunwayInfos.Add(A);
 			if (It->bAllowReciprocal)
 			{
@@ -1024,10 +1021,6 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 							*S.Callsign.ToString(), *Z->ZoneName.ToString(),
 							Scoring ? Scoring->PenaltyViolationZoneBreached : 1000);
 						PushNotification(NMsg, FColor::Red, 30.f);
-						if (GEngine)
-						{
-							GEngine->AddOnScreenDebugMessage(102, 30.f, FColor::Red, NMsg);
-						}
 					}
 				}
 			}
@@ -1079,10 +1072,6 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 							*S.Callsign.ToString(), *A->AreaName.ToString(),
 							Scoring ? Scoring->PenaltyRestrictedAirspaceBust : 150);
 						PushNotification(NMsg, FColor(255, 140, 0), 6.f);
-						if (GEngine)
-						{
-							GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor(255, 140, 0), NMsg);
-						}
 					}
 				}
 			}
@@ -1201,10 +1190,6 @@ void AClearanceSimulationController::Tick(float DeltaTime)
 						const FString NMsg = FString::Printf(TEXT("EMERGENCY: %s %s"),
 							*S.Callsign.ToString(), *UEnum::GetDisplayValueAsText(S.ActiveEmergency).ToString());
 						PushNotification(NMsg, Col, 8.f);
-						if (GEngine)
-						{
-							GEngine->AddOnScreenDebugMessage(-1, 8.f, Col, NMsg);
-						}
 					}
 
 					// Audio cue via any placed VoiceOutput:
@@ -1628,12 +1613,6 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 			const TCHAR* Verb = bShadow ? TEXT("shadowing out") : TEXT("escorting out");
 			if (Recorder) { Recorder->LogEvent(SessionTime, FString::Printf(TEXT("JOIN-UP %d-ship on %s, %s heading %.0f"),
 				Grp.Value.Num(), *BanditCs.ToString(), Verb, OutHdg)); }
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan,
-					FString::Printf(TEXT("JOIN-UP  %d-ship on %s  %s heading %.0f"),
-						Grp.Value.Num(), *BanditCs.ToString(), Verb, OutHdg));
-			}
 
 			// Lead viper radio call the moment the flight forms up on
 			// the target. Operator hears the successful join over the
@@ -1753,12 +1732,6 @@ void AClearanceSimulationController::TickGCIIntercepts(float DeltaTime)
 void AClearanceSimulationController::SetGCIModeEnabled(bool bInEnabled)
 {
 	bGCIMode = bInEnabled;
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
-			bInEnabled ? TEXT("GCI / Air Defence mode ON - classify contacts, interrogate IFF, vector intercepts")
-			           : TEXT("GCI / Air Defence mode OFF"));
-	}
 }
 
 void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatClass NewClass, bool bAsInstructor)
@@ -1791,12 +1764,6 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 				TEXT("MISIDENTIFICATION - %s declared HOSTILE despite active IFF / civilian airframe"),
 				*Callsign.ToString()));
 		}
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(101, 30.f, FColor::Red,
-				FString::Printf(TEXT("*** MISIDENTIFICATION *** %s WAS CIVILIAN (-%d)"),
-					*Callsign.ToString(), Scoring ? Scoring->PenaltyMisidentifiedCivilian : 1000));
-		}
 	}
 
 	if (bAsInstructor)
@@ -1818,14 +1785,6 @@ void AClearanceSimulationController::ClassifyAircraft(FName Callsign, EThreatCla
 	// Hostile contacts lock out of civilian ATC immediately.
 	S.bUnderGCIControl = (NewClass == EThreatClass::Hostile);
 	AirspaceManager->RequestStateUpdate(S);
-	if (GEngine)
-	{
-		const TCHAR* L = NewClass == EThreatClass::Friendly ? TEXT("FRIENDLY")
-			: NewClass == EThreatClass::Hostile ? TEXT("HOSTILE")
-			: NewClass == EThreatClass::Neutral ? TEXT("NEUTRAL") : TEXT("UNKNOWN");
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
-			FString::Printf(TEXT("CLASSIFY  %s -> %s"), *Callsign.ToString(), L));
-	}
 }
 
 void AClearanceSimulationController::AnnounceEmergency(FName Callsign, EEmergencyType Kind, const FString& EmergencyDetail)
@@ -2137,7 +2096,6 @@ bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass
 		{
 			const FString NMsg = FString::Printf(TEXT("IFF %s: NO RESPONSE"), *Callsign.ToString());
 			PushNotification(NMsg, FColor::Red, 4.f);
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red, NMsg); }
 		}
 		// Audible "dead air" cue - short static burst so the operator hears the silence,
 		// not just reads it. Routes through any placed VoiceOutput. - TripleA
@@ -2158,10 +2116,6 @@ bool AClearanceSimulationController::InterrogateIFF(FName Callsign, EThreatClass
 			: OutClass == EThreatClass::Neutral ? TEXT("NEUTRAL") : TEXT("UNKNOWN");
 		const FString NMsg = FString::Printf(TEXT("IFF %s: squawk %04d  %s"), *Callsign.ToString(), OutSquawk, L);
 		PushNotification(NMsg, FColor::Green, 4.f);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, NMsg);
-		}
 	}
 	return true;
 }
@@ -2208,7 +2162,6 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 		const FString NMsg = FString::Printf(TEXT("INTERCEPT: %s -> %s no solution (too slow)"),
 			*FighterCallsign.ToString(), *TargetCallsign.ToString());
 		PushNotification(NMsg, FColor::Red, 4.f);
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Red, NMsg); }
 		return false;
 	}
 
@@ -2237,10 +2190,6 @@ bool AClearanceSimulationController::VectorIntercept(FName FighterCallsign, FNam
 		const FString NMsg = FString::Printf(TEXT("INTERCEPT: %s -> %s vector %03.0f ETA %.0fs"),
 			*FighterCallsign.ToString(), *TargetCallsign.ToString(), HeadingDeg, TimeToIntercept);
 		PushNotification(NMsg, FColor::Cyan, 5.f);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, NMsg);
-		}
 	}
 	return true;
 }
@@ -2427,10 +2376,6 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 		{
 			const FString NMsg = FString::Printf(TEXT("INTERCEPT: %s destroyed"), *S.Callsign.ToString());
 			PushNotification(NMsg, FColor::Green, 30.f);
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Green, NMsg);
-			}
 		}
 		else
 		{
@@ -2438,10 +2383,6 @@ void AClearanceSimulationController::CrashAircraft(const FAircraftState& S, cons
 				*S.Callsign.ToString(), *Reason,
 				Scoring ? Scoring->PenaltyAircraftCrashed : 500);
 			PushNotification(NMsg, FColor::Red, 30.f);
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 30.f, FColor::Red, NMsg);
-			}
 		}
 	}
 
@@ -2480,11 +2421,6 @@ int32 AClearanceSimulationController::ShadowEscort(FName HijackCallsign)
 	// for. Refuse loudly so the operator doesn't shadow normal traffic. - TripleA
 	if (Hijack.ActiveEmergency != EEmergencyType::Hijack)
 	{
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red,
-				FString::Printf(TEXT("SHADOW refused: %s not squawking 7500"), *HijackCallsign.ToString()));
-		}
 		return 0;
 	}
 
@@ -2542,11 +2478,6 @@ int32 AClearanceSimulationController::ScrambleInterceptors(FName BanditCallsign)
 	const bool bInstructorSaysHostile = Bandit.TrueAffiliation == EThreatClass::Hostile;
 	if (!bOperatorSaysHostile && !bInstructorSaysHostile)
 	{
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red,
-				FString::Printf(TEXT("SCRAMBLE refused: %s not declared HOSTILE"), *BanditCallsign.ToString()));
-		}
 		return 0;
 	}
 
@@ -2624,12 +2555,6 @@ void AClearanceSimulationController::SetRadarEnabled(bool bInEnabled)
 {
 	if (!Radar) { return; }
 	Radar->SetEnabled(bInEnabled);
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
-			bInEnabled ? TEXT("Radar ON - sensor view (range, sweep, primary/secondary, fade)")
-			           : TEXT("Radar OFF - god's-eye truth view"));
-	}
 }
 
 void AClearanceSimulationController::StepSimulation(float DeltaTime)
@@ -3777,10 +3702,6 @@ void AClearanceSimulationController::CheckExits()
 						: FString::Printf(TEXT("INTERCEPT: %d-ship escorted %s out (+%d)"),
 							Fighters.Num(), *BanditCs.ToString(), Total);
 					PushNotification(NMsg, FColor::Green, 5.f);
-					if (GEngine)
-					{
-						GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green, NMsg);
-					}
 				}
 				// Publish a DIS Detonation PDU per fighter to pair with the
 				// earlier Fire PDU. The scramble/intercept resolution IS the
@@ -3999,10 +3920,6 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 			Multicast_PlayTTS(NAME_None, SysMsg, TEXT("en-US-EricNeural"), /*bPanic=*/ false);
 			LogTranscriptLine(EClearanceCommsRole::System, Instruction.TargetCallsign, SysMsg);
 
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow, SysMsg);
-			}
 			return EInstructionResult::Rejected_NoResponse;
 		}
 
@@ -4010,11 +3927,6 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 			&& Target.ThreatClass != EThreatClass::Friendly
 			&& Target.ThreatClass != EThreatClass::Neutral)
 		{
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
-					FString::Printf(TEXT("%s, NO RESPONSE"), *Instruction.TargetCallsign.ToString()));
-			}
 			return EInstructionResult::Rejected_NoResponse;
 		}
 		// Comms-failure (squawk 7600): the IFF is still squawking but the radio is
@@ -4022,11 +3934,6 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 		// fly the published lost-comms procedure. - TripleA
 		if (Target.bIsValid && Target.ActiveEmergency == EEmergencyType::CommsFailure)
 		{
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
-					FString::Printf(TEXT("%s, NO RADIO (squawk 7600)"), *Instruction.TargetCallsign.ToString()));
-			}
 			return EInstructionResult::Rejected_NoResponse;
 		}
 		// Hijack (squawk 7500): the hijackers are flying it now - ATC instructions
@@ -4034,31 +3941,14 @@ EInstructionResult AClearanceSimulationController::PlayerIssueInstruction(const 
 		// the operator notices the aircraft isn't doing what was asked. - TripleA
 		if (Target.bIsValid && Target.ActiveEmergency == EEmergencyType::Hijack)
 		{
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
-					FString::Printf(TEXT("%s, NOT COMPLYING (squawk 7500)"), *Instruction.TargetCallsign.ToString()));
-			}
 			return EInstructionResult::Rejected_NoResponse;
 		}
 		if (Target.bIsValid && Target.bUnderGCIControl)
 		{
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
-					FString::Printf(TEXT("%s is under GCI control - civilian ATC can't command"),
-						*Instruction.TargetCallsign.ToString()));
-			}
 			return EInstructionResult::Rejected_PhysicallyImpossible;
 		}
 		if (Target.bIsValid && Target.bIsExternal)
 		{
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow,
-					FString::Printf(TEXT("%s is external traffic - command its owning sim instead"),
-						*Instruction.TargetCallsign.ToString()));
-			}
 			return EInstructionResult::Rejected_PhysicallyImpossible;
 		}
 	}
@@ -4136,25 +4026,18 @@ void AClearanceSimulationController::StartRecording()
 	if (!Recorder) { return; }
 	Recorder->ClearRecording();
 	Recorder->StartRecording();
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, TEXT("AAR: recording started")); }
 }
 
 void AClearanceSimulationController::StopRecording()
 {
 	if (!Recorder) { return; }
 	Recorder->StopRecording();
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
-			FString::Printf(TEXT("AAR: stopped - %d snapshots, %.1fs"), Recorder->GetSnapshotCount(), Recorder->GetDurationSeconds()));
-	}
 }
 
 void AClearanceSimulationController::EnterReplay()
 {
 	if (!Recorder || Recorder->GetSnapshotCount() == 0)
 	{
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow, TEXT("AAR: no recording to replay")); }
 		return;
 	}
 	// Freeze the live world so ResumeLive can put it back as it was. - TripleA
@@ -4185,7 +4068,6 @@ void AClearanceSimulationController::EnterReplay()
 			Recorder->ApplySnapshotTo(AirspaceManager, *Snap);
 		}
 	}
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, TEXT("AAR: REPLAY  (clearance.replay.pause/seek/speed/live to control)")); }
 }
 
 void AClearanceSimulationController::ResumeLive()
@@ -4212,7 +4094,6 @@ void AClearanceSimulationController::ResumeLive()
 		ReplaySegmentSeams.Add(Recorder->GetDurationSeconds());
 		Recorder->StartRecording();
 	}
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("AAR: live")); }
 }
 
 void AClearanceSimulationController::SeekReplay(float TimeSeconds)
@@ -4343,11 +4224,6 @@ namespace
 
 void AClearanceSimulationController::HandleInstructionResult(FName Callsign, FAircraftInstruction Instruction, EInstructionResult Result)
 {
-	UE_LOG(LogTemp, Warning, TEXT("[Transcript] HandleInstructionResult fired: %s result=%s auth=%d"),
-		*Callsign.ToString(),
-		*UEnum::GetDisplayValueAsText(Result).ToString(),
-		HasAuthority() ? 1 : 0);
-
 	// Operator's outbound transmission - always logged. Operator's voice is the
 	// trainee themselves (typed / spoken into the parser), so it never goes
 	// through Multicast_PlayTTS like the pilot voice does. Has to be logged
@@ -4757,19 +4633,12 @@ bool AClearanceSimulationController::StartDIS(const FString& Host, int32 Port)
 {
 	if (!DISEmitter) { return false; }
 	const bool bOk = DISEmitter->Start(Host, Port);
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
-			bOk ? FString::Printf(TEXT("DIS: emitting on %s:%d"), (Host.IsEmpty() ? TEXT("broadcast") : *Host), Port)
-			    : FString::Printf(TEXT("DIS: failed to start (%s:%d)"), *Host, Port));
-	}
 	return bOk;
 }
 
 void AClearanceSimulationController::StopDIS()
 {
 	if (DISEmitter) { DISEmitter->Stop(); }
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DIS: stopped")); }
 }
 
 bool AClearanceSimulationController::StartDDSEmitter(int32 DomainId)
@@ -4781,12 +4650,6 @@ bool AClearanceSimulationController::StartDDSEmitter(int32 DomainId)
 	}
 	const bool bOk = DDSEmitter->Start(DomainId);
 	UE_LOG(LogTemp, Display, TEXT("[DDS] Start on domain %d -> %s"), DomainId, bOk ? TEXT("OK") : TEXT("FAILED"));
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
-			bOk ? FString::Printf(TEXT("DDS: publishing on domain %d"), DomainId)
-			    : FString::Printf(TEXT("DDS: failed to start on domain %d"), DomainId));
-	}
 	return bOk;
 }
 
@@ -4794,7 +4657,6 @@ void AClearanceSimulationController::StopDDSEmitter()
 {
 	if (DDSEmitter) { DDSEmitter->Stop(); }
 	UE_LOG(LogTemp, Display, TEXT("[DDS] Stopped"));
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DDS: stopped")); }
 }
 
 bool AClearanceSimulationController::StartRTIEmitter(int32 DomainId)
@@ -4814,12 +4676,6 @@ bool AClearanceSimulationController::StartRTIEmitter(int32 DomainId)
 	}
 	const bool bOk = RTIEmitter->Start(DomainId);
 	UE_LOG(LogTemp, Display, TEXT("[RTI] Start on domain %d -> %s"), DomainId, bOk ? TEXT("OK") : TEXT("FAILED"));
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Green : FColor::Red,
-			bOk ? FString::Printf(TEXT("RTI: publishing on domain %d"), DomainId)
-			    : FString::Printf(TEXT("RTI: failed to start on domain %d"), DomainId));
-	}
 	return bOk;
 }
 
@@ -4827,7 +4683,6 @@ void AClearanceSimulationController::StopRTIEmitter()
 {
 	if (RTIEmitter) { RTIEmitter->Stop(); }
 	UE_LOG(LogTemp, Display, TEXT("[RTI] Stopped"));
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Green, TEXT("RTI: stopped")); }
 }
 
 bool AClearanceSimulationController::IsRTIEmitting() const
@@ -4857,12 +4712,6 @@ bool AClearanceSimulationController::StartHLAFederate(const FString& FederationN
 	const bool bOk = HLAEmitter->Join(FederationName, FederateName, FomModulePath);
 	UE_LOG(LogTemp, Display, TEXT("[HLA] Join '%s' as '%s' -> %s"),
 		*FederationName, *FederateName, bOk ? TEXT("OK") : TEXT("FAILED"));
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Purple : FColor::Red,
-			bOk ? FString::Printf(TEXT("HLA: joined '%s'"), *FederationName)
-			    : FString::Printf(TEXT("HLA: join failed on '%s'"), *FederationName));
-	}
 	return bOk;
 }
 
@@ -4870,7 +4719,6 @@ void AClearanceSimulationController::StopHLAFederate()
 {
 	if (HLAEmitter) { HLAEmitter->Resign(); }
 	UE_LOG(LogTemp, Display, TEXT("[HLA] Resigned"));
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Purple, TEXT("HLA: resigned")); }
 }
 
 bool AClearanceSimulationController::IsHLAJoined() const
@@ -4904,19 +4752,12 @@ bool AClearanceSimulationController::StartDDSReceiver(int32 DomainId)
 		DDSReceiver->LocalApplicationId = DDSEmitter->ApplicationId;
 	}
 	const bool bOk = DDSReceiver->Start(DomainId);
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
-			bOk ? FString::Printf(TEXT("DDS: listening on domain %d"), DomainId)
-			    : FString::Printf(TEXT("DDS: failed to bind domain %d"), DomainId));
-	}
 	return bOk;
 }
 
 void AClearanceSimulationController::StopDDSReceiver()
 {
 	if (DDSReceiver) { DDSReceiver->Stop(); }
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DDS: recv stopped")); }
 }
 
 bool AClearanceSimulationController::IsDDSReceiving() const
@@ -4939,19 +4780,12 @@ bool AClearanceSimulationController::StartDISReceiver(int32 Port)
 		DISReceiver->LocalApplicationId = DISEmitter->ApplicationId;
 	}
 	const bool bOk = DISReceiver->Start(Port);
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 4.f, bOk ? FColor::Cyan : FColor::Red,
-			bOk ? FString::Printf(TEXT("DIS: listening on port %d"), Port)
-			    : FString::Printf(TEXT("DIS: failed to bind port %d"), Port));
-	}
 	return bOk;
 }
 
 void AClearanceSimulationController::StopDISReceiver()
 {
 	if (DISReceiver) { DISReceiver->Stop(); }
-	if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("DIS: receiver stopped")); }
 }
 
 void AClearanceSimulationController::SpawnPresetCameras()
@@ -5323,16 +5157,12 @@ void AClearanceSimulationController::SetInstructorPipApproachRunway(int32 Index)
 	if (N <= 0) { return; }
 	InstructorApproachRunwayIndex = FMath::Clamp(Index, 0, N - 1);
 	InstructorPipView = EClearanceCameraView::Approach;
-	UE_LOG(LogTemp, Warning, TEXT("[PIP] SetApproachRunway: this=%p auth=%d storedIdx=%d totalRunways=%d"),
-		this, HasAuthority() ? 1 : 0, InstructorApproachRunwayIndex, N);
 }
 
 void AClearanceSimulationController::PickApproachRunwayByLabel(const FString& Label)
 {
 	const TArray<FString> Labels = GetApproachRunwayLabels();
 	const int32 Idx = Labels.IndexOfByPredicate([&Label](const FString& S) { return S == Label; });
-	UE_LOG(LogTemp, Warning, TEXT("[PIP] PickByLabel: requested='%s' available=[%s] foundIdx=%d"),
-		*Label, *FString::Join(Labels, TEXT(", ")), Idx);
 	if (Idx == INDEX_NONE) { return; }
 	SetInstructorPipApproachRunway(Idx);
 }
@@ -6201,14 +6031,6 @@ void AClearanceSimulationController::UpdateInstructorPip(float DeltaSeconds)
 			RwyThrNm = AllRunways[Idx].ThresholdNm;
 			RwyHeading = AllRunways[Idx].HeadingDeg;
 		}
-		static int32 ApproachLogTick = 0;
-		if (++ApproachLogTick % 60 == 0)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[PIP] Approach: this=%p auth=%d idx=%d total=%d thr=(%.0f,%.0f) hdg=%.0f"),
-				this, HasAuthority() ? 1 : 0,
-				InstructorApproachRunwayIndex, AllRunways.Num(),
-				RwyThrNm.X, RwyThrNm.Y, RwyHeading);
-		}
 		const FVector RwyThrW(Origin.X + RwyThrNm.X * S, Origin.Y + RwyThrNm.Y * S, GroundWorldZ);
 		const float RwyRad = FMath::DegreesToRadians(RwyHeading);
 		const FVector RwyInboundDir(FMath::Sin(RwyRad), FMath::Cos(RwyRad), 0.f);
@@ -6597,10 +6419,6 @@ void AClearanceSimulationController::HandleConflictDetected(FConflictEvent Confl
 			Conflict.HorizontalSeparationNm, Conflict.VerticalSeparationFt,
 			Conflict.bRequiresGoAround ? TEXT(" [GO-AROUND]") : TEXT(""));
 		PushNotification(NMsg, ColourFor(Conflict.AlertLevel), 5.f);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 5.f, ColourFor(Conflict.AlertLevel), NMsg);
-		}
 	}
 
 	if (Recorder)
@@ -6627,10 +6445,6 @@ void AClearanceSimulationController::HandleConflictResolved(FConflictEvent Confl
 		const FString NMsg = FString::Printf(TEXT("RESOLVED: %s / %s (+%d)"),
 			*Conflict.AircraftA.ToString(), *Conflict.AircraftB.ToString(), Scoring->PointsResolution);
 		PushNotification(NMsg, FColor::Green, 4.f);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, NMsg);
-		}
 	}
 	if (Recorder)
 	{
@@ -6666,12 +6480,6 @@ void AClearanceSimulationController::HandleWakeAdvisory(FName FollowingCallsign,
 	}
 
 	// On screen too, until the UI exists. - TripleA
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor(255, 180, 0),
-			FString::Printf(TEXT("WAKE CAUTION  %s behind %s  (need %.0f nm)"),
-				*FollowingCallsign.ToString(), *LeadingCallsign.ToString(), RequiredSeparationNm));
-	}
 	if (Recorder)
 	{
 		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("WAKE %s behind %s (need %.0fnm)"),
@@ -6724,12 +6532,6 @@ void AClearanceSimulationController::HandleTCASResolutionAdvisory(FName ClimberC
 				*DescenderCallsign.ToString(), DescenderTargetAltitudeFt));
 	}
 
-	if (GEngine)
-	{
-		GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Red,
-			FString::Printf(TEXT("TCAS RA  %s CLIMB  /  %s DESCEND"),
-				*ClimberCallsign.ToString(), *DescenderCallsign.ToString()));
-	}
 	if (Recorder)
 	{
 		Recorder->LogEvent(SessionTime, FString::Printf(TEXT("TCAS RA  %s CLIMB / %s DESCEND"),
@@ -6769,7 +6571,6 @@ static void ClearanceIssueFromConsole(const TArray<FString>& Args, UWorld* World
 		const EInstructionResult Result = It->PlayerIssueInstruction(Instruction);
 		const FString Msg = FString::Printf(TEXT("%s %s %.0f -> %s"), Label, *Callsign.ToString(), Value, *UEnum::GetDisplayValueAsText(Result).ToString());
 		UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		return;
 	}
 
@@ -6815,7 +6616,6 @@ static void ClearanceAutopilotToggleFromConsole(const TArray<FString>& Args, UWo
 		const FString Msg = FString::Printf(TEXT("autopilot %s %s -> %s"), Label, *Callsign.ToString(),
 			bOk ? TEXT("OK") : TEXT("callsign not found"));
 		UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		return;
 	}
 	UE_LOG(LogTemp, Warning, TEXT("clearance.autopilot.%s: no SimulationController in the world"), Label);
@@ -6858,7 +6658,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceAutoSpawnCmd(
 		{
 			const bool bOn = Args.Num() > 0 ? (FCString::Atoi(*Args[0]) != 0) : true;
 			C->SetAutoSpawn(bOn);
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, FString::Printf(TEXT("auto-spawn %s"), bOn ? TEXT("ON") : TEXT("OFF"))); }
 		}
 	}));
 
@@ -6870,7 +6669,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceSpawnCmd(
 		if (AClearanceSimulationController* C = FindClearanceController(World))
 		{
 			const bool bOk = C->SpawnOne();
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, bOk ? TEXT("spawned 1") : TEXT("spawn failed (at cap?)")); }
 		}
 	}));
 
@@ -6882,7 +6680,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceClearCmd(
 		if (AClearanceSimulationController* C = FindClearanceController(World))
 		{
 			C->ClearTraffic();
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan, TEXT("cleared all traffic")); }
 		}
 	}));
 
@@ -6906,16 +6703,10 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceJamCmd(
 		FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
 		if (!S.bIsValid)
 		{
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Red, FString::Printf(TEXT("ew.jam: no aircraft '%s'"), *Callsign.ToString())); }
 			return;
 		}
 		S.bJammingOn = bOn;
 		C->GetAirspaceManager()->RequestStateUpdate(S);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 4.f, bOn ? FColor::Red : FColor::Cyan,
-				FString::Printf(TEXT("EW: jammer %s on %s"), bOn ? TEXT("ON") : TEXT("OFF"), *Callsign.ToString()));
-		}
 	}));
 
 // Have an aircraft drop a chaff cloud at its current position. Every radar in
@@ -6934,11 +6725,9 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceChaffCmd(
 		const FAircraftState S = C->GetAirspaceManager()->GetAircraftState(Callsign);
 		if (!S.bIsValid)
 		{
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Red, FString::Printf(TEXT("ew.chaff: no aircraft '%s'"), *Callsign.ToString())); }
 			return;
 		}
 		C->GetAirspaceManager()->DropChaff(S.Position, S.Altitude);
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor(255, 220, 0), FString::Printf(TEXT("EW: chaff dropped at %s"), *Callsign.ToString())); }
 	}));
 
 // Per-world mute - in PIE, run this in the server console to silence its
@@ -6964,11 +6753,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceAudioMuteCmd(
 			}
 			V->bMuted = bNew;
 			++Found;
-		}
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 3.f, FColor::Cyan,
-				FString::Printf(TEXT("audio mute applied to %d VoiceOutput(s)"), Found));
 		}
 	}));
 
@@ -7077,12 +6861,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceGCITestCmd(
 		Viper(TEXT("VIPER01"), FVector(-12.f, -8.f,  0.f),  45.f, 2200);
 		Viper(TEXT("VIPER02"), FVector( 10.f, -10.f, 0.f), 320.f, 2201);
 		Viper(TEXT("VIPER03"), FVector(  0.f, -14.f, 0.f),   0.f, 2202);
-
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 7.f, FColor::Cyan,
-				TEXT("GCI TEST: BANDIT (hostile, IFF off) inbound. 3-ship VIPER flight ready. Try: clearance.gci on; clearance.iff BANDIT; clearance.intercept.flight BANDIT"));
-		}
 	}));
 
 // Scramble a fresh 3-ship from the sector boundary onto a bandit. The vipers
@@ -7101,12 +6879,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceScrambleCmd(
 		if (!C) { return; }
 		const FName BanditCs(*Args[0]);
 		const int32 N = C->ScrambleInterceptors(BanditCs);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 6.f, N > 0 ? FColor::Cyan : FColor::Red,
-				N > 0 ? FString::Printf(TEXT("SCRAMBLE: %d-ship VIPER flight inbound on %s"), N, *BanditCs.ToString())
-				      : FString::Printf(TEXT("SCRAMBLE: no such contact '%s'"), *Args[0]));
-		}
 	}));
 
 // Launch a shadow escort flight on a hijacked aircraft (must be squawking 7500).
@@ -7121,12 +6893,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceShadowCmd(
 		if (!C) { return; }
 		const FName Cs(*Args[0]);
 		const int32 N = C->ShadowEscort(Cs);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 6.f, N > 0 ? FColor::Cyan : FColor::Red,
-				N > 0 ? FString::Printf(TEXT("SHADOW: %d-ship VIPER flight tailing %s"), N, *Cs.ToString())
-				      : FString::Printf(TEXT("SHADOW: refused (target must be squawking 7500)")));
-		}
 	}));
 
 // ============================================================================
@@ -7239,11 +7005,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceNetActorsCmd(
 		}
 		UE_LOG(LogTemp, Display, TEXT("[NET %s] Controllers=%d:%s   Managers=%d:%s"),
 			Role, NumCtl, *CtlSigs, NumMgr, *MgrSigs);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 10.f, FColor::Yellow,
-				FString::Printf(TEXT("[NET %s] Ctl=%d Mgr=%d"), Role, NumCtl, NumMgr));
-		}
 	}));
 
 // Diagnostic: prints aircraft count from BOTH the world-iterator-found Manager
@@ -7283,12 +7044,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceNetCountCmd(
 
 		UE_LOG(LogTemp, Display, TEXT("[NET %s] iter=%s  ctrl=%s  match=%s"),
 			Role, *IterStr, *PtrStr, bSame ? TEXT("YES") : TEXT("NO"));
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 10.f, bSame ? FColor::Green : FColor::Red,
-				FString::Printf(TEXT("[NET %s] iter=%s ctrl=%s %s"),
-					Role, *IterStr, *PtrStr, bSame ? TEXT("MATCH") : TEXT("DIVERGE")));
-		}
 	}));
 
 // Send every available friendly military aircraft at this bandit at once. - TripleA
@@ -7309,8 +7064,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceInterceptFlightCmd(
 				if (C->VectorIntercept(S.Callsign, BanditCs)) { ++N; }
 			}
 		}
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
-			FString::Printf(TEXT("FLIGHT VECTORED: %d fighter(s) intercepting %s"), N, *BanditCs.ToString())); }
 	}));
 
 static FAutoConsoleCommandWithWorldAndArgs GClearanceRadarCmd(
@@ -7672,11 +7425,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceDISSiteCmd(
 			if (UClearanceDISReceiver* R = C->GetDISReceiver()) { R->LocalSiteId = NewSite; }
 			if (UClearanceDDSEmitter*  E = C->GetDDSEmitter())  { E->SiteId      = NewSite; }
 			if (UClearanceDDSReceiver* R = C->GetDDSReceiver()) { R->LocalSiteId = NewSite; }
-			if (GEngine)
-			{
-				GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan,
-					FString::Printf(TEXT("Federate Site ID = %d (standalone path)"), NewSite));
-			}
 		}
 	}));
 
@@ -7689,7 +7437,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceCameraCmd(
 		if (!C) { return; }
 		if (Args.Num() < 1)
 		{
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Yellow, TEXT("camera: default|overview|tower|approach|follow [callsign]|next")); }
 			return;
 		}
 		const FString Sub = Args[0].ToLower();
@@ -7816,7 +7563,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceExitCmd(
 			const EInstructionResult Result = C->PlayerIssueInstruction(I);
 			const FString Msg = FString::Printf(TEXT("exit %s -> %s"), *I.TargetCallsign.ToString(), *UEnum::GetDisplayValueAsText(Result).ToString());
 			UE_LOG(LogTemp, Display, TEXT("%s"), *Msg);
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Msg); }
 		}
 	}));
 
@@ -7864,7 +7610,6 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceTestConflictCmd(
 		SpawnTestAircraft(M, TEXT("CONFL2"), FVector( 10.f, 0.f, 0.f), 10000.f, 270.f, 340.f, EWakeCategory::Medium);
 		C->SetAircraftAutopilotEngaged(TEXT("CONFL1"), false);
 		C->SetAircraftAutopilotEngaged(TEXT("CONFL2"), false);
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Cyan, TEXT("TEST: sim time forced 1x, CONFL1/CONFL2 head-on 20nm 340kt - ADVISORY ~42s, TCAS RA ~68s, vertical split visible before merge")); }
 	}));
 
 // light/small/L, medium/M, heavy/big/H, super/S - forgiving so you can type the word
@@ -7911,10 +7656,4 @@ static FAutoConsoleCommandWithWorldAndArgs GClearanceTestWakeCmd(
 		// Leader ahead, follower 3.5 nm behind in trail at the same level.
 		SpawnTestAircraft(M, TEXT("LEAD"),  FVector(0.f,  0.f, 0.f), 8000.f, 0.f, LSpd, LeadCat);
 		SpawnTestAircraft(M, TEXT("TRAIL"), FVector(0.f, -3.5f, 0.f), 8000.f, 0.f, FSpd, FollowCat);
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Cyan,
-				FString::Printf(TEXT("TEST: %s (TRAIL) 3.5nm behind %s (LEAD) - wake rocks the trailer if the leader makes enough wake"),
-					WakeCatName(FollowCat), WakeCatName(LeadCat)));
-		}
 	}));

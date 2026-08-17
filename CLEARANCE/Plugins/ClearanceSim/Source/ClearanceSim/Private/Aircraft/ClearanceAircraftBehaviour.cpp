@@ -194,10 +194,6 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 				const float CapAlong = FVector2D::DotProduct(CapRel, CapInbound);
 				const float CapDistToAimNm = FMath::Max(0.5f, -(CapAlong - TouchdownZoneOffsetNm));
 				ApproachSlopeFtPerNm = FMath::Max(10.f, State.Altitude / CapDistToAimNm);
-				if (GEngine)
-				{
-					GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Green, FString::Printf(TEXT("%s established on the approach, slope %.0f ft/nm"), *State.Callsign.ToString(), ApproachSlopeFtPerNm));
-				}
 			}
 
 			// Go around ONLY if it never got established and has run past the threshold -
@@ -210,10 +206,6 @@ void UClearanceAircraftBehaviour::UpdateMovement(float DeltaTime)
 				State.FlightPhase = EFlightPhase::GoAround;
 				State.TargetAltitude = FMath::Min(State.Altitude + GoAroundClimbFt, State.ServiceCeiling);
 				State.TargetSpeed = FMath::Clamp(State.TargetSpeed, State.MinOperatingSpeed, State.MaxOperatingSpeed);
-				if (GEngine)
-				{
-					GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, FString::Printf(TEXT("%s unable - not established, going around, request vectors"), *State.Callsign.ToString()));
-				}
 			}
 			else if (bApproachCaptured)
 			{

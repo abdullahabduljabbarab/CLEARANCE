@@ -627,8 +627,6 @@ TArray<FString> UClearanceInstructorPanel::GetApproachRunwayLabels() const
 void UClearanceInstructorPanel::SetInstructorPipApproachRunway(int32 Index)
 {
 	if (!CachedController) { RefreshLocalRefs(); }
-	UE_LOG(LogTemp, Warning, TEXT("[PIP] Panel SetApproachRunway: idx=%d controller=%p"),
-		Index, CachedController.Get());
 	if (!CachedController) { return; }
 	CachedController->SetInstructorPipApproachRunway(Index);
 }
@@ -1380,7 +1378,7 @@ namespace
 			Param.Row = Row;
 			// Convert heading fields into MAGNETIC just for the BP display.
 			// Sim internal frame is CCW-mirrored from magnetic; every other
-			// display site does this conversion at read time, but Neo's row
+			// display site does this conversion at read time, but the row
 			// widget binds R.Heading raw so the numbers came through in the
 			// sim frame and didn't match the scope. Local-copy conversion
 			// keeps every other consumer of the struct untouched. - TripleA
@@ -1999,9 +1997,6 @@ void UClearanceInstructorPanel::DrawRunwayMarker(FPaintContext& Context, FVector
 		const float MagBearing = FMath::Fmod(FMath::Fmod(360.f - Runway.HeadingDeg, 360.f) + 360.f, 360.f);
 		Des = FMath::RoundToInt(MagBearing / 10.f);
 	}
-	UE_LOG(LogTemp, Warning, TEXT("[Runway] DRAW HeadingDeg=%.1f Override=%d ThresholdNm=(%.2f,%.2f) ThresholdPx=(%.1f,%.1f) ScopeCentre=(%.1f,%.1f) -> label='%d'"),
-		Runway.HeadingDeg, Runway.DesignatorOverride, Runway.ThresholdNm.X, Runway.ThresholdNm.Y,
-		Threshold.X, Threshold.Y, ScopeCentre.X, ScopeCentre.Y, Des);
 	if (Des <= 0)  { Des = 36; }
 	if (Des > 36)  { Des = Des % 36; if (Des == 0) { Des = 36; } }
 	const FString DesText = FString::Printf(TEXT("%02d"), Des);

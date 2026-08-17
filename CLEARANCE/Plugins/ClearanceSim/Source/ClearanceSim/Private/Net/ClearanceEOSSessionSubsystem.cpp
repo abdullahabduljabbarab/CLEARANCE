@@ -252,9 +252,8 @@ namespace
 		return nullptr;
 	}
 
-	void Toast(const FString& Msg, FColor C = FColor::Cyan)
+	void Toast(const FString& Msg, FColor /*C*/ = FColor::Cyan)
 	{
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 5.f, C, Msg); }
 		UE_LOG(LogTemp, Log, TEXT("%s"), *Msg);
 	}
 }

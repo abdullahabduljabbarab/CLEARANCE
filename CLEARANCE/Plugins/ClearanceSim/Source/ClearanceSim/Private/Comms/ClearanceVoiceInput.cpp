@@ -162,7 +162,6 @@ void AClearanceVoiceInput::StartListening()
 
 	Capture->StartStream();
 	bListening = true;
-	UE_LOG(LogTemp, Display, TEXT("[Voice] capture started"));
 }
 
 void AClearanceVoiceInput::StopListening()
@@ -215,16 +214,12 @@ void AClearanceVoiceInput::SendForRecognition()
 		SrcRate = DeviceSampleRate;
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("[Voice] captured %d samples at %d Hz"), Samples.Num(), SrcRate);
-
 	if (Samples.Num() < 1600 || SrcRate <= 0) // < ~0.1s of audio: ignore
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Voice] too little audio captured (%d samples) - mic delivering anything?"), Samples.Num());
 		return;
 	}
 
 	const TArray<uint8> Wav = EncodeWav16kMono(Samples, SrcRate);
-	UE_LOG(LogTemp, Display, TEXT("[Voice] POSTing %d-byte WAV to %s"), Wav.Num(), *ServerUrl);
 
 	// multipart/form-data: the WAV file + a request for plain-text output
 	const FString Boundary = TEXT("----ClearanceBoundary") + FGuid::NewGuid().ToString();
@@ -281,8 +276,6 @@ void AClearanceVoiceInput::OnRecognised(const FString& Text)
 	{
 		const FString Readback = UClearancePhraseology::Interpret(*It, Clean);
 		OnReadback.Broadcast(Readback);
-		UE_LOG(LogTemp, Display, TEXT("[Voice] heard \"%s\" -> %s"), *Clean, *Readback);
-		if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 6.f, FColor::Emerald, FString::Printf(TEXT("\"%s\" -> %s"), *Clean, *Readback)); }
 		return;
 	}
 }
@@ -304,7 +297,6 @@ static FAutoConsoleCommandWithWorld GClearanceListenStart(
 		if (AClearanceVoiceInput* V = GetOrSpawnVoiceInput(World))
 		{
 			V->StartListening();
-			if (GEngine) { GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Yellow, TEXT("listening...")); }
 		}
 	}));
 

@@ -4,6 +4,7 @@
 #include "Simulation/ClearanceOperatorPC.h"
 #include "Simulation/ClearanceVROperatorPawn.h"
 #include "UI/ClearanceReadoutHUD.h"
+#include "UI/ClearanceMenuFunctionLibrary.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/SpectatorPawn.h"
@@ -41,6 +42,15 @@ void ACLEARANCEGameMode::InitGame(const FString& MapName, const FString& Options
 	const FString RoleOption = UGameplayStatics::ParseOption(Options, TEXT("role"));
 	bLaunchedAsInstructor = RoleOption.Equals(TEXT("instructor"), ESearchCase::IgnoreCase);
 
+	// Fallback: URL role option isn't always preserved through packaged
+	// build travel paths. The menu library latches the intent process-
+	// wide immediately before OpenLevel; if the URL came through empty
+	// or without a role, honour the latched value instead. - TripleA
+	if (RoleOption.IsEmpty())
+	{
+		bLaunchedAsInstructor = UClearanceMenuFunctionLibrary::bPendingLaunchAsInstructor;
+	}
+
 	UE_LOG(LogTemp, Log,
 		TEXT("[ClearanceGameMode] InitGame Options='%s' role='%s' bLaunchedAsInstructor=%s OptionsString='%s'"),
 		*Options, *RoleOption,
@@ -52,19 +62,26 @@ void ACLEARANCEGameMode::RestartPlayer(AController* NewPlayer)
 {
 	if (!NewPlayer) { return; }
 
-	// Skip if this controller is already sitting on a pawn (re-entry from
-	// UE's own retry loop, or a checkpoint restore that already possessed). - TripleA
-	if (NewPlayer->GetPawn()) { return; }
-
 	UWorld* World = GetWorld();
 
 	// Instructor-only players must NOT possess the level-placed VR pawn -
 	// that pawn owns the tower-desk hand meshes, subsystem hooks, and
 	// motion-controller delegates. Possessing then destroying it mid-
 	// BeginPlay crashes. Give them a bare ASpectatorPawn instead, leave
-	// the VR pawn alone in the level. - TripleA
+	// the VR pawn alone in the level.
+	// Handled BEFORE the "already possessed" bail because the placed VR
+	// pawn's Auto Possess Player property snatches Player 0 before the
+	// GameMode's restart flow runs; without this override, an instructor
+	// session ends up sitting in the VR chair with the operator input
+	// bindings live. - TripleA
 	if (bLaunchedAsInstructor)
 	{
+		if (APawn* Existing = NewPlayer->GetPawn())
+		{
+			NewPlayer->UnPossess();
+			// Leave the VR pawn in the level (some subsystems reference it
+			// by outer / by iterator). Just detach the controller. - TripleA
+		}
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		ASpectatorPawn* Spectator = World
@@ -76,6 +93,10 @@ void ACLEARANCEGameMode::RestartPlayer(AController* NewPlayer)
 		}
 		return;
 	}
+
+	// Skip if this controller is already sitting on a pawn (re-entry from
+	// UE's own retry loop, or a checkpoint restore that already possessed). - TripleA
+	if (NewPlayer->GetPawn()) { return; }
 
 	// Operator path: LVL_Warton hand-places the VR operator pawn at the
 	// tower-desk seat with hand mesh + input mapping context assignments.

@@ -13,6 +13,7 @@
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
+#include "Async/Async.h"
 
 AClearanceVoiceInput::AClearanceVoiceInput()
 {
@@ -25,9 +26,17 @@ void AClearanceVoiceInput::BeginPlay()
 
 	ServerUrl = FString::Printf(TEXT("http://127.0.0.1:%d/inference"), ServerPort);
 
+	// Launch on a background thread. CreateProc can block for tens of
+	// seconds if Windows Defender scans the binary; running it on the
+	// game thread times out the VR compositor. Weak-object safe: bails
+	// if the actor is destroyed before the task fires. - TripleA
 	if (bAutoLaunchServer)
 	{
-		TryLaunchServer();
+		AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
+			[WeakThis = TWeakObjectPtr<AClearanceVoiceInput>(this)]()
+			{
+				if (WeakThis.IsValid()) { WeakThis->TryLaunchServer(); }
+			});
 	}
 
 	// Wire push-to-talk: hold the key to capture, release to send.

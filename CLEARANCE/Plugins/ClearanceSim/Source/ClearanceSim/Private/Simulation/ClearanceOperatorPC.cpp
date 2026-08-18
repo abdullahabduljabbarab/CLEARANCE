@@ -84,6 +84,16 @@ void AClearanceOperatorPC::BeginPlay()
 			{
 				const FString RoleOption = UGameplayStatics::ParseOption(GM->OptionsString, TEXT("role"));
 				bIsInstructor = RoleOption.Equals(TEXT("instructor"), ESearchCase::IgnoreCase);
+				// Fallback if URL role option didn't survive travel (packaged
+				// builds strip options on some paths). Menu library sets a
+				// process-wide CVar just before OpenLevel; read it here. - TripleA
+				if (RoleOption.IsEmpty())
+				{
+					if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("clearance.role.instructor")))
+					{
+						bIsInstructor = (CVar->GetInt() != 0);
+					}
+				}
 			}
 		}
 	}

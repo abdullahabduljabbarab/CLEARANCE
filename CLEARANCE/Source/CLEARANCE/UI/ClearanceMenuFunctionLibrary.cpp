@@ -29,6 +29,25 @@ namespace
 	constexpr const TCHAR* kOptionsSection = TEXT("ClearanceMenu.Options");
 }
 
+bool UClearanceMenuFunctionLibrary::bPendingLaunchAsInstructor = false;
+
+// Process-wide CVar mirror of bPendingLaunchAsInstructor. Cross-module
+// readable by ClearanceSim plugin without a hard include on this class. - TripleA
+static TAutoConsoleVariable<int32> CVarClearanceRoleInstructor(
+	TEXT("clearance.role.instructor"),
+	0,
+	TEXT("1 = last menu button chose instructor role, 0 = operator (default)"),
+	ECVF_Default);
+
+namespace
+{
+	void SetPendingInstructorLatch(bool bAsInstructor)
+	{
+		UClearanceMenuFunctionLibrary::bPendingLaunchAsInstructor = bAsInstructor;
+		CVarClearanceRoleInstructor->Set(bAsInstructor ? 1 : 0);
+	}
+}
+
 bool UClearanceMenuFunctionLibrary::IsHMDConnected()
 {
 	// Fast path: XR is already initialized (someone already entered VR this
@@ -172,6 +191,7 @@ namespace
 void UClearanceMenuFunctionLibrary::OpenInstructorSessionSolo(UObject* WorldContextObject)
 {
 	if (!WorldContextObject) { return; }
+	SetPendingInstructorLatch(true);
 	SetHMDForSession(false);
 	UGameplayStatics::OpenLevel(
 		WorldContextObject,
@@ -183,6 +203,7 @@ void UClearanceMenuFunctionLibrary::OpenInstructorSessionSolo(UObject* WorldCont
 void UClearanceMenuFunctionLibrary::OpenOperatorSessionSolo(UObject* WorldContextObject)
 {
 	if (!WorldContextObject) { return; }
+	SetPendingInstructorLatch(false);
 	SetHMDForSession(true);
 	UGameplayStatics::OpenLevel(
 		WorldContextObject,
@@ -205,6 +226,7 @@ void UClearanceMenuFunctionLibrary::OpenCombinedSessionSolo(UObject* WorldContex
 	// actually works under the hood. - TripleA
 
 	// This process becomes the VR operator, hosting on localhost.
+	SetPendingInstructorLatch(false);
 	SetHMDForSession(true);
 	UGameplayStatics::OpenLevel(
 		WorldContextObject,
@@ -270,6 +292,7 @@ void UClearanceMenuFunctionLibrary::HostLANSession(UObject* WorldContextObject)
 	// listen server has the VR pawn locally (best latency for the immersive
 	// side). Joining instructor peers connect via JoinLANSession below. See
 	// AClearanceOperatorPC::BeginPlay for the role dispatch. - TripleA
+	SetPendingInstructorLatch(false);
 	SetHMDForSession(true);
 	UGameplayStatics::OpenLevel(
 		WorldContextObject,
@@ -288,6 +311,7 @@ void UClearanceMenuFunctionLibrary::JoinLANSession(APlayerController* PlayerCont
 	// Appending `?role=instructor` carries the role through the connect URL
 	// so the server sees it in InitNewPlayer and the client sees it in the
 	// resulting World URL on the far side. - TripleA
+	SetPendingInstructorLatch(true);
 	SetHMDForSession(false);
 	PlayerController->ClientTravel(Trimmed + TEXT("?role=instructor"), ETravelType::TRAVEL_Absolute);
 }

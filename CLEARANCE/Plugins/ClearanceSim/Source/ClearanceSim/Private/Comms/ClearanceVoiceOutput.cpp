@@ -10,6 +10,7 @@
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
 #include "Serialization/MemoryReader.h"
+#include "Async/Async.h"
 
 AClearanceVoiceOutput::AClearanceVoiceOutput()
 {
@@ -22,9 +23,28 @@ void AClearanceVoiceOutput::BeginPlay()
 
 	ServerUrl = FString::Printf(TEXT("http://127.0.0.1:%d"), ServerPort);
 
+	// Delay server launch by 20 seconds AND run on a background thread.
+	// The 283 MB tts_server.exe triggers a Windows Defender scan on first
+	// launch that spikes CPU + disk I/O for tens of seconds - if that
+	// happens while VR is still initialising (or in early frames), the
+	// compositor drops connection. Delay lets the headset settle first;
+	// server still comes up well before typical first pilot response. - TripleA
 	if (bAutoLaunchServer)
 	{
-		TryLaunchServer();
+		if (UWorld* W = GetWorld())
+		{
+			FTimerHandle Handle;
+			W->GetTimerManager().SetTimer(Handle,
+				FTimerDelegate::CreateWeakLambda(this, [this]()
+				{
+					AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask,
+						[WeakThis = TWeakObjectPtr<AClearanceVoiceOutput>(this)]()
+						{
+							if (WeakThis.IsValid()) { WeakThis->TryLaunchServer(); }
+						});
+				}),
+				20.f, false);
+		}
 	}
 }
 
@@ -515,8 +535,6 @@ void AClearanceVoiceOutput::SpeakInternal(FName Callsign, const FString& Text, c
 			if (!bOk || !Response.IsValid() || Response->GetResponseCode() != 200)
 			{
 				ClearanceTTSCircuit::OnFailure();
-				UE_LOG(LogTemp, Verbose, TEXT("[VoiceOut] TTS request failed (%d)"),
-					Response.IsValid() ? Response->GetResponseCode() : -1);
 				// Free the channel so a failure doesn't stall the whole queue.
 				WeakThis->bChannelBusy = false;
 				WeakThis->DrainQueue();

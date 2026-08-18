@@ -95,10 +95,19 @@ public class ClearanceDDS : ModuleRules
 		// security codepaths reach for libcrypto/libssl at runtime (default
 		// config has security off, but the linker still pulls the symbol
 		// references so the DLLs need to be discoverable). - TripleA
+		// Bundle every release DLL from the eProsima FastDDS bin folder.
+		// The build.cs comment says we link statically, but MSVC still
+		// resolves against the shipped import stubs in several code paths
+		// (foonathan_memory hit first, others follow). Copying the lot
+		// avoids whack-a-mole "code execution cannot proceed" errors on
+		// machines without the FastDDS SDK installed. - TripleA
 		string[] RuntimeDlls =
 		{
 			"libcrypto-3-x64.dll",
-			"libssl-3-x64.dll"
+			"libssl-3-x64.dll",
+			"foonathan_memory-0.7.4.dll",
+			"fastcdr-2.3.dll",
+			"fastdds-3.6.dll"
 		};
 		foreach (string Dll in RuntimeDlls)
 		{

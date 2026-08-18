@@ -56,5 +56,20 @@ public class ClearanceSim : ModuleRules
 		{
 			PrivateDependencyModuleNames.Add("OculusInteractionPrebuilts"); // QuestControllerAnimInstance setters
 		}
+
+		// Stage the voice pipeline server binaries + models next to the packaged
+		// exe. FPaths::ProjectDir() resolves to <Package>/CLEARANCE/ at runtime,
+		// so this glob maps 1:1 into the staged output. - TripleA
+		string ProjectRoot = Path.GetFullPath(Path.Combine(PluginDirectory, "..", ".."));
+		string WhisperServerDir = Path.Combine(ProjectRoot, "WhisperServer");
+		string TtsServerDir     = Path.Combine(ProjectRoot, "TtsServer");
+		if (Directory.Exists(WhisperServerDir))
+		{
+			RuntimeDependencies.Add("$(ProjectDir)/WhisperServer/...", StagedFileType.NonUFS);
+		}
+		if (Directory.Exists(TtsServerDir))
+		{
+			RuntimeDependencies.Add("$(ProjectDir)/TtsServer/...", StagedFileType.NonUFS);
+		}
 	}
 }

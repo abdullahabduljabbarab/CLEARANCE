@@ -45,6 +45,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Clearance|Menu")
 	static FString GetLocalIPv4();
 
+	// Process-wide latch set by the menu-session helpers just before
+	// OpenLevel, read by CLEARANCEGameMode::InitGame as a fallback when
+	// the URL role option didn't survive travel. URL parsing is fine in
+	// PIE but stripped in some packaged-build travel paths, so this
+	// carrier is the belt-and-braces companion. - TripleA
+	static bool bPendingLaunchAsInstructor;
+
 	// Solo instructor: opens LVL_Warton with ?role=instructor. No listen
 	// server - the sim runs single-player on this box.
 	UFUNCTION(BlueprintCallable, Category = "Clearance|Menu", meta = (WorldContext = "WorldContextObject"))

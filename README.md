@@ -261,26 +261,52 @@ CLEARANCE deliberately remains a portfolio-scale demonstrator. The engineering s
 
 ## Documentation
 
+**Systems design**
+
 | Document | Purpose |
 |---|---|
 | [Docs/Design/SystemsDesign.md](Docs/Design/SystemsDesign.md) | Main systems design: overview, gameplay loop, every system in the sim. |
 | [Docs/Design/TechnicalArchitecture.md](Docs/Design/TechnicalArchitecture.md) | Runtime architecture: class ownership, tick order, delegate map, lifecycle, networking. |
-| [Docs/Design/CppScaffold.md](Docs/Design/CppScaffold.md) | Class level API surfaces: enums, structs, per system function breakdown. |
+| [Docs/Design/CppScaffold.md](Docs/Design/CppScaffold.md) | Class-level API surfaces: enums, structs, per-system function breakdown. |
 | [Docs/Design/ScenarioDesign.md](Docs/Design/ScenarioDesign.md) | The seven training scenarios: intent, spawn plans, injects, success and failure criteria. |
+| [Docs/Design/VoicePipeline.md](Docs/Design/VoicePipeline.md) | Comms: whisper.cpp STT, phraseology parser, validator, Piper / Edge TTS, role-coloured transcript, packaging. |
+| [Docs/Design/CesiumAndCoordinateFrame.md](Docs/Design/CesiumAndCoordinateFrame.md) | Cesium mirror convention, oblique-heading runway dimensions, terrain streaming, VR performance envelope. |
+| [Docs/Design/ReplayAndAAR.md](Docs/Design/ReplayAndAAR.md) | Session recorder, replay and scrub, checkpoints, Markdown After Action Report. |
+
+**Planning**
+
+| Document | Purpose |
+|---|---|
 | [Docs/Planning/MVP.md](Docs/Planning/MVP.md) | MVP scope, in and out, build priority order, definition of done. |
 | [Docs/Planning/RiskRegister.md](Docs/Planning/RiskRegister.md) | R1 through R18 risks with mitigations. |
 | [Docs/Planning/TestPlan.md](Docs/Planning/TestPlan.md) | Test strategy, per-system tests, end-to-end scenarios, release gate checklist. |
+
+**Verification**
+
+| Document | Purpose |
+|---|---|
 | [Docs/Verification/Requirements.md](Docs/Verification/Requirements.md) | 69 requirements traced to their verifying tests. |
 | [Docs/Verification/V_AND_V_PLAN.md](Docs/Verification/V_AND_V_PLAN.md) | Verification strategy, test tiers, manual procedures. |
 | [Docs/Verification/V_AND_V_REPORT.md](Docs/Verification/V_AND_V_REPORT.md) | Verification results at the shipped build. |
+
+**Release history**
+
+| Document | Purpose |
+|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | Release-level version history. |
+| [Docs/DEVLOG.md](Docs/DEVLOG.md) | Chronological engineering journal for the main repository. |
+
+## Download
+
+The packaged Windows build is available on the [Releases page](../../releases/latest). Windows 11, roughly 2 GB. VR modes need a Meta Quest headset with Link or Air Link plus a microphone. LAN sessions need two machines on the same network.
 
 ## Build and run
 
 - Unreal Engine 5.7.
 - Windows 11, Visual Studio 2022 with the Game Development with C++ workload.
 - MetaXR plugin ships with the project for the VR path.
-- Federation build additionally needs the Fast DDS SDK, RTI Connext, and OpenRTI on the toolchain path. Federation is compile time gated, so the sim builds without them if you only want the local path.
-- Voice runs on bundled whisper.cpp and Piper voices, both auto launched by the game.
+- Federation build additionally needs the Fast DDS SDK, RTI Connext, and OpenRTI on the toolchain path. Federation is compile-time gated, so the sim builds without them if you only want the local path.
+- Voice runs on bundled whisper.cpp and Piper voices, both auto-launched by the game.
 
 The demo scenario files at `CLEARANCE/Plugins/ClearanceSim/Scenarios/` and the Warton airfield map open on first launch. Two machines on the same LAN can host and join through the main menu.
 

@@ -151,18 +151,18 @@ void AClearanceOperatorPC::BeginPlay()
 		InstructorPanel->AddToViewport();
 
 		// Input mode selection:
-		//  - VR + instructor client peer: GameAndUI. Motion controllers
-		//    reach the pawn while WidgetInteractionComponent clicks reach
-		//    the scope UI overlays.
-		//  - Instructor-only desktop client / combined-mode Player 1:
-		//    UIOnly. No pawn to talk to, lock clicks to the panel.
-		// Combined mode's Player 0 is the operator side and returned above
-		// before this input-mode block runs, so we don't need a special
-		// GameAndUI case for combined here. - TripleA
-		const bool bIsInVR = GEngine && GEngine->XRSystem.IsValid()
-			&& GEngine->XRSystem->GetHMDDevice() != nullptr
-			&& GEngine->XRSystem->GetHMDDevice()->IsHMDConnected();
-		if (bIsInVR)
+		//  - LAN instructor peer joined to a VR host: check the STEREO
+		//    render state, not just HMD connected. A desktop instructor
+		//    session with a plugged-in Quest via Link isn't actually in
+		//    VR, but bIsHMDConnected returns true and the old check
+		//    wrongly routed it through GameAndUI - which requires a
+		//    WidgetInteractionComponent, and left the plain mouse
+		//    clicking on empty air (buttons not firing, toggles stuck,
+		//    checkboxes non-responsive).
+		//  - Instructor-only desktop / combined-mode Player 1: UIOnly. - TripleA
+		const bool bStereoActive = GEngine && GEngine->StereoRenderingDevice.IsValid()
+			&& GEngine->StereoRenderingDevice->IsStereoEnabled();
+		if (bStereoActive)
 		{
 			FInputModeGameAndUI GameUIMode;
 			GameUIMode.SetWidgetToFocus(InstructorPanel->TakeWidget());
@@ -175,9 +175,7 @@ void AClearanceOperatorPC::BeginPlay()
 			UIMode.SetWidgetToFocus(InstructorPanel->TakeWidget());
 			SetInputMode(UIMode);
 		}
-		// Show the cursor whenever we're on desktop (not in VR). Combined
-		// mode is always desktop so cursor stays visible. - TripleA
-		SetShowMouseCursor(!bIsInVR);
+		SetShowMouseCursor(!bStereoActive);
 	}
 }
 

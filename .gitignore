@@ -1,5 +1,6 @@
 # Unreal Engine generated folders
 Binaries/
+Build/
 DerivedDataCache/
 Intermediate/
 Saved/
@@ -11,6 +12,7 @@ WhisperServer/
 *.sln
 *.suo
 *.VC.db
+UpgradeLog.htm
 
 # OS files
 .DS_Store

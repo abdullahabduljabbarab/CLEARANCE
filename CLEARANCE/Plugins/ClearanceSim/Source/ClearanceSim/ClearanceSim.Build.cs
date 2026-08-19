@@ -71,5 +71,14 @@ public class ClearanceSim : ModuleRules
 		{
 			RuntimeDependencies.Add("$(ProjectDir)/TtsServer/...", StagedFileType.NonUFS);
 		}
+
+		// Scenario JSON files live alongside the plugin source. Scenario
+		// runner resolves them at runtime via FPaths::ProjectPluginsDir()
+		// so the packaged build needs them at the same relative path. - TripleA
+		string ScenariosDir = Path.Combine(PluginDirectory, "Scenarios");
+		if (Directory.Exists(ScenariosDir))
+		{
+			RuntimeDependencies.Add("$(PluginDir)/Scenarios/...", StagedFileType.NonUFS);
+		}
 	}
 }

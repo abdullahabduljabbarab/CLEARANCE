@@ -222,6 +222,72 @@ FString UClearancePhraseology::Interpret(AClearanceSimulationController* Control
 		return TEXT("(empty transmission)");
 	}
 
+	// Early "engage" bypass. Whisper misrecognises "SAM" as everything from
+	// "some" to "sim" to "Lufthansa" and the civilian callsign matcher then
+	// grabs the first token and routes off to a Lufthansa aircraft. If the
+	// word "engage" appears anywhere in the transmission, treat it as a SAM
+	// weapons-commit regardless of what came before - the SAM battery is
+	// the only thing you "engage" in this sim. - TripleA
+	{
+		int32 EngageIdx = INDEX_NONE;
+		for (int32 i = 0; i < Tokens.Num(); ++i)
+		{
+			if (Tokens[i] == TEXT("engage"))
+			{
+				EngageIdx = i;
+				break;
+			}
+		}
+		if (EngageIdx != INDEX_NONE)
+		{
+			int32 After = EngageIdx + 1;
+			// Optional "bandit" softener.
+			if (After < Tokens.Num() && Tokens[After] == TEXT("bandit")) { ++After; }
+			const FName Cs = ResolveCallsign(Controller, Tokens, After);
+			if (Cs.IsNone())
+			{
+				const FString R = TEXT("SAM 01 - say again target");
+				SpeakAsController(Controller, R);
+				return R;
+			}
+			ECommsFrequency OpFreq = ECommsFrequency::None;
+			if (UWorld* World = Controller ? Controller->GetWorld() : nullptr)
+			{
+				for (TActorIterator<AClearanceOperatorPC> It(World); It; ++It)
+				{
+					if (AClearanceOperatorPC* PC = *It) { OpFreq = PC->CurrentTxFrequency; break; }
+				}
+			}
+			if (OpFreq != ECommsFrequency::Guard)
+			{
+				const FString R = TEXT("Negative, weapons commit requires guard frequency");
+				SpeakAsController(Controller, R);
+				return R;
+			}
+			const FAircraftState Tgt = Controller->GetAirspaceManager()
+				? Controller->GetAirspaceManager()->GetAircraftState(Cs) : FAircraftState();
+			if (!Tgt.bIsValid)
+			{
+				const FString R = FString::Printf(TEXT("SAM 01 - unable, no track on %s"), *Cs.ToString());
+				SpeakAsController(Controller, R);
+				return R;
+			}
+			if (Tgt.ThreatClass != EThreatClass::Hostile)
+			{
+				const TCHAR* Why = (Tgt.ThreatClass == EThreatClass::Friendly) ? TEXT("FRIENDLY target - weapons cold refusal")
+					: (Tgt.ThreatClass == EThreatClass::Neutral) ? TEXT("CIVILIAN target - weapons cold refusal")
+					: TEXT("UNIDENTIFIED target - request positive ID");
+				const FString R = FString::Printf(TEXT("SAM 01 - unable, %s"), Why);
+				SpeakAsController(Controller, R);
+				return R;
+			}
+			Controller->Server_InjectFireMissile(Cs);
+			const FString R = FString::Printf(TEXT("SAM 01, ENGAGING %s"), *Cs.ToString());
+			SpeakOut(Controller, FName(TEXT("SAM_01")), R);
+			return R;
+		}
+	}
+
 	// NATO GCI brevity (military intercept doctrine, distinct from ICAO civil
 	// phraseology). These commands lead with the verb, not the callsign, and
 	// run through the GCI methods on the controller rather than the civilian

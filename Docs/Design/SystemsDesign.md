@@ -68,13 +68,50 @@ The scope splits into five interlocking systems, each with a single defined resp
 
 The loop can also be driven by a scripted scenario in place of the free-play spawner. Seven scenarios ship: Baltic Intercept, Hijack Response, Mass Divert, Mayday Engine Fire, NORDO Inbound, Cold War Probe, and Mixed Ops. Each authors traffic, weather, emergencies, and voice injects on a timeline.
 
-<p align="center">
-  <img src="../Images/SystemsDesign/Flow1.png" alt="Core gameplay loop" width="900">
-</p>
+**Flowchart 1: Core gameplay loop** (architecture sketch)
 
-<p align="center">
-  <em>Figure 2: Core gameplay loop showing aircraft entry, operator instruction, validation, movement, conflict monitoring, scoring, and loop continuation.</em>
-</p>
+```
+   Difficulty setting sets spawn cadence
+             |
+             v
+   Aircraft Spawner or Scenario Runner
+             |
+             v
+       Aircraft enters sector
+             |
+             v
+   Operator sees blip on scope
+             |
+             v
+     Operator issues instruction
+       (voice or console)
+             |
+             v
+   Instruction Validator checks envelope
+             |
+      accepted?
+      /       \
+    no        yes
+     |         |
+     v         v
+   spoken   Aircraft Behaviour
+   refusal    executes movement
+                    |
+                    v
+          Conflict Detector monitors pairs
+                    |
+                    v
+          Outcome: land / handoff /
+          exit / crash / bust
+                    |
+                    v
+             Scoring logs event
+                    |
+                    v
+          Difficulty scales up or back
+                    |
+                    +----- next aircraft
+```
 
 ### Design principles
 
@@ -167,22 +204,66 @@ The cost is a central dependency: if the Airspace Manager is broken, the entire 
 | Any system | Iterating all aircraft | `GetAllAircraftStates` | none | Array of `FAircraftState` | Consumer sees the whole sector |
 | Wind change | Crosswind exceeds threshold on current active runway | `RecalculateActiveRunway` | none (internal) | New active heading | Runway swaps, `OnRunwayChanged` broadcast to camera overlay, approach picker, aircraft on approach |
 
-<p align="center">
-  <img src="../Images/SystemsDesign/Flow2.png" alt="Aircraft registration flow" width="800">
-</p>
+**Flowchart 2: Aircraft registration flow** (architecture sketch)
 
-<p align="center">
-  <em>Figure 3: Aircraft registration flow showing how spawner and scenario requests become authoritative aircraft state, behaviour objects, and active simulation participants.</em>
-</p>
+```
+   Aircraft Spawner or Scenario Runner
+             |
+             v
+       RegisterAircraft(callsign,
+       entry pos, alt, speed, hdg,
+       wake, phase, threat class)
+             |
+             v
+       Airspace Manager validates
+             |
+      accepted?
+      /       \
+    no        yes
+     |         |
+     v         v
+   rejected  add to aircraft map
+                     |
+                     v
+             create per-aircraft
+             behaviour object
+                     |
+                     v
+        OnAircraftRegistered broadcast
+                     |
+                     v
+        radar, scoring, presentation,
+        federation attach to callsign
+```
 
+**Flowchart 3: State update per tick** (architecture sketch)
 
-<p align="center">
-  <img src="../Images/SystemsDesign/Flow3.png" alt="State update flow per tick" width="700">
-</p>
-
-<p align="center">
-  <em>Figure 4: State update flow showing how aircraft behaviour integrates movement each tick, requests an authoritative state update, and broadcasts the committed state to dependent systems.</em>
-</p>
+```
+   Simulation Controller ticks
+             |
+             v
+   Aircraft Behaviour reads state
+   via GetAircraftState(callsign)
+             |
+             v
+   integrate heading / altitude /
+   speed / position within envelope
+             |
+             v
+       RequestStateUpdate
+       to Airspace Manager
+             |
+             v
+   Airspace Manager commits new
+   FAircraftState to the map
+             |
+             v
+     OnAircraftStateUpdated broadcast
+             |
+             v
+   Conflict Detector, scope, strip,
+   federation consume the new state
+```
 
 **Flowchart 4: Aircraft deregistration flow** (architecture sketch)
 

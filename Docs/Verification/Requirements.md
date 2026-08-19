@@ -7,7 +7,7 @@
 
 Traceability table for the requirements currently covered by automation tests, grouped by domain and traced to their verifying tests. Deferred integration and manual coverage is called out separately at the end. Each REQ-ID is tagged in a leading code comment on the tests that verify it, so the truth lives in the source and this document just tabulates.
 
-Companion to [`V_AND_V_PLAN.md`](V_AND_V_PLAN.md) (the strategy and process) and the [`Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
+Companion to [`V_AND_V_PLAN.md`](V_AND_V_PLAN.md) (the strategy and process) and the [`CLEARANCE/Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../../CLEARANCE/Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
 
 ## Numbering scheme
 

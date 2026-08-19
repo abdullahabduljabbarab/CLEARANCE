@@ -16,7 +16,7 @@
 - [Change control](#change-control)
 - [What this document doesn't cover](#what-this-document-doesnt-cover)
 
-The strategy document: how requirements are verified. Companion to [`Requirements.md`](Requirements.md) (what the requirements are) and the [`Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../../Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
+The strategy document: how requirements are verified. Companion to [`Requirements.md`](Requirements.md) (what the requirements are) and the [`CLEARANCE/Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/`](../../CLEARANCE/Plugins/ClearanceSim/Source/ClearanceSim/Private/Tests/) directory (the tests themselves).
 
 If `Requirements.md` answers "what is CLEARANCE supposed to do?", this doc answers "how do we prove it does?".
 

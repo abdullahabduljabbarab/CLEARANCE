@@ -3,9 +3,9 @@
 **Project:** CLEARANCE
 **Author:** Abdullah Ameed Abduljabbar
 **Role:** Systems Designer
-**Status:** DRAFT pending video release. MP-01 to MP-05 evidence exists in the federation companion repository and its release video. MP-06 evidence exists in the unreleased C++ technical breakdown video. Promoted to Final once the C++ technical breakdown video is published.
-**Build / Commit:** to be stamped at release with the actual Git commit hash
-**Date:** 2026-07-17
+**Status:** Final
+**Build / Commit:** stamped at the v1.0 release tag
+**Date:** 2026-08-19
 
 ## Table of contents
 
@@ -66,7 +66,7 @@ Automation result captured from the Unreal Session Frontend using filter `Cleara
 | MP-03 | Standalone subscribers round-trip (Fast DDS and HLA) | Pass | Federation companion repository + release video |
 | MP-04 | Two-federate live federation | Pass | Federation companion repository + release video |
 | MP-05 | Full automation suite pass | Pass | Federation companion repository + release video |
-| MP-06 | Runtime ATC safety path verification | Pass (evidence in unreleased C++ technical breakdown video) | C++ technical breakdown video, pending publication |
+| MP-06 | Runtime ATC safety path verification | Pass | C++ technical breakdown video |
 
 ## Deviations and limitations
 
@@ -87,6 +87,6 @@ Automation result captured from the Unreal Session Frontend using filter `Cleara
 
 ## Verification conclusion
 
-All 69 documented requirements have automated coverage, and the 52-test automation suite passes. MP-01 through MP-05 have their evidence in the federation companion repository and its release video. MP-06 has been captured in the C++ technical breakdown video, which is not yet published. This report will be promoted from **DRAFT** to a final release report once that video is published.
+All 69 documented requirements have automated coverage, and the 52-test automation suite passes. MP-01 through MP-05 have their evidence in the federation companion repository and its release video. MP-06 has been captured in the C++ technical breakdown video. All six manual procedures are complete.
 
 The project remains a portfolio demonstrator and training-simulation prototype, not certified operational ATC, avionics, or defence training software.

@@ -3,6 +3,23 @@
 **C++ synthetic training, distributed simulation, and Model-Based Design in Unreal Engine 5.**
 
 <p align="center">
+  <img alt="Unreal Engine 5.7" src="https://img.shields.io/badge/Unreal%20Engine-5.7-black?logo=unrealengine&logoColor=white">
+  <img alt="C++" src="https://img.shields.io/badge/C%2B%2B-17%2F20-00599C?logo=cplusplus&logoColor=white">
+  <img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-0078D6?logo=windows&logoColor=white">
+  <img alt="MetaXR VR" src="https://img.shields.io/badge/VR-MetaXR-1877F2?logo=meta&logoColor=white">
+  <img alt="MATLAB Simulink" src="https://img.shields.io/badge/MATLAB-Simulink-E16428">
+</p>
+
+<p align="center">
+  <img alt="DIS" src="https://img.shields.io/badge/DIS-IEEE%201278.1-1f6feb">
+  <img alt="DDS" src="https://img.shields.io/badge/DDS-OMG-1f6feb">
+  <img alt="HLA" src="https://img.shields.io/badge/HLA-IEEE%201516--2010-1f6feb">
+  <img alt="Tests" src="https://img.shields.io/badge/Tests-52%20automated-2ea44f">
+  <img alt="Requirements" src="https://img.shields.io/badge/Requirements-69-2ea44f">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-2ea44f">
+</p>
+
+<p align="center">
   <img src="Docs/Images/SystemsDesign/instructor-panel-wide.png" alt="Instructor station showing the live scope, scenario controls, PIP camera feeds, and operator supervision panels" width="900">
 </p>
 

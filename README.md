@@ -16,7 +16,7 @@
 **C++ synthetic training, distributed simulation, and Model-Based Design in Unreal Engine 5.**
 
 <p align="center">
-  <img src="Docs/Images/SystemsDesign/instructor-panel-wide.png" alt="Instructor station showing the live scope, scenario controls, PIP camera feeds, and operator supervision panels" width="900">
+  <img src="Docs/Images/heroshot.png" alt="CLEARANCE main menu at Warton ACC with the tower and Cesium streamed terrain behind it, showing the Instructor, Operator, Combined, Host LAN, and Join LAN session options" width="900">
 </p>
 
 CLEARANCE is a four-month solo engineering project built between May and August 2026. A networked ATC and air defence synthetic training ecosystem implemented in C++ on Unreal Engine 5.7.

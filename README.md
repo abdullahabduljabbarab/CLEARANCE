@@ -1,15 +1,15 @@
-[![Unreal Engine 5.7](https://img.shields.io/badge/Unreal%20Engine-5.7-black?logo=unrealengine&logoColor=white)](https://www.unrealengine.com/en-US/unreal-engine-5)
-[![C++](https://img.shields.io/badge/C%2B%2B-17%2F20-00599C?logo=cplusplus&logoColor=white)](https://isocpp.org/)
-[![Windows 11](https://img.shields.io/badge/Windows-11-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows/windows-11)
-[![MetaXR VR](https://img.shields.io/badge/VR-MetaXR-1877F2?logo=meta&logoColor=white)](https://developer.oculus.com/documentation/unreal/unreal-engine/)
-[![MATLAB Simulink](https://img.shields.io/badge/MATLAB-Simulink-E16428)](https://www.mathworks.com/products/simulink.html)
+<a href="https://www.unrealengine.com/en-US/unreal-engine-5" target="_blank" rel="noopener noreferrer"><img alt="Unreal Engine 5.7" src="https://img.shields.io/badge/Unreal%20Engine-5.7-black?logo=unrealengine&logoColor=white"></a>
+<a href="https://isocpp.org/" target="_blank" rel="noopener noreferrer"><img alt="C++" src="https://img.shields.io/badge/C%2B%2B-17%2F20-00599C?logo=cplusplus&logoColor=white"></a>
+<a href="https://www.microsoft.com/windows/windows-11" target="_blank" rel="noopener noreferrer"><img alt="Windows 11" src="https://img.shields.io/badge/Windows-11-0078D6?logo=windows&logoColor=white"></a>
+<a href="https://developer.oculus.com/documentation/unreal/unreal-engine/" target="_blank" rel="noopener noreferrer"><img alt="MetaXR VR" src="https://img.shields.io/badge/VR-MetaXR-1877F2?logo=meta&logoColor=white"></a>
+<a href="https://www.mathworks.com/products/simulink.html" target="_blank" rel="noopener noreferrer"><img alt="MATLAB Simulink" src="https://img.shields.io/badge/MATLAB-Simulink-E16428"></a>
 
-[![DIS](https://img.shields.io/badge/DIS-IEEE%201278.1-1f6feb)](https://standards.ieee.org/ieee/1278.1/4949/)
-[![DDS](https://img.shields.io/badge/DDS-OMG-1f6feb)](https://www.omg.org/spec/DDS/)
-[![HLA](https://img.shields.io/badge/HLA-IEEE%201516--2010-1f6feb)](https://standards.ieee.org/ieee/1516/3536/)
-[![Tests](https://img.shields.io/badge/Tests-52%20automated-2ea44f)](Docs/Verification/V_AND_V_REPORT.md)
-[![Requirements](https://img.shields.io/badge/Requirements-69-2ea44f)](Docs/Verification/Requirements.md)
-[![License](https://img.shields.io/badge/License-MIT-2ea44f)](LICENSE)
+<a href="https://standards.ieee.org/ieee/1278.1/4949/" target="_blank" rel="noopener noreferrer"><img alt="DIS" src="https://img.shields.io/badge/DIS-IEEE%201278.1-1f6feb"></a>
+<a href="https://www.omg.org/spec/DDS/" target="_blank" rel="noopener noreferrer"><img alt="DDS" src="https://img.shields.io/badge/DDS-OMG-1f6feb"></a>
+<a href="https://standards.ieee.org/ieee/1516/3536/" target="_blank" rel="noopener noreferrer"><img alt="HLA" src="https://img.shields.io/badge/HLA-IEEE%201516--2010-1f6feb"></a>
+<a href="Docs/Verification/V_AND_V_REPORT.md" target="_blank" rel="noopener noreferrer"><img alt="Tests" src="https://img.shields.io/badge/Tests-52%20automated-2ea44f"></a>
+<a href="Docs/Verification/Requirements.md" target="_blank" rel="noopener noreferrer"><img alt="Requirements" src="https://img.shields.io/badge/Requirements-69-2ea44f"></a>
+<a href="LICENSE" target="_blank" rel="noopener noreferrer"><img alt="License" src="https://img.shields.io/badge/License-MIT-2ea44f"></a>
 
 # CLEARANCE
 

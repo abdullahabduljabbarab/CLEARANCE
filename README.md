@@ -56,13 +56,15 @@ Six principles carry the runtime. They are enforced by class boundaries, not by 
 6. **Strict presentation boundary.** C++ owns simulation state. Blueprint and UMG present it and submit intent. If the whole UMG layer were deleted, the simulation would still run.
 
 ```mermaid
-flowchart TD
-  INPUT["Voice / VR / Operator / Instructor / Scenario"] --> CTRL["Simulation Controller"]
-  CTRL --> STATE["Authoritative Airspace State"]
-  MBD["Generated MBD Subsystems"] --> BEHAV["Aircraft Behaviour"]
-  STATE --> BEHAV
+flowchart TB
+  INPUT["Voice / VR / Operator / Instructor / Scenario"]
+  CTRL["Simulation Controller"]
+  STATE["Authoritative Airspace State"]
+  INPUT --> CTRL --> STATE
+
+  STATE --> BEHAV["Aircraft Behaviour<br/>MBD autopilot"]
   STATE --> SAFE["Conflict / Wake / TCAS"]
-  STATE --> RADAR["Radar / GCI / EW"]
+  STATE --> RADAR["Radar / GCI / EW<br/>MBD DSP"]
   STATE --> SCORE["Scoring / Recorder / AAR"]
   STATE --> UI["Operator + Instructor Presentation"]
   STATE --> FED["DIS / DDS / HLA"]

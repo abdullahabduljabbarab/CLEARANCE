@@ -49,8 +49,8 @@ The principal runtime and engineering evidence produced alongside the simulator.
 
 | | Video |
 |---|---|
-| Three minute showcase | <!-- VIDEO_URL --> |
-| End to end two role playthrough (v1.0 release) | <!-- VIDEO_URL --> |
+| [Five minute showcase](https://youtu.be/kii0oPH0a2I) | Five minute compressed walk across every subsystem: architecture, sensor stack, voice ATC, four-wire federation, MBD subsystems, VR operator, instructor station, AAR. |
+| [End to end two role playthrough](https://youtu.be/trnNMP-3RLs) | Full v1.0 release session recorded across both roles: VR operator in the tower, desktop instructor over LAN, scenario front to back including emergencies, replay, and AAR export. |
 | [C++ technical architecture](https://www.youtube.com/watch?v=25d2I24uIs4) | Ownership, execution order, aircraft behaviour, communications, safety, radar, instructor tooling, replay, V&V, federation, VR, and presentation boundaries walked through the source. |
 | [Federation stack](https://www.youtube.com/watch?v=u7qeIkqkt4s) | DIS, Fast DDS, RTI Connext, and HLA Evolved / OpenRTI with live traffic, Wireshark decoding, standalone subscribers, FOM extension, and two-federate operation. |
 | [Model-Based Design](https://www.youtube.com/watch?v=nqjFOimsYHw) | Simulink autopilot and radar DSP models, Embedded Coder output, C++ wrappers, per instance runtime state, live integration inside Unreal. |
